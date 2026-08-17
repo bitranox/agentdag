@@ -107,6 +107,30 @@ def test_git_cli_mirror_keeps_no_remote_pointing_at_the_real_repository(tmp_path
     assert git("remote", cwd=bare) == ""
 
 
+def test_git_cli_mirror_does_not_hardlink_objects_from_the_real_repository(tmp_path: Path) -> None:
+    """The scratch mirror must not share inodes with the real repository's objects.
+
+    For a local ``source``, a plain ``git clone --mirror`` hardlinks loose object files
+    into the mirror instead of copying them, so an in-place write to one of them later -
+    such as the read-only ``chmod`` :func:`GitCli.remove_mirror`'s Windows retry performs
+    before unlinking - would land on the shared inode and mutate the real repository,
+    which the baseline promises never to touch. Verified by hand in a scratch clone
+    before writing this test: a mirror made without ``--no-hardlinks`` reports
+    ``st_nlink == 2`` on a loose object (shared with the real repo's copy); with
+    ``--no-hardlinks`` it reports ``st_nlink == 1`` (a private copy). Not platform-guarded:
+    NTFS reports hardlink counts through ``os.stat().st_nlink`` the same way POSIX does.
+    """
+    g = GitCli()
+    real = make_repo(tmp_path, "hardlink", "test:\n\t@exit 0\n")
+    bare = tmp_path / "hardlink.git"
+
+    g.mirror(real, bare)
+
+    objects = [path for path in (bare / "objects").rglob("*") if path.is_file()]
+    assert objects  # a mirror with no object file would make this pass for the wrong reason
+    assert objects[0].stat().st_nlink == 1
+
+
 def test_git_cli_remove_mirror_deletes_a_mirror_holding_read_only_objects(tmp_path: Path) -> None:
     """git writes ``objects/**`` read-only, and Windows will not unlink a read-only file.
 

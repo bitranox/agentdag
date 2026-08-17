@@ -81,8 +81,13 @@ class GitCli:
         real repository as a remote with ``remote.origin.mirror=true``, which is a live
         write route from the scratch tree back into the fleet's real repositories, and
         nothing needs it: a refresh re-reads the path from the real-repos list.
+
+        ``--no-hardlinks`` is required: for a local ``source``, git otherwise hardlinks
+        object files into ``dest``, so a later in-place write to one of them - such as
+        the read-only ``chmod`` :func:`remove_mirror`'s Windows retry performs before
+        unlinking - would land on the shared inode and mutate the real repository too.
         """
-        _git("clone", "-q", "--mirror", str(source), str(dest))
+        _git("clone", "-q", "--mirror", "--no-hardlinks", str(source), str(dest))
         _git("remote", "remove", "origin", cwd=dest)
 
     def remove_mirror(self, dest: Path) -> None:
