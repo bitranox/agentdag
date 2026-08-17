@@ -232,7 +232,7 @@ agentdag graph-a run /tmp/agentdag-scratch/REPOS.txt brief.md --parallel 2 --mod
 
 `real-repos.txt` holds one path per line; blank lines and lines starting with `#` are ignored. `brief.md` is the change to make, handed to every node as its system prompt. `graph-a scratch` writes the list of mirrors to `<scratch>/REPOS.txt`, which is what `graph-a run` reads.
 
-`graph-a run` ends by printing the run directory and its `tally.json`: one row per repository, with the gate's exit code and the node's turn and token counts.
+`graph-a run` prints the run directory as it starts and the path of its `tally.json` when it finishes. That file holds one row per repository, with the gate's exit code and the node's turn and token counts.
 
 ### The scratch-clone rule
 
