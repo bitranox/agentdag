@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...domain.errors import KernelError
 from ...domain.journal import ResultLine, StartedLine
 from ...domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
-from .ports import stamp
+from .ports import format_stamp, stamp
 from .replay import build_replay_index
 
 if TYPE_CHECKING:
@@ -115,7 +116,7 @@ class Dispatcher:
             the one this dispatch just wrote.
 
         Raises:
-            KeyError: a dependency named in ``spec.deps`` has no record yet - the
+            KernelError: a dependency named in ``spec.deps`` has no record yet - the
                 program dispatched a node before the node it depends on.
         """
         call = self._identify(spec, brief=brief, input_obj=input_obj)
@@ -130,17 +131,39 @@ class Dispatcher:
         """Compute this call's journal key from the spec, its dependencies' records and its texts."""
         input_text = canonical_json(dict(input_obj))
         input_hash = content_hash(input_text)
-        prefix = prefix_hash([self.records[dep] for dep in spec.deps])
+        prefix = prefix_hash([self._dep_record(spec.node_id, dep) for dep in spec.deps])
         key = journal_key(spec, brief_hash=content_hash(brief), input_hash=input_hash, prefix=prefix)
         return _Call(key=key, brief=brief, input_text=input_text, input_hash=input_hash)
 
+    def _dep_record(self, node_id: str, dep: str) -> ResultRecord:
+        """Look up ``dep``'s record, or refuse with a typed error naming both nodes.
+
+        Raises:
+            KernelError: ``dep`` has no record yet - a program bug, not something a
+                retry fixes: fix the dispatch order and re-run.
+        """
+        try:
+            return self.records[dep]
+        except KeyError as exc:
+            raise KernelError(f"node {node_id!r} depends on {dep!r}, which this run has not dispatched") from exc
+
     async def _run_and_record(self, spec: NodeSpec, call: _Call, body: Body) -> ResultRecord:
-        """Run one dispatch for real: inputs, ``started``, the body, the record, ``result``."""
+        """Run one dispatch for real: inputs, ``started``, the body, the record, ``result``.
+
+        A crash-window re-run computes this exact same key (design: the crash happens
+        AFTER the ``started`` line, before ``result``), so it reaches the SAME
+        ``node_dir`` (``hash8`` of the key) as the interrupted attempt. ``brief.md`` and
+        ``input.json`` are simply overwritten here, but anything ``body`` itself wrote
+        into ``node_dir`` on the crashed attempt is still there when it runs again -
+        node-local idempotency is ``body``'s job, not this method's.
+        """
         node_dir = self.run_dir.node_dir(spec.node_id, hash8(call.key))
         self._write(node_dir, "brief.md", call.brief)
         self._write(node_dir, "input.json", call.input_text)
-        self.journal.append(StartedLine(key=call.key, node_id=spec.node_id, attempt=spec.attempt, at=stamp(self.clock)))
         started = self.clock.now()
+        self.journal.append(
+            StartedLine(key=call.key, node_id=spec.node_id, attempt=spec.attempt, at=format_stamp(started))
+        )
         outcome = _refuse_empty(await _run_body(body, node_dir))
         duration_s = (self.clock.now() - started).total_seconds()
         record = _complete(outcome, spec=spec, input_hash=call.input_hash, duration_s=duration_s)

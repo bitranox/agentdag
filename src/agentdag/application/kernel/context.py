@@ -15,17 +15,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
+from ...domain.errors import KernelError
 from .ports import ExecutorRequest
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
     from pathlib import Path
+    from typing import Any
 
     from pydantic import BaseModel
 
     from ...domain.models import ApprovePayload, Decision, NodeOutcome, NodeSpec, ResultRecord
     from ..graph_a_ports import GatePort, GitPort
-    from .dispatch import Dispatcher
+    from .dispatch import Body, Dispatcher
     from .ports import Clock, Executor, IsolationScanner, Policy, RunDir
 
 __all__ = ["Coordinator"]
@@ -97,8 +99,11 @@ class Coordinator:
         """Dispatch one work node: an executor, running ``brief`` against ``cwd``.
 
         The policy resolves the spec to a model row before the key is computed, and the
-        resolved row and executor are written back onto the dispatched spec - so a run
-        under a changed policy is a different call, not a silently different node.
+        resolved row and executor are written back onto the dispatched spec - so a
+        policy change that moves this spec's RESOLVED ROW (its model alias or its
+        executor) is a different call, not a silently different node. ``max_turns`` and
+        ``deny_bash`` reach the executor request but are not part of the key or of
+        ``input_obj``, so changing only those does not.
 
         Args:
             spec: The node spec, with its tier role, write set, deps and limits.
@@ -111,11 +116,27 @@ class Coordinator:
         Returns:
             The node's result record, with this node's charged tokens already added to
             :attr:`tokens_by_row`.
+
+        Raises:
+            KernelError: the resolved row names an executor not in :attr:`executors`,
+                or ``cwd`` sits outside the run root - both a misconfiguration, so they
+                raise HERE, before anything is dispatched: a failed record for either
+                would just be retried forever, never fixed by another attempt.
         """
         row = self.policy.resolve(spec)
+        if row.executor not in self.executors:
+            raise KernelError(
+                f"executor {row.executor!r} for node {spec.node_id!r} is not wired; wired: {sorted(self.executors)}"
+            )
         executor = self.executors[row.executor]
+        try:
+            cwd_rel = cwd.relative_to(self.run_dir.root)
+        except ValueError as exc:
+            raise KernelError(
+                f"cwd {cwd} of node {spec.node_id!r} is outside the run root {self.run_dir.root}"
+            ) from exc
         input_obj = {
-            "cwd": cwd.relative_to(self.run_dir.root).as_posix(),
+            "cwd": cwd_rel.as_posix(),
             "prompt": prompt,
             "model": row.alias,
             "effort": spec.effort,
@@ -137,9 +158,7 @@ class Coordinator:
             return await executor.run(request)
 
         dispatched = spec.model_copy(update={"executor": row.executor, "model": row.alias})
-        record = await self.dispatcher.dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
-        self._charge(record)
-        return record
+        return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
 
     def snapshot(self) -> Mapping[str, str]:
         """Take the isolation-root manifest a later :meth:`scan` compares against.
@@ -153,6 +172,9 @@ class Coordinator:
     async def gate(self, spec: NodeSpec, *, argv: Sequence[str], cwd: Path) -> ResultRecord:
         """Dispatch a mechanical gate: run ``argv`` in ``cwd`` and record its exit code.
 
+        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
+        :meth:`_dispatch`.
+
         Raises:
             NotImplementedError: Task 13 fills this primitive.
         """
@@ -160,6 +182,9 @@ class Coordinator:
 
     async def scan(self, spec: NodeSpec, *, watched: str) -> ResultRecord:
         """Dispatch the isolation-root scan as a gate node: writes outside the write set are the finding.
+
+        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
+        :meth:`_dispatch`.
 
         Raises:
             NotImplementedError: Task 13 fills this primitive. It also widens this
@@ -171,6 +196,9 @@ class Coordinator:
     async def reduce(self, spec: NodeSpec, *, fold: Callable[[], NodeOutcome]) -> ResultRecord:
         """Dispatch a code fold: ``fold`` runs as the node's body and its outcome is the record.
 
+        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
+        :meth:`_dispatch`.
+
         Raises:
             NotImplementedError: Task 13 fills this primitive.
         """
@@ -181,6 +209,9 @@ class Coordinator:
     ) -> list[ResultRecord]:
         """Fan out over ``items``, at most :attr:`parallel` at once; one raising branch never kills the run.
 
+        Task 13 fills this primitive; each branch's own dispatch (inside ``body``) still
+        goes through :meth:`_dispatch`, so a raising branch never bypasses charging.
+
         Raises:
             NotImplementedError: Task 13 fills this primitive.
         """
@@ -189,6 +220,9 @@ class Coordinator:
     async def stage(self, spec: NodeSpec, *, intents: Sequence[BaseModel], kind: str) -> ResultRecord:
         """Write every intent under ``intents/<kind>/`` BEFORE anything leaves the process (design 3.4).
 
+        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
+        :meth:`_dispatch`.
+
         Raises:
             NotImplementedError: Task 13 fills this primitive.
         """
@@ -196,6 +230,9 @@ class Coordinator:
 
     async def approve(self, spec: NodeSpec, *, payload: ApprovePayload) -> Decision:
         """Return the recorded decision, or write the payload and suspend the run.
+
+        Task 13 fills this primitive; once a decision is recorded, resolving it dispatches
+        a node through :meth:`_dispatch` like every other primitive.
 
         Raises:
             NotImplementedError: Task 13 fills this primitive.
@@ -207,6 +244,9 @@ class Coordinator:
         self, spec: NodeSpec, *, intents: Sequence[BaseModel], kind: str, perform: Callable[[BaseModel], str]
     ) -> ResultRecord:
         """Perform each staged intent exactly once, guarded by its ``done/<kind>/<key>`` marker.
+
+        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
+        :meth:`_dispatch`.
 
         Raises:
             NotImplementedError: Task 13 fills this primitive.
@@ -220,6 +260,28 @@ class Coordinator:
             NotImplementedError: Task 13 fills this primitive.
         """
         raise NotImplementedError("Task 13")
+
+    async def _dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:
+        """Dispatch through the run's dispatcher, then charge - the ONE path every primitive uses.
+
+        A primitive on this coordinator must call THIS, never
+        ``self.dispatcher.dispatch`` directly, so a record is charged exactly once
+        whether it was just run or served from the journal on replay (:meth:`work`'s
+        resumed-run test proves the served branch is charged too).
+
+        Args:
+            spec: The node being dispatched.
+            brief: The node's brief.
+            input_obj: The assembled input.
+            body: What to run when the journal has no result for this key.
+
+        Returns:
+            The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
+            returned, already charged.
+        """
+        record = await self.dispatcher.dispatch(spec, brief=brief, input_obj=input_obj, body=body)
+        self._charge(record)
+        return record
 
     def _charge(self, record: ResultRecord) -> None:
         """Add a record's charged tokens to the run's per-row totals.

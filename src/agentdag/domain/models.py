@@ -160,9 +160,12 @@ class NodeSpec(BaseModel):
     work node's executor to compress its own history at ``trigger_tokens``, keeping
     the last ``keep_last_n`` turns/messages (design 2.1, section 4 "compact").
 
-    ``brief_ref`` is filled by the dispatcher before the spec is written anywhere
-    (``nodes/<node_id>/<hash8>/brief.md``, Task 12) - it is empty only in memory,
-    while a workflow module still holds a spec it authored. The schema's
+    ``brief_ref`` is filled by whoever first PERSISTS this spec to disk (a later task) -
+    the dispatcher itself never writes a ``NodeSpec``, only ``brief.md``, ``input.json``
+    and ``record.json`` under ``nodes/<node_id>/<hash8>/``. It is empty only in memory,
+    while a workflow module still holds a spec it authored. The journal key is computed
+    from the brief's CONTENT hash, never from ``brief_ref``, so a spec that moves to a
+    different path without its brief text changing is still the same call. The schema's
     ``minLength: 1`` binds a spec once it is on disk, not this in-memory default.
     """
 

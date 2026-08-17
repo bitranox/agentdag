@@ -20,6 +20,7 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
+from agentdag.domain.errors import KernelError
 from agentdag.domain.models import Budget, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, TierRole
 
 if TYPE_CHECKING:
@@ -103,8 +104,19 @@ def fresh_run_dir(tmp_path: Path) -> FsRunDir:
     return run_dir
 
 
-def wire(run_dir: FsRunDir, executor: RecordingExecutor, scanner: FakeScanner) -> Coordinator:
-    """Build a coordinator over ``run_dir``, as a relaunch would over an existing one."""
+def wire(
+    run_dir: FsRunDir,
+    executor: RecordingExecutor,
+    scanner: FakeScanner,
+    *,
+    executors: Mapping[str, RecordingExecutor] | None = None,
+) -> Coordinator:
+    """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
+
+    ``executors`` defaults to ``{"claude": executor}`` (what ``OneRowPolicy`` resolves
+    to); a test that must exercise a misconfigured coordinator passes its own, e.g. an
+    empty mapping to prove the resolved executor is not wired.
+    """
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     return Coordinator(
         run_id="r1",
@@ -113,7 +125,7 @@ def wire(run_dir: FsRunDir, executor: RecordingExecutor, scanner: FakeScanner) -
         dispatcher=Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=UtcClock()),
         run_dir=run_dir,
         clock=UtcClock(),
-        executors={"claude": executor},
+        executors={"claude": executor} if executors is None else executors,
         gate_port=MakeTestGate(lock=run_dir.root / "gate.lock"),
         git=GitCli(),
         scanner=scanner,
@@ -170,3 +182,23 @@ def test_snapshot_asks_the_scanner_about_the_run_root(tmp_path: Path) -> None:
 
     assert manifest == {"wt/a/f.py": "sha256:0"}
     assert scanner.roots == [run_dir.root]
+
+
+@pytest.mark.os_agnostic
+def test_work_refuses_the_resolved_executor_when_it_is_not_wired(tmp_path: Path) -> None:
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner(), executors={})
+
+    with pytest.raises(KernelError, match="not wired"):
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+
+@pytest.mark.os_agnostic
+def test_work_refuses_a_cwd_outside_the_run_root(tmp_path: Path) -> None:
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    outside = run_dir.root.parent / "elsewhere"
+    outside.mkdir()
+
+    with pytest.raises(KernelError, match="outside the run root"):
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=outside))

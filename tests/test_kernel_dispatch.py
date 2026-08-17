@@ -16,6 +16,7 @@ import pytest
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.dispatch import Body, Dispatcher
+from agentdag.domain.errors import KernelError
 from agentdag.domain.journal import StartedLine
 from agentdag.domain.models import (
     Budget,
@@ -123,7 +124,10 @@ def test_replay_serves_the_record_without_running_the_body_and_reproduces_the_ke
     asyncio.run(replay.dispatch(spec("a"), brief="b", input_obj={}, body=boom))
     asyncio.run(replay.dispatch(spec("b", deps=["a"]), brief="b", input_obj={}, body=boom))
 
-    # replay purity: the same keys, in the same order, in the same number
+    # Replay purity: the same keys, same order, same count. Recording a key only when the
+    # body actually runs (instead of before the index check) makes this go red; a UNIFORM
+    # key-field change (e.g. dropping the dependency prefix everywhere) does NOT, because
+    # this run's keys and the journal's started keys would still move together.
     assert replay.dispatched_keys == started_keys(journal)
     assert len(journal.lines()) == 4  # zero new lines: zero dispatches
 
@@ -178,6 +182,11 @@ def test_crash_window_is_redispatched_and_only_it(tmp_path: Path) -> None:
 
     assert [type(line).__name__ for line in journal.lines()][-1] == "StartedLine"  # n3 started, no result
 
+    crashed_node_dir = next(run_dir.root.glob("nodes/n3/*"))
+    assert (crashed_node_dir / "brief.md").exists()  # inputs are written BEFORE the started line
+    assert (crashed_node_dir / "input.json").exists()
+    assert not (crashed_node_dir / "record.json").exists()  # ... and the crash window is exactly this: no result
+
     resumed = Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=TickingClock())
     ran.clear()
     asyncio.run(program(resumed, ok("n3")))
@@ -202,12 +211,23 @@ def test_an_empty_or_junk_done_outcome_is_failed_agents_empty_result(tmp_path: P
             effort_used="-",
         )
 
-    for body in (empty, junk):
-        record = asyncio.run(dispatcher.dispatch(spec("e"), brief="b", input_obj={}, body=body))
+    for node_id, body in (("e_empty", empty), ("e_junk", junk)):
+        record = asyncio.run(dispatcher.dispatch(spec(node_id), brief="b", input_obj={}, body=body))
         assert record.status == NodeStatus.FAILED
         assert record.error is not None
         assert record.error.type == ErrorType.AGENTS_EMPTY_RESULT
         assert record.error.transient is False
+
+
+@pytest.mark.os_agnostic
+def test_a_dep_dispatched_before_what_it_depends_on_is_a_typed_kernel_error(tmp_path: Path) -> None:
+    dispatcher, *_ = make(tmp_path / "runs")
+
+    async def body(_: Path) -> NodeOutcome:
+        return done(n=1)
+
+    with pytest.raises(KernelError, match="not dispatched"):
+        asyncio.run(dispatcher.dispatch(spec("b", deps=["a"]), brief="b", input_obj={}, body=body))
 
 
 @pytest.mark.os_agnostic

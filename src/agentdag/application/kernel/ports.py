@@ -7,7 +7,8 @@ coordinator itself stays a deterministic program over typed records.
 
 Contents:
     * :class:`Clock` - the ONE seam the kernel reads wall-clock time through.
-    * :func:`stamp` - render a clock reading as the journal's timestamp format.
+    * :func:`format_stamp` - render an aware UTC datetime as the journal's timestamp format.
+    * :func:`stamp` - read a clock and render its reading the same way.
     * :class:`Journal` - the append-only, replayable log of what a run has done.
     * :class:`RunDir` - the run directory's on-disk layout (state, journal, decisions, node work areas).
     * :class:`RunLock` - the run directory's exclusive lock.
@@ -48,6 +49,7 @@ __all__ = [
     "RunLock",
     "Scope",
     "ScopeHandle",
+    "format_stamp",
     "stamp",
 ]
 
@@ -60,16 +62,42 @@ class Clock(Protocol):
         ...
 
 
-def stamp(clock: Clock) -> str:
-    """Render ``clock``'s current reading as the journal's timestamp format.
+def format_stamp(now: datetime) -> str:
+    """Render an aware UTC datetime as the journal's timestamp format.
+
+    A pure function over an already-read instant, so a caller that needs the SAME
+    reading for a journal line's ``at`` and for a duration's start reads the clock
+    once and formats that one reading, rather than reading it again here.
 
     Args:
-        clock: The clock to read.
+        now: The instant to render; must be tz-aware and in UTC.
 
     Returns:
         ``YYYY-MM-DDTHH:MM:SS+00:00`` - seconds precision, an explicit UTC offset,
         never a trailing ``Z`` (design 3.3, O19; matches the pattern journal lines
         validate their ``at`` field against).
+
+    Raises:
+        ValueError: ``now`` is naive, or not UTC.
+
+    Example:
+        >>> from datetime import datetime, timezone
+        >>> format_stamp(datetime(2026, 8, 17, 9, 12, 3, tzinfo=timezone.utc))
+        '2026-08-17T09:12:03+00:00'
+    """
+    if now.tzinfo != timezone.utc:
+        raise ValueError(f"clock reading is not UTC: {now!r}")
+    return now.isoformat(timespec="seconds")
+
+
+def stamp(clock: Clock) -> str:
+    """Read ``clock`` and render that one reading as the journal's timestamp format.
+
+    Args:
+        clock: The clock to read.
+
+    Returns:
+        See :func:`format_stamp`.
 
     Raises:
         ValueError: ``clock.now()`` is naive, or not UTC.
@@ -82,10 +110,7 @@ def stamp(clock: Clock) -> str:
         >>> stamp(_FixedClock())
         '2026-08-17T09:12:03+00:00'
     """
-    now = clock.now()
-    if now.tzinfo != timezone.utc:
-        raise ValueError(f"clock reading is not UTC: {now!r}")
-    return now.isoformat(timespec="seconds")
+    return format_stamp(clock.now())
 
 
 class Journal(Protocol):
