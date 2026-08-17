@@ -63,6 +63,17 @@ class FailingWork:
         return WorkResult(ok=False, error="refused")
 
 
+class RecordingWork:
+    """Writes down every dispatch, so a test can assert the graph never got that far."""
+
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
+    async def run(self, worktree: Path, brief: str, model: str, home: Path) -> WorkResult:
+        self.calls.append(worktree)
+        return WorkResult(ok=True, num_turns=1, input_tokens=10, output_tokens=5, cost_usd=0.0)
+
+
 class RecordingGit:
     """The real git adapter with every push it was asked to make written down.
 
@@ -411,6 +422,38 @@ def test_run_graph_refuses_two_origins_sharing_a_basename(tmp_path: Path) -> Non
                 store=store,
             )
         )
+
+
+def test_run_graph_refuses_a_non_scratch_origin_before_dispatching_any_work(tmp_path: Path) -> None:
+    """The push-target guard fires before the fleet's spend, not after it.
+
+    Checked only in ``apply``, this refusal arrives once every node has already run and
+    the operator has been asked to approve pushes that cannot happen.
+    """
+    real = make_repo(tmp_path, "notscratch", GREEN)
+    store = FsRunStore.create(tmp_path / "runs")
+    work = RecordingWork()
+    approver = NoApprover()
+
+    with pytest.raises(ValueError, match="not under"):
+        asyncio.run(
+            run_graph(
+                origins=[real],
+                brief="add a line",
+                model="sonnet",
+                parallel=1,
+                scratch_root=tmp_path / "scratch",
+                git=GitCli(),
+                gate=true_gate(tmp_path),
+                work=work,
+                approve=approver,
+                store=store,
+            )
+        )
+
+    assert work.calls == []  # no model spend
+    assert approver.prompts == []  # nobody asked to approve an impossible push
+    assert not (store.root / "tally.json").exists()
 
 
 def test_make_scratch_fleet_reuses_a_mirror_and_refresh_rebuilds_it(tmp_path: Path) -> None:

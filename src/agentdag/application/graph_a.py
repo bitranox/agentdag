@@ -91,6 +91,25 @@ def _refuse_duplicate_basenames(repos: list[Path]) -> None:
         seen[repo.name] = repo
 
 
+def _refuse_non_scratch_targets(repos: list[Path], scratch_root: Path) -> None:
+    """Refuse a fleet holding a repository that is not a scratch clone.
+
+    The baseline never writes to a real repository, so a target outside the scratch tree
+    is a hard stop rather than a skipped entry: the whole list is checked before anything
+    is done with any of it.
+
+    Args:
+        repos: The proposed push targets, in input order.
+        scratch_root: The scratch directory the run owns.
+
+    Raises:
+        ValueError: If an entry does not lie under ``<scratch_root>/origin``.
+    """
+    for repo in repos:
+        if not is_scratch_target(repo, scratch_root):
+            raise ValueError(f"{repo} is not under {scratch_root}/origin - a real repo is never a push target")
+
+
 def apply(intents: list[PushIntent], *, scratch_root: Path, git: GitPort, store: RunStore) -> list[str]:
     """Push every staged intent, once.
 
@@ -103,7 +122,9 @@ def apply(intents: list[PushIntent], *, scratch_root: Path, git: GitPort, store:
     the push forever.
 
     Every target is validated before anything is pushed, so a bad entry anywhere in the
-    list stops the whole apply rather than half of it.
+    list stops the whole apply rather than half of it. ``run_graph`` checks the same
+    thing on the way in, which is where an operator wants to hear it; this one is the
+    invariant, and it holds for a caller that reaches ``apply`` directly.
 
     Args:
         intents: The staged push intents.
@@ -118,9 +139,7 @@ def apply(intents: list[PushIntent], *, scratch_root: Path, git: GitPort, store:
         ValueError: If a target does not lie under ``<scratch_root>/origin``. A real
             repository is never a push target, so this is a hard stop, not a skip.
     """
-    for intent in intents:
-        if not is_scratch_target(intent.repo, scratch_root):
-            raise ValueError(f"{intent.repo} is not under {scratch_root}/origin - a real repo is never a push target")
+    _refuse_non_scratch_targets([intent.repo for intent in intents], scratch_root)
     return [_apply_one(intent, git=git, store=store) for intent in intents]
 
 
@@ -181,11 +200,16 @@ async def run_graph(
         red gate on one repository is a result, not a coordinator failure.
 
     Raises:
-        ValueError: If two origins share a basename; they would share one worktree.
+        ValueError: If two origins share a basename (they would share one worktree), or
+            if an origin is not a scratch clone. Both are checked before the first node
+            is dispatched: a target the run may not push to is worth nothing after a
+            fleet's worth of model spend and an approval prompt for a push that cannot
+            happen.
     """
     if not origins:
         return 0  # g_discover halts: nothing to migrate
     _refuse_duplicate_basenames(origins)
+    _refuse_non_scratch_targets(origins, scratch_root)
     semaphore = asyncio.Semaphore(parallel)
 
     async def branch(origin: Path) -> Tally:  # m_migrate@i

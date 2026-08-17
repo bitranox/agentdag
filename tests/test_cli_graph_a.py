@@ -21,7 +21,7 @@ from agentdag.adapters.cli.exit_codes import ExitCode
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
 from agentdag.adapters.graph_a.store_fs import FsRunStore
-from agentdag.application.graph_a_ports import GraphAWiring
+from agentdag.application.graph_a_ports import GraphAWiring, WorkPort
 from agentdag.composition import AppServices, build_production
 from agentdag.domain.graph_a import WorkResult
 
@@ -67,6 +67,17 @@ class CommittingWork:
         return WorkResult(ok=True, num_turns=1, input_tokens=10, output_tokens=5, cost_usd=0.0)
 
 
+class RecordingWork:
+    """Writes down every dispatch, so a test can assert the graph never got that far."""
+
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
+    async def run(self, worktree: Path, brief: str, model: str, home: Path) -> WorkResult:
+        self.calls.append(worktree)
+        return WorkResult(ok=True, num_turns=1, input_tokens=10, output_tokens=5, cost_usd=0.0)
+
+
 class YesApprover:
     """Stands in for the operator, who said yes."""
 
@@ -78,12 +89,14 @@ class YesApprover:
         return True
 
 
-def services_wiring(store: FsRunStore, approve: YesApprover, lock: Path) -> Callable[[], AppServices]:
+def services_wiring(
+    store: FsRunStore, approve: YesApprover, lock: Path, work: WorkPort | None = None
+) -> Callable[[], AppServices]:
     """Return a services factory whose ``wire_graph_a`` hands back these fakes."""
     wiring = GraphAWiring(
         git=GitCli(),
         gate=MakeTestGate(lock=lock, command=(sys.executable, "-c", "raise SystemExit(0)")),
-        work=CommittingWork(),
+        work=work or CommittingWork(),
         approve=approve,
         store=store,
     )
@@ -171,23 +184,32 @@ def test_when_graph_a_run_targets_a_non_scratch_repo_it_exits_invalid_argument(
     cli_runner: CliRunner,
     tmp_path: Path,
 ) -> None:
-    """A push target outside the scratch tree is a hard stop, not a skipped repository."""
+    """A push target outside the scratch tree is a hard stop, not a skipped repository.
+
+    It stops the run BEFORE anything is dispatched: the whole fleet's model spend and an
+    approval prompt for pushes that cannot happen would otherwise come first.
+    """
     real = make_repo(tmp_path / "real", "three")
     before = git("rev-parse", "main", cwd=real)
     repos = write_lines(tmp_path / "repos.txt", [str(real)])
     brief = tmp_path / "brief.md"
     brief.write_text("add a line\n")
     store = FsRunStore.create(tmp_path / "runs")
+    work = RecordingWork()
+    approver = YesApprover()
 
     result: Result = cli_runner.invoke(
         cli_mod.cli,
         ["graph-a", "run", str(repos), str(brief), "--scratch", str(tmp_path / "scratch"), "--parallel", "1"],
-        obj=services_wiring(store, YesApprover(), tmp_path / "gate.lock"),
+        obj=services_wiring(store, approver, tmp_path / "gate.lock", work),
     )
 
     assert result.exit_code == ExitCode.INVALID_ARGUMENT
     assert "is not under" in result.output
     assert git("rev-parse", "main", cwd=real) == before
+    assert work.calls == []  # refused before the work node ran
+    assert approver.prompts == []  # and before anybody was asked to approve
+    assert not (store.root / "tally.json").exists()
 
 
 @pytest.mark.os_agnostic
