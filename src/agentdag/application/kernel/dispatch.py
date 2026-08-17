@@ -83,6 +83,22 @@ class Dispatcher:
     records: dict[str, ResultRecord] = field(default_factory=dict[str, ResultRecord])
     dispatched_keys: list[str] = field(default_factory=list[str])
 
+    def reload_decisions(self) -> None:
+        """Re-fold :attr:`journal`'s lines and refresh ONLY :attr:`index`'s decisions.
+
+        Called by :meth:`~agentdag.application.kernel.context.Coordinator.fold_decisions`
+        right after appending a fresh ``approve_decision`` line, so that decision is
+        visible to the next ``approve`` call THIS run makes. Replaces only
+        ``index.decisions`` - ``results``, ``crash_window`` and ``key_sequence`` stay
+        exactly as :meth:`from_journal` built them at construction. Every dispatch
+        this run makes already goes through this one dispatcher (the module
+        docstring's "ONE path"), so nothing else in the journal can have changed
+        since construction; re-deriving those three fields from scratch here would
+        silently paper over that invariant if it were ever violated, instead of
+        leaving them untouched so a violation stays visible.
+        """
+        self.index.decisions = build_replay_index(self.journal.lines()).decisions
+
     @classmethod
     def from_journal(cls, *, journal: Journal, run_dir: RunDir, clock: Clock) -> Dispatcher:
         """Build a dispatcher whose replay index is folded from ``journal``'s current lines.

@@ -94,7 +94,7 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
     return co, run_dir
 
 
-def code(node_id: str, kind: Kind, deps: list[str] | None = None) -> NodeSpec:
+def code(node_id: str, kind: Kind, deps: list[str] | None = None, write_set: list[str] | None = None) -> NodeSpec:
     """Build a code-node spec these tests dispatch."""
     return NodeSpec(
         node_id=node_id,
@@ -102,8 +102,21 @@ def code(node_id: str, kind: Kind, deps: list[str] | None = None) -> NodeSpec:
         executor="code",
         isolation=Isolation.NONE,
         deps=deps or [],
+        write_set=write_set or [],
         deadline_s=60,
         budget=Budget(),
+    )
+
+
+def _done(**key_facts: object) -> NodeOutcome:
+    """A trivial DONE outcome for a cheap declaration dispatch (``reduce``'s ``fold``)."""
+    return NodeOutcome(
+        status=NodeStatus.DONE,
+        key_facts=key_facts,
+        typed_fields=list(key_facts),
+        executor_used="code",
+        model_used="-",
+        effort_used="-",
     )
 
 
@@ -116,6 +129,15 @@ def test_gate_records_the_exit_code_and_the_log(tmp_path: Path) -> None:
     assert r.status == NodeStatus.FAILED
     assert r.key_facts["rc"] == 3
     assert (rd.root / r.artefact_refs[0]).exists()
+
+
+@pytest.mark.os_agnostic
+def test_gate_records_done_on_exit_code_zero(tmp_path: Path) -> None:
+    co, rd = coordinator(tmp_path, gate_rc=0)
+
+    r = asyncio.run(co.gate(code("g_ok@1", Kind.GATE), argv=("make", "test"), cwd=rd.root))
+
+    assert r.status == NodeStatus.DONE
 
 
 @pytest.mark.os_agnostic
@@ -142,6 +164,7 @@ def test_map_contains_a_raising_branch_and_still_returns_every_other_record(tmp_
 
     assert [r.status for r in records] == [NodeStatus.DONE, NodeStatus.FAILED, NodeStatus.DONE]
     assert records[1].error is not None
+    assert records[1].node_id == "m@1"
 
 
 @pytest.mark.os_agnostic
@@ -170,6 +193,61 @@ def test_stage_writes_intents_before_apply_and_apply_is_idempotent(tmp_path: Pat
     assert performed == ["a.git-" + "a" * 40]
     assert a1.key_facts["outcomes"] == {"a.git-" + "a" * 40: "pushed"}
     assert a2.key_facts["outcomes"] == {"a.git-" + "a" * 40: "already-done"}
+
+
+@pytest.mark.os_agnostic
+def test_apply_with_a_raising_perform_yields_a_failed_record_and_no_marker(tmp_path: Path) -> None:
+    co, rd = coordinator(tmp_path)
+    intents = [PushIntent(repo=Path("/s/origin/b.git"), head_sha="b" * 40, dedup_key="b.git-" + "b" * 40)]
+    asyncio.run(co.stage(code("s2", Kind.STAGE), intents=intents, kind="push2"))
+
+    def boom(intent: HasDedupKey) -> str:
+        raise RuntimeError("push exploded")
+
+    r = asyncio.run(co.apply(code("ap3", Kind.APPLY, deps=["s2"]), intents=intents, kind="push2", perform=boom))
+
+    assert r.status == NodeStatus.FAILED
+    assert not rd.marker("push2", "b.git-" + "b" * 40).exists()
+
+
+@pytest.mark.os_agnostic
+def test_scan_treats_the_watched_nodes_own_bookkeeping_and_a_siblings_declared_write_set_as_allowed(
+    tmp_path: Path,
+) -> None:
+    co, rd = coordinator(tmp_path)
+
+    # A cheap declaration dispatch: reduce runs synchronously, through the same
+    # _dispatch path a real work/map branch uses, so declared_write_sets is filled
+    # exactly as it would be for a real dispatched node.
+    asyncio.run(co.reduce(code("w@1", Kind.REDUCE, write_set=["wt/a/**"]), fold=lambda: _done(ok=True)))
+    asyncio.run(co.reduce(code("w@2", Kind.REDUCE, write_set=["wt/b/**"]), fold=lambda: _done(ok=True)))
+
+    (rd.root / "wt/a").mkdir(parents=True)
+    (rd.root / "wt/a/existing.py").write_text("x")
+
+    before = co.snapshot()
+
+    (rd.root / "wt/a/f.py").write_text("new")  # (i) declared for w@1: allowed
+    (rd.root / "nodes/w@1/abcd1234").mkdir(parents=True)
+    (rd.root / "nodes/w@1/abcd1234/record.json").write_text("{}")  # (ii) node bookkeeping: allowed
+    (rd.root / "wt/b").mkdir(parents=True)
+    (rd.root / "wt/b/g.py").write_text("y")  # w@2's declared write set (a sibling under parallel > 1): allowed
+    (rd.root / "wt/other").mkdir(parents=True)
+    (rd.root / "wt/other/STRAY").write_text("nope")  # (iii) undeclared: a finding
+    (rd.root / "wt/a/existing.py").chmod(0o755)  # (iv) mode only: not a finding
+
+    r = asyncio.run(co.scan(code("g_scan@1", Kind.GATE), watched="w@1", before=before, write_set=["wt/a/**"]))
+
+    assert r.status == NodeStatus.FAILED
+    assert r.key_facts["stray"] == ["wt/other/STRAY"]
+
+    before2 = co.snapshot()
+    (rd.root / "wt/a/f2.py").write_text("z")
+
+    r2 = asyncio.run(co.scan(code("g_scan@2", Kind.GATE), watched="w@1", before=before2, write_set=["wt/a/**"]))
+
+    assert r2.status == NodeStatus.DONE
+    assert r2.key_facts["stray"] == []
 
 
 def payload(default: str = "hold") -> ApprovePayload:
@@ -208,6 +286,10 @@ def test_approve_suspends_without_a_decision_and_returns_it_when_one_is_journale
     assert result.decision == "approve"
     assert co2.interactions == 1
 
+    co2.fold_decisions()  # a second call, no new decision file: interactions must not double-count
+
+    assert co2.interactions == 1
+
 
 @pytest.mark.os_agnostic
 def test_approve_refuses_a_default_with_an_external_effect(tmp_path: Path) -> None:
@@ -215,3 +297,19 @@ def test_approve_refuses_a_default_with_an_external_effect(tmp_path: Path) -> No
 
     with pytest.raises(SpecRejected):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(default="approve")))
+
+
+@pytest.mark.os_agnostic
+def test_fold_decisions_ignores_a_reserved_cancel_file(tmp_path: Path) -> None:
+    co, rd = coordinator(tmp_path)
+    rd.decisions_dir.mkdir(parents=True, exist_ok=True)
+    (rd.decisions_dir / "a.cancel.json").write_text('{"node_id": "a", "reason": "stop"}')
+    (rd.decisions_dir / "_run.cancel.json").write_text('{"reason": "stop everything"}')
+
+    lines_before = len(co.dispatcher.journal.lines())
+
+    co.fold_decisions()  # must not raise, and must not journal or count either file
+
+    assert len(co.dispatcher.journal.lines()) == lines_before
+    assert co.interactions == 0
+    assert "a" not in co.dispatcher.index.decisions

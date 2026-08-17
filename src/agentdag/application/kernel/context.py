@@ -25,7 +25,6 @@ from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scan import diff_manifests, stray_paths
 from .ports import ExecutorRequest, stamp
-from .replay import build_replay_index
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -86,6 +85,11 @@ class Coordinator:
         parallel: How many map branches may run at once.
         interactions: How many HUMAN decisions this run folded in - a run-summary field.
         tokens_by_row: Tokens charged per model row so far, summed from every record.
+        declared_write_sets: Every dispatched spec's node id -> its ``write_set``, as
+            given at dispatch time (design C8) - what :meth:`scan` judges a write
+            against, so it never mistakes another node's own declared writes (a
+            sibling map branch, or the watched node's own dispatcher bookkeeping
+            under ``nodes/<node_id>/**``) for a stray one.
     """
 
     DEFAULT_PROMPT = (
@@ -127,6 +131,7 @@ class Coordinator:
         self.parallel = parallel
         self.interactions = 0
         self.tokens_by_row: dict[str, int] = {}
+        self.declared_write_sets: dict[str, tuple[str, ...]] = {}
 
     async def work(self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str = DEFAULT_PROMPT) -> ResultRecord:
         """Dispatch one work node: an executor, running ``brief`` against ``cwd``.
@@ -257,12 +262,28 @@ class Coordinator:
     async def scan(
         self, spec: NodeSpec, *, watched: str, before: Mapping[str, str], write_set: Sequence[str]
     ) -> ResultRecord:
-        """Dispatch the isolation-root scan as a gate node: writes outside the write set are the finding.
+        """Dispatch the isolation-root scan as a gate node: writes to an UNDECLARED path are the finding.
 
-        A stray write is judged against ``write_set`` plus this scan node's OWN directory
-        (``nodes/<node_id>/**``, where the dispatcher writes ``brief.md``/``input.json``
-        for the scan call itself) - never any OTHER node's directory, so a stray write
-        into another node's own bookkeeping area still counts as a finding.
+        A stray write is judged against every write set ANY spec in this run has
+        declared so far (:attr:`declared_write_sets`, filled by :meth:`_dispatch` for
+        every dispatched node - ``watched``'s own declared write set is already in
+        there, so passing ``write_set`` again is redundant but harmless), plus the
+        run-root's own housekeeping prefixes (``nodes/**``, ``manifest/**``,
+        ``intents/**``, ``artefacts/**``, ``done/**``). This is deliberately NOT
+        "``write_set`` plus the watched node's own dir": that older rule flagged the
+        watched node's OWN bookkeeping (``nodes/<watched>/<hash8>/{brief.md,input.json,
+        record.json,transcript.jsonl}``, written by the dispatcher/executor between
+        ``before`` and ``after``) as a stray write, and under ``parallel > 1`` it also
+        flagged a SIBLING branch's legitimate writes into its own declared worktree.
+
+        Limit: under ``parallel > 1``, a stray write that lands INSIDE a sibling's
+        declared region is not attributable by a content diff alone - the diff can see
+        that something changed there, but not which of the several concurrently
+        running nodes wrote it. That case is caught only at ``parallel=1``, or by the
+        process-isolation boundary a later milestone adds. A write to a path NOBODY
+        declared (a foreign worktree, ``$HOME`` inside the run root; ``/tmp`` is
+        outside the run root entirely, so it is never even in the manifest) is caught
+        either way, concurrency included.
 
         Args:
             spec: The scan node's spec.
@@ -274,7 +295,21 @@ class Coordinator:
             ``done`` when nothing strayed (``key_facts["stray"] == []``), else ``failed``
             with the stray paths in ``key_facts["stray"]``.
         """
-        allowed = [*write_set, f"nodes/{spec.node_id}/**"]
+        other_declared = [
+            pattern
+            for node_id, patterns in self.declared_write_sets.items()
+            if node_id != watched
+            for pattern in patterns
+        ]
+        allowed = [
+            *write_set,
+            *other_declared,
+            "nodes/**",
+            "manifest/**",
+            "intents/**",
+            "artefacts/**",
+            "done/**",
+        ]
         input_obj = {"watched": watched, "write_set": list(write_set)}
 
         async def body(node_dir: Path) -> NodeOutcome:
@@ -321,7 +356,10 @@ class Coordinator:
         Called by the workflow's ``fold`` (the callable passed to :meth:`reduce`) once
         it has judged every branch :meth:`map` returned - this method itself does not
         run inside a dispatch, so calling it more than once for the same ``map_id``
-        simply overwrites the manifest with the same content on a replay.
+        simply REWRITES the manifest; it is not idempotent content-wise, because
+        ``reduced_at`` is read from :attr:`clock` at THIS call, so a repeat call's
+        manifest carries a different ``reduced_at`` than the first even when every
+        branch is identical.
 
         Args:
             map_id: The map's id, as passed to :meth:`map`.
@@ -336,7 +374,9 @@ class Coordinator:
             "reduced_at": stamp(self.clock),
             "reducer_version": "1",
         }
-        return self.run_dir.write_atomic(f"manifest/{map_id}.json", canonical_json(payload))
+        target = self.run_dir.manifest_path(map_id)
+        rel = target.relative_to(self.run_dir.root).as_posix()
+        return self.run_dir.write_atomic(rel, canonical_json(payload))
 
     async def map(
         self, map_id: str, items: Sequence[_ItemT], body: Callable[[int, _ItemT], Awaitable[ResultRecord]]
@@ -422,6 +462,19 @@ class Coordinator:
         payload and RAISES - the coordinator process exits, and a later relaunch that has
         folded a decision (:meth:`fold_decisions`) is what makes this call return.
 
+        Two different ``payload.json`` locations are intentional, one per path below.
+        The SUSPEND path writes to ``nodes/<node_id>/<hash8(payload content
+        hash)>/payload.json`` BEFORE any dispatch happens - there IS no dispatch
+        node_dir yet at that point (the coordinator is about to raise and exit), so
+        this is the only stable, content-addressed place to put it. Once a decision
+        exists, the DONE path instead writes ``payload.json`` INSIDE the dispatch's
+        own body, into the record's REAL node_dir (``hash8`` of the call's journal
+        key, computed by :class:`~agentdag.application.kernel.dispatch.Dispatcher`
+        itself) - so ``artefact_refs`` names a file that actually exists under the
+        SAME hash as the record that references it, rather than the differently-hashed
+        directory the suspend path used (a payload-content hash, not a journal-key
+        hash - the two hashes agree only by coincidence).
+
         Args:
             spec: The approve node's spec.
             payload: What to show the human, including the option to fall back on.
@@ -437,15 +490,17 @@ class Coordinator:
         """
         _validate_default(payload)
         payload_text = payload.model_dump_json(indent=1)
-        payload_dir = self.run_dir.node_dir(spec.node_id, hash8(content_hash(payload_text)))
-        rel_payload = f"{payload_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
 
         line = self.dispatcher.index.decisions.get(spec.node_id)
         if line is None:
-            self.run_dir.write_atomic(rel_payload, payload_text)
+            suspend_dir = self.run_dir.node_dir(spec.node_id, hash8(content_hash(payload_text)))
+            rel_suspend_payload = f"{suspend_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
+            self.run_dir.write_atomic(rel_suspend_payload, payload_text)
             raise Suspended(spec.node_id)
 
         async def body(node_dir: Path) -> NodeOutcome:
+            rel_payload = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
+            self.run_dir.write_atomic(rel_payload, payload_text)
             return NodeOutcome(
                 status=NodeStatus.DONE,
                 artefact_refs=[rel_payload],
@@ -505,14 +560,22 @@ class Coordinator:
         return outcome
 
     def fold_decisions(self) -> None:
-        """Journal every decision file the replay index does not hold yet, then rebuild the index.
+        """Journal every decision file the replay index does not hold yet, then refresh the index.
 
         Called by ``run.py`` first thing on a relaunch (before dispatching anything), so
         every ``approve`` call in this run sees every decision recorded while the
         coordinator was not running. A decision already in the replay index is skipped -
         it was already folded by an earlier call, in this run or a previous one.
+
+        ``decisions/`` also holds two RESERVED files that are not decisions, both
+        written by M3: ``<node_id>.cancel.json`` (a per-node cancel) and
+        ``_run.cancel.json`` (a whole-run cancel). Both end ``.cancel.json``, so a
+        single suffix check skips either shape without trying to parse it as a
+        :class:`~agentdag.domain.models.Decision`.
         """
         for decision_path in sorted(self.run_dir.decisions_dir.glob("*.json")):
+            if decision_path.name.endswith(".cancel.json"):
+                continue
             node_id = decision_path.stem
             if node_id in self.dispatcher.index.decisions:
                 continue
@@ -531,7 +594,7 @@ class Coordinator:
             )
             if decision.token_id != "system":  # nosec B105  # noqa: S105 - a token_id VALUE, not a secret
                 self.interactions += 1
-        self.dispatcher.index = build_replay_index(self.dispatcher.journal.lines())
+        self.dispatcher.reload_decisions()
 
     async def _dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:
         """Dispatch through the run's dispatcher, then charge - the ONE path every primitive uses.
@@ -539,7 +602,9 @@ class Coordinator:
         A primitive on this coordinator must call THIS, never
         ``self.dispatcher.dispatch`` directly, so a record is charged exactly once
         whether it was just run or served from the journal on replay (:meth:`work`'s
-        resumed-run test proves the served branch is charged too).
+        resumed-run test proves the served branch is charged too), and so every
+        dispatched spec's write set is recorded in :attr:`declared_write_sets`
+        BEFORE the body runs - :meth:`scan` reads that map, never re-derives it.
 
         Args:
             spec: The node being dispatched.
@@ -551,6 +616,7 @@ class Coordinator:
             The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
             returned, already charged.
         """
+        self.declared_write_sets[spec.node_id] = tuple(spec.write_set)
         record = await self.dispatcher.dispatch(spec, brief=brief, input_obj=input_obj, body=body)
         self._charge(record)
         return record

@@ -63,6 +63,10 @@ def stray_paths(changed: Sequence[str], *, allowed: Sequence[str]) -> list[str]:
         allowed: The write-set globs (plus any node-dir and run-root exception
             prefixes a caller adds) a node may legitimately touch. A pattern
             ending in ``/**`` covers the directory itself and everything under it.
+            A plain ``*`` already spans ``/`` too - :mod:`fnmatch` gives ``*`` no
+            special meaning for the path separator - so ``wt/a/*`` alone grants
+            the WHOLE subtree under ``wt/a/``, not just its immediate children,
+            the same as ``wt/a/**`` would.
 
     Returns:
         Every path in ``changed`` matched by NONE of ``allowed`` - the isolation
