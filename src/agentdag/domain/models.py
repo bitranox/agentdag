@@ -159,6 +159,11 @@ class NodeSpec(BaseModel):
     ``continuation`` is the 3.8 successor counter. ``compact`` asks a long serial
     work node's executor to compress its own history at ``trigger_tokens``, keeping
     the last ``keep_last_n`` turns/messages (design 2.1, section 4 "compact").
+
+    ``brief_ref`` is filled by the dispatcher before the spec is written anywhere
+    (``nodes/<node_id>/<hash8>/brief.md``, Task 12) - it is empty only in memory,
+    while a workflow module still holds a spec it authored. The schema's
+    ``minLength: 1`` binds a spec once it is on disk, not this in-memory default.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

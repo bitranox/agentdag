@@ -85,6 +85,7 @@ def test_journal_key_ignores_limits_and_display_but_not_inputs() -> None:
         spec(model="opus"),
         spec(write_set=["wt/other/**"]),
         spec(isolation=Isolation.DIR),
+        spec(compact={"trigger_tokens": 1000, "keep_last_n": 4}),
     ):
         assert (
             journal_key(
@@ -109,6 +110,15 @@ def test_journal_key_ignores_limits_and_display_but_not_inputs() -> None:
             prefix=prefix_hash([record(status=NodeStatus.FAILED)]),
         )
         != k
+    )
+    # deps is NOT identity on its own: a dependency's contribution is its RESULT, carried
+    # by `prefix` (each record_hash already embeds its own node_id) - so two specs naming
+    # different deps but hashed against the SAME prefix must collide, not diverge.
+    same_prefix = prefix_hash([record()])
+    assert journal_key(
+        spec(deps=["a"]), brief_hash=content_hash("brief"), input_hash=content_hash("input"), prefix=same_prefix
+    ) == journal_key(
+        spec(deps=["b"]), brief_hash=content_hash("brief"), input_hash=content_hash("input"), prefix=same_prefix
     )
 
 

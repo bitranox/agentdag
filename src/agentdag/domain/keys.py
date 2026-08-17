@@ -37,13 +37,17 @@ _IDENTITY_FIELDS = (
     "write_set",
     "requires",
     "isolation",
-    "deps",
     "attempt",
     "continuation",
+    "compact",
 )
 """The :class:`~agentdag.domain.models.NodeSpec` fields that IDENTIFY a dispatch (design 3.2).
 ``deadline_s``, ``budget`` (limits) and ``brief_ref`` (a path, not an input) are deliberately
-excluded: changing them does not make it a different call."""
+excluded: changing them does not make it a different call. ``deps`` (the raw node-id list) is
+also excluded: a dependency's contribution to identity is its RESULT, already carried by
+``prefix`` (each dependency's :func:`record_hash` embeds its own ``node_id``), so including the
+raw id list here would double-count it. ``compact`` IS identity: two specs differing only in
+``compact.trigger_tokens``/``keep_last_n`` are different calls and must not share a key."""
 
 
 def canonical_json(value: Any) -> str:
