@@ -4,6 +4,12 @@ Each node gets its own client, its own working tree and its own home directory, 
 ``setting_sources=[]`` keeps the coordinator's own project settings out of the node's
 context - the node is told what to do by the brief alone.
 
+The SDK MERGES :attr:`~claude_agent_sdk.ClaudeAgentOptions.env` into the inherited
+process environment rather than replacing it, so overriding ``HOME`` costs the child
+nothing else. What it does cost is the login: the CLI reads that from
+``$HOME/.claude/.credentials.json``, and an empty home answers "Not logged in". The
+credential is therefore linked into the node's home, and nothing else is.
+
 This is the one genuinely external edge in graph A, so it is not unit-tested: an
 exception here is turned into a failed node, never allowed past the branch, and the
 attended scratch-fleet run is what exercises it.
@@ -14,14 +20,11 @@ Contents:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
 
 from ...domain.graph_a import WorkResult
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 __all__ = ["ClaudeSdkWork"]
 
@@ -29,6 +32,7 @@ _PROMPT = (
     "Apply the change described in your system prompt to this repository. Commit with a clear message. Do not push."
 )
 _TOOLS = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
+_CREDENTIALS_REL = Path(".claude") / ".credentials.json"
 
 
 class ClaudeSdkWork:
@@ -55,6 +59,7 @@ class ClaudeSdkWork:
         Returns:
             A typed record of the run: never the node's prose.
         """
+        _link_credentials_into(home)
         options = ClaudeAgentOptions(
             cwd=str(worktree),
             system_prompt=brief,
@@ -76,6 +81,29 @@ class ClaudeSdkWork:
             # network does, it becomes a failed NODE, never a failed run.
             return WorkResult(ok=False, error=repr(exc))
         return WorkResult(ok=False, error="no ResultMessage")
+
+
+def _link_credentials_into(home: Path) -> None:
+    """Make the operator's Claude login reachable from an isolated agent home.
+
+    A symlink is preferred so the secret stays in exactly one place; where the platform
+    refuses one (Windows without the symlink privilege) a copy is made instead and
+    restricted to the owner. Absent credentials are left alone: the node then reports a
+    failed run with the CLI's own message, which is the honest outcome.
+
+    Args:
+        home: The node's home directory.
+    """
+    source = Path.home() / _CREDENTIALS_REL
+    link = home / _CREDENTIALS_REL
+    if link.is_symlink() or link.exists() or not source.is_file():
+        return
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(source)
+    except OSError:
+        link.write_bytes(source.read_bytes())
+        link.chmod(0o600)
 
 
 def _to_result(message: ResultMessage) -> WorkResult:
