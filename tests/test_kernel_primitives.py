@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,8 +20,9 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
-from agentdag.application.kernel.context import Coordinator
+from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
+from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.domain.errors import SpecRejected, Suspended
 from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.models import (
@@ -33,26 +35,23 @@ from agentdag.domain.models import (
     NodeOutcome,
     NodeSpec,
     NodeStatus,
+    ResultRecord,
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from agentdag.application.kernel.ports import ResolvedRow
+    from collections.abc import Mapping
 
 
 class OneRowPolicy:
     """A one-row tier policy: every spec resolves to the sonnet row on the claude executor."""
 
-    version = "sha256:test"
-    max_turns = 5
-    deny_bash = ("git push",)
-    tokens_per_row = {"sonnet": 10}
+    version: str = "sha256:test"
+    max_turns: int = 5
+    deny_bash: tuple[str, ...] = ("git push",)
+    tokens_per_row: Mapping[str, int] = {"sonnet": 10}
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
-        from agentdag.application.kernel.ports import ResolvedRow
-
         return ResolvedRow(alias="sonnet", executor="claude")
 
 
@@ -69,7 +68,12 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
     Returns:
         The coordinator, and the run directory it was built over.
     """
-    run_dir = rd if rd is not None else FsRunDir.create(tmp_path / "runs", "r1")
+    if rd is not None:
+        run_dir = rd
+    else:
+        base = tmp_path / "runs"
+        base.mkdir(parents=True, exist_ok=True)
+        run_dir = FsRunDir.create(base, "r1")
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     co = Coordinator(
         run_id="r1",
@@ -79,7 +83,9 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
         run_dir=run_dir,
         clock=UtcClock(),
         executors={},
-        gate_port=MakeTestGate(lock=tmp_path / "gate.lock", command=(sys.executable, "-c", f"raise SystemExit({gate_rc})")),
+        gate_port=MakeTestGate(
+            lock=tmp_path / "gate.lock", command=(sys.executable, "-c", f"raise SystemExit({gate_rc})")
+        ),
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
@@ -90,7 +96,15 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
 
 def code(node_id: str, kind: Kind, deps: list[str] | None = None) -> NodeSpec:
     """Build a code-node spec these tests dispatch."""
-    return NodeSpec(node_id=node_id, kind=kind, executor="code", isolation=Isolation.NONE, deps=deps or [], deadline_s=60, budget=Budget())
+    return NodeSpec(
+        node_id=node_id,
+        kind=kind,
+        executor="code",
+        isolation=Isolation.NONE,
+        deps=deps or [],
+        deadline_s=60,
+        budget=Budget(),
+    )
 
 
 @pytest.mark.os_agnostic
@@ -108,12 +122,12 @@ def test_gate_records_the_exit_code_and_the_log(tmp_path: Path) -> None:
 def test_map_contains_a_raising_branch_and_still_returns_every_other_record(tmp_path: Path) -> None:
     co, _ = coordinator(tmp_path)
 
-    async def body(i: int, item: str) -> object:
+    async def body(i: int, item: str) -> ResultRecord:
         if item == "bad":
             raise RuntimeError("clone exploded")
         return await co.reduce(
             code(f"m@{i}", Kind.REDUCE),
-            fold=lambda i=i: NodeOutcome(
+            fold=lambda: NodeOutcome(
                 status=NodeStatus.DONE,
                 key_facts={"i": i},
                 typed_fields=["i"],
@@ -124,7 +138,7 @@ def test_map_contains_a_raising_branch_and_still_returns_every_other_record(tmp_
             ),
         )
 
-    records = asyncio.run(co.map("m", ["a", "bad", "c"], body))  # type: ignore[arg-type]
+    records = asyncio.run(co.map("m", ["a", "bad", "c"], body))
 
     assert [r.status for r in records] == [NodeStatus.DONE, NodeStatus.FAILED, NodeStatus.DONE]
     assert records[1].error is not None
@@ -133,7 +147,7 @@ def test_map_contains_a_raising_branch_and_still_returns_every_other_record(tmp_
 @pytest.mark.os_agnostic
 def test_stage_writes_intents_before_apply_and_apply_is_idempotent(tmp_path: Path) -> None:
     co, rd = coordinator(tmp_path)
-    intents = [PushIntent(repo=rd.root / "s/origin/a.git", head_sha="a" * 40, dedup_key="a.git-" + "a" * 40)]
+    intents = [PushIntent(repo=Path("/s/origin/a.git"), head_sha="a" * 40, dedup_key="a.git-" + "a" * 40)]
 
     s = asyncio.run(co.stage(code("s", Kind.STAGE), intents=intents, kind="push"))
 
@@ -142,12 +156,16 @@ def test_stage_writes_intents_before_apply_and_apply_is_idempotent(tmp_path: Pat
 
     performed: list[str] = []
 
-    def do_push(it: PushIntent) -> str:
-        performed.append(it.dedup_key)
+    def push_and_record(intent: HasDedupKey) -> str:
+        performed.append(intent.dedup_key)
         return "pushed"
 
-    a1 = asyncio.run(co.apply(code("ap", Kind.APPLY, deps=["s"]), intents=intents, kind="push", perform=do_push))  # type: ignore[arg-type]
-    a2 = asyncio.run(co.apply(code("ap2", Kind.APPLY, deps=["s"]), intents=intents, kind="push", perform=do_push))  # type: ignore[arg-type]
+    a1 = asyncio.run(
+        co.apply(code("ap", Kind.APPLY, deps=["s"]), intents=intents, kind="push", perform=push_and_record)
+    )
+    a2 = asyncio.run(
+        co.apply(code("ap2", Kind.APPLY, deps=["s"]), intents=intents, kind="push", perform=push_and_record)
+    )
 
     assert performed == ["a.git-" + "a" * 40]
     assert a1.key_facts["outcomes"] == {"a.git-" + "a" * 40: "pushed"}

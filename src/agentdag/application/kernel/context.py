@@ -13,26 +13,59 @@ Contents:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeVar
+import asyncio
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from ...domain.errors import KernelError
-from .ports import ExecutorRequest
+from pydantic import BaseModel
+
+from ...domain.errors import KernelError, SpecRejected, Suspended
+from ...domain.journal import ApproveDecisionLine
+from ...domain.keys import canonical_json, content_hash, hash8
+from ...domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
+from ...domain.scan import diff_manifests, stray_paths
+from .ports import ExecutorRequest, stamp
+from .replay import build_replay_index
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
     from pathlib import Path
     from typing import Any
 
-    from pydantic import BaseModel
-
-    from ...domain.models import ApprovePayload, Decision, NodeOutcome, NodeSpec, ResultRecord
+    from ...domain.models import ApprovePayload, NodeSpec
     from ..graph_a_ports import GatePort, GitPort
     from .dispatch import Body, Dispatcher
     from .ports import Clock, Executor, IsolationScanner, Policy, RunDir
 
-__all__ = ["Coordinator"]
+__all__ = ["BranchRef", "Coordinator", "HasDedupKey"]
 
 _ItemT = TypeVar("_ItemT")
+
+
+class HasDedupKey(Protocol):
+    """What makes performing an intent idempotent: the one field ``stage``/``apply`` read (design 3.4).
+
+    Every real intent (e.g. :class:`~agentdag.domain.graph_a.PushIntent`) is a pydantic
+    model that already has this field; the protocol exists only so ``intent.dedup_key``
+    type-checks under pyright strict without widening :meth:`Coordinator.stage` or
+    :meth:`Coordinator.apply` to know about any one workflow's concrete intent type.
+    """
+
+    dedup_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class BranchRef:
+    """One map branch's identity in a written manifest (``manifest/<map_id>.json``, design 3.1).
+
+    Built by the workflow's ``fold`` (the code a :meth:`Coordinator.reduce` call runs) from
+    the records :meth:`Coordinator.map` returned, then handed to :meth:`Coordinator.write_manifest`.
+    """
+
+    index: int
+    node_id: str
+    key: str
+    status: str
 
 
 class Coordinator:
@@ -172,94 +205,333 @@ class Coordinator:
     async def gate(self, spec: NodeSpec, *, argv: Sequence[str], cwd: Path) -> ResultRecord:
         """Dispatch a mechanical gate: run ``argv`` in ``cwd`` and record its exit code.
 
-        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
-        :meth:`_dispatch`.
+        ``argv`` is what a workflow calls this gate for - the log line, the record's key -
+        but the command actually run is whatever :attr:`gate_port` was built with; a
+        different ``argv`` still makes a different journal key even if the port's own
+        command did not change, because ``argv`` is part of ``input_obj``.
+
+        Args:
+            spec: The gate node's spec.
+            argv: The gate command, recorded for the key and the brief; not itself what
+                :attr:`gate_port` runs (the port carries its own fixed command).
+            cwd: The working directory the gate runs in; recorded in the key as a path
+                relative to the run root, like :meth:`work`'s ``cwd``.
+
+        Returns:
+            The gate's record: ``done`` on exit code 0, else ``failed``, with the exit
+            code in ``key_facts["rc"]`` and the gate's combined output at
+            ``artefact_refs[0]``.
 
         Raises:
-            NotImplementedError: Task 13 fills this primitive.
+            KernelError: ``cwd`` sits outside the run root.
         """
-        raise NotImplementedError("Task 13")
+        try:
+            cwd_rel = cwd.relative_to(self.run_dir.root).as_posix()
+        except ValueError as exc:
+            raise KernelError(
+                f"cwd {cwd} of node {spec.node_id!r} is outside the run root {self.run_dir.root}"
+            ) from exc
+        input_obj = {"argv": list(argv), "cwd": cwd_rel}
 
-    async def scan(self, spec: NodeSpec, *, watched: str) -> ResultRecord:
+        async def body(node_dir: Path) -> NodeOutcome:
+            log = node_dir / "gate.log"
+            rc = self.gate_port.run(cwd, log)
+            rel_log = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/gate.log"
+            # A red gate is an ordinary FAILED outcome, not an executor error - the mechanical
+            # step ran to completion and reported a real answer, so `error` stays unset. The
+            # result-record schema (schemas/result-record.schema.json) does not list `error`
+            # under `required`, so `failed` with no `error` is schema-valid; `rc` in `key_facts`
+            # is what a workflow branches on.
+            return NodeOutcome(
+                status=NodeStatus.DONE if rc == 0 else NodeStatus.FAILED,
+                artefact_refs=[rel_log],
+                key_facts={"rc": rc},
+                typed_fields=["rc"],
+                executor_used="code",
+                model_used="-",
+                effort_used="-",
+            )
+
+        return await self._dispatch(spec, brief=f"gate: {' '.join(argv)}", input_obj=input_obj, body=body)
+
+    async def scan(
+        self, spec: NodeSpec, *, watched: str, before: Mapping[str, str], write_set: Sequence[str]
+    ) -> ResultRecord:
         """Dispatch the isolation-root scan as a gate node: writes outside the write set are the finding.
 
-        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
-        :meth:`_dispatch`.
+        A stray write is judged against ``write_set`` plus this scan node's OWN directory
+        (``nodes/<node_id>/**``, where the dispatcher writes ``brief.md``/``input.json``
+        for the scan call itself) - never any OTHER node's directory, so a stray write
+        into another node's own bookkeeping area still counts as a finding.
 
-        Raises:
-            NotImplementedError: Task 13 fills this primitive. It also widens this
-                signature to take the ``before`` manifest from :meth:`snapshot` and the
-                write set the diff is judged against.
+        Args:
+            spec: The scan node's spec.
+            watched: What this scan is watching, for the brief and the log; free text.
+            before: The manifest :meth:`snapshot` took before the watched node ran.
+            write_set: The globs the watched node was allowed to write to.
+
+        Returns:
+            ``done`` when nothing strayed (``key_facts["stray"] == []``), else ``failed``
+            with the stray paths in ``key_facts["stray"]``.
         """
-        raise NotImplementedError("Task 13")
+        allowed = [*write_set, f"nodes/{spec.node_id}/**"]
+        input_obj = {"watched": watched, "write_set": list(write_set)}
 
-    async def reduce(self, spec: NodeSpec, *, fold: Callable[[], NodeOutcome]) -> ResultRecord:
+        async def body(node_dir: Path) -> NodeOutcome:
+            after = dict(self.scanner.snapshot(self.run_dir.root))
+            stray = stray_paths(diff_manifests(dict(before), after), allowed=allowed)
+            return NodeOutcome(
+                status=NodeStatus.DONE if not stray else NodeStatus.FAILED,
+                key_facts={"stray": stray},
+                typed_fields=["stray"],
+                executor_used="code",
+                model_used="-",
+                effort_used="-",
+            )
+
+        return await self._dispatch(spec, brief=f"scan: {watched}", input_obj=input_obj, body=body)
+
+    async def reduce(
+        self, spec: NodeSpec, *, fold: Callable[[], NodeOutcome], input_obj: Mapping[str, object] | None = None
+    ) -> ResultRecord:
         """Dispatch a code fold: ``fold`` runs as the node's body and its outcome is the record.
 
-        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
-        :meth:`_dispatch`.
+        Args:
+            spec: The reduce node's spec.
+            fold: Builds this node's outcome; runs synchronously as the dispatch body,
+                so whatever it raises becomes a ``failed`` record like any other body.
+            input_obj: Extra identity fields a caller wants folded into this call's key
+                (e.g. the content hash of a repos file a fleet was built from) on top of
+                ``{"kind": "reduce"}``, which is always present.
 
-        Raises:
-            NotImplementedError: Task 13 fills this primitive.
+        Returns:
+            The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
+            wrote for ``fold``'s outcome.
         """
-        raise NotImplementedError("Task 13")
+        merged_input: dict[str, object] = {"kind": "reduce", **(dict(input_obj) if input_obj is not None else {})}
+
+        async def body(node_dir: Path) -> NodeOutcome:
+            return fold()
+
+        return await self._dispatch(spec, brief=f"reduce: {spec.node_id}", input_obj=merged_input, body=body)
+
+    def write_manifest(self, map_id: str, branches: Sequence[BranchRef]) -> Path:
+        """Write ``manifest/<map_id>.json``: the map a reduce closes (design 3.1).
+
+        Called by the workflow's ``fold`` (the callable passed to :meth:`reduce`) once
+        it has judged every branch :meth:`map` returned - this method itself does not
+        run inside a dispatch, so calling it more than once for the same ``map_id``
+        simply overwrites the manifest with the same content on a replay.
+
+        Args:
+            map_id: The map's id, as passed to :meth:`map`.
+            branches: Each branch's index, node id, key and status, in branch order.
+
+        Returns:
+            The path written, as :meth:`~agentdag.application.kernel.ports.RunDir.write_atomic` returns it.
+        """
+        payload = {
+            "map_id": map_id,
+            "branches": [{"index": b.index, "node_id": b.node_id, "key": b.key, "status": b.status} for b in branches],
+            "reduced_at": stamp(self.clock),
+            "reducer_version": "1",
+        }
+        return self.run_dir.write_atomic(f"manifest/{map_id}.json", canonical_json(payload))
 
     async def map(
         self, map_id: str, items: Sequence[_ItemT], body: Callable[[int, _ItemT], Awaitable[ResultRecord]]
     ) -> list[ResultRecord]:
         """Fan out over ``items``, at most :attr:`parallel` at once; one raising branch never kills the run.
 
-        Task 13 fills this primitive; each branch's own dispatch (inside ``body``) still
-        goes through :meth:`_dispatch`, so a raising branch never bypasses charging.
+        Each branch's own dispatch (inside ``body``) still goes through :meth:`_dispatch`,
+        so a raising branch never bypasses charging - only a branch that raises OUTSIDE any
+        dispatch call (a clone that blew up before it ever reached ``work``/``gate``/...)
+        gets the synthetic record built here, and that one is NEVER journaled: it names no
+        real dispatch, so there is nothing for a later replay to serve back.
+
+        Args:
+            map_id: This map's id; a raising branch's synthetic node id is ``f"{map_id}@{i}"``.
+            items: One item per branch, in the order results are returned.
+            body: Runs one branch; whatever it dispatches is charged and journaled normally.
+
+        Returns:
+            One record per item, in item order - a raising branch's record included.
 
         Raises:
-            NotImplementedError: Task 13 fills this primitive.
+            BaseException: a branch raised something that is not an ``Exception`` (a
+                ``SystemExit``, a ``KeyboardInterrupt``, an ``asyncio.CancelledError``) -
+                the coordinator process itself going away, exactly like
+                :func:`~agentdag.application.kernel.dispatch._run_body`'s own rule, so it
+                is never swallowed into a synthetic record.
         """
-        raise NotImplementedError("Task 13")
+        semaphore = asyncio.Semaphore(self.parallel)
 
-    async def stage(self, spec: NodeSpec, *, intents: Sequence[BaseModel], kind: str) -> ResultRecord:
+        async def bounded(index: int, item: _ItemT) -> ResultRecord:
+            async with semaphore:
+                return await body(index, item)
+
+        outcomes = await asyncio.gather(*(bounded(i, item) for i, item in enumerate(items)), return_exceptions=True)
+        return [_branch_record(map_id, index, outcome) for index, outcome in enumerate(outcomes)]
+
+    async def stage(self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str) -> ResultRecord:
         """Write every intent under ``intents/<kind>/`` BEFORE anything leaves the process (design 3.4).
 
-        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
-        :meth:`_dispatch`.
+        Args:
+            spec: The stage node's spec.
+            intents: What to stage; each intent's :attr:`~HasDedupKey.dedup_key` names
+                its file, ``intents/<kind>/<dedup_key>.json``.
+            kind: The intent kind - the subdirectory every intent of this stage lands in.
+
+        Returns:
+            ``done``, with ``key_facts`` carrying the staged count and every dedup key.
+        """
+        keys = [intent.dedup_key for intent in intents]
+        input_obj = {"kind": kind, "keys": keys}
+
+        async def body(node_dir: Path) -> NodeOutcome:
+            refs = [self._write_intent(kind, intent) for intent in intents]
+            return NodeOutcome(
+                status=NodeStatus.DONE,
+                artefact_refs=refs,
+                key_facts={"count": len(intents), "keys": keys},
+                typed_fields=["count", "keys"],
+                executor_used="code",
+                model_used="-",
+                effort_used="-",
+            )
+
+        return await self._dispatch(spec, brief=f"stage: {kind}", input_obj=input_obj, body=body)
+
+    def _write_intent(self, kind: str, intent: HasDedupKey) -> str:
+        """Write one intent's JSON to ``intents/<kind>/<dedup_key>.json``; return the path, run-relative.
 
         Raises:
-            NotImplementedError: Task 13 fills this primitive.
+            KernelError: ``intent`` is not a pydantic model - every real intent this
+                kernel stages is one, and only a model gives a stable JSON rendering.
         """
-        raise NotImplementedError("Task 13")
+        if not isinstance(intent, BaseModel):
+            raise KernelError(f"intent for kind {kind!r} is not a pydantic model: {type(intent)!r}")
+        rel = f"intents/{kind}/{intent.dedup_key}.json"
+        self.run_dir.write_atomic(rel, intent.model_dump_json(indent=1))
+        return rel
 
     async def approve(self, spec: NodeSpec, *, payload: ApprovePayload) -> Decision:
         """Return the recorded decision, or write the payload and suspend the run.
 
-        Task 13 fills this primitive; once a decision is recorded, resolving it dispatches
-        a node through :meth:`_dispatch` like every other primitive.
+        Never blocks and never polls: with no decision recorded yet, this writes the
+        payload and RAISES - the coordinator process exits, and a later relaunch that has
+        folded a decision (:meth:`fold_decisions`) is what makes this call return.
+
+        Args:
+            spec: The approve node's spec.
+            payload: What to show the human, including the option to fall back on.
+
+        Returns:
+            The recorded :class:`~agentdag.domain.models.Decision`, once one exists.
 
         Raises:
-            NotImplementedError: Task 13 fills this primitive.
-            Suspended: (once filled) no decision is recorded yet, so the coordinator exits.
+            SpecRejected: ``payload.default`` does not name an option whose
+                ``effect == "none"`` - a default the coordinator could apply unattended
+                must never itself leave the process (design 2.4).
+            Suspended: no decision is recorded yet for ``spec.node_id``.
         """
-        raise NotImplementedError("Task 13")
+        _validate_default(payload)
+        payload_text = payload.model_dump_json(indent=1)
+        payload_dir = self.run_dir.node_dir(spec.node_id, hash8(content_hash(payload_text)))
+        rel_payload = f"{payload_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
+
+        line = self.dispatcher.index.decisions.get(spec.node_id)
+        if line is None:
+            self.run_dir.write_atomic(rel_payload, payload_text)
+            raise Suspended(spec.node_id)
+
+        async def body(node_dir: Path) -> NodeOutcome:
+            return NodeOutcome(
+                status=NodeStatus.DONE,
+                artefact_refs=[rel_payload],
+                key_facts={"decision": line.decision},
+                typed_fields=["decision"],
+                executor_used="code",
+                model_used="-",
+                effort_used="-",
+            )
+
+        await self._dispatch(
+            spec, brief=f"approve: {spec.node_id}", input_obj={"payload_hash": content_hash(payload_text)}, body=body
+        )
+        return Decision(
+            node_id=line.node_id, decision=line.decision, reason=line.reason, by=line.by, token_id=line.token_id
+        )
 
     async def apply(
-        self, spec: NodeSpec, *, intents: Sequence[BaseModel], kind: str, perform: Callable[[BaseModel], str]
+        self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: Callable[[HasDedupKey], str]
     ) -> ResultRecord:
         """Perform each staged intent exactly once, guarded by its ``done/<kind>/<key>`` marker.
 
-        Task 13 fills this primitive; like :meth:`work`, its dispatch goes through
-        :meth:`_dispatch`.
+        Args:
+            spec: The apply node's spec.
+            intents: The same intents a prior :meth:`stage` call staged.
+            kind: The intent kind; also the marker subdirectory, ``done/<kind>/``.
+            perform: Does the one real effect (e.g. a push); called at most once per
+                dedup key, ever, across every apply call that ever names that key.
 
-        Raises:
-            NotImplementedError: Task 13 fills this primitive.
+        Returns:
+            ``done``, with ``key_facts["outcomes"]`` mapping each dedup key to either
+            what ``perform`` returned, or ``"already-done"`` when its marker existed.
         """
-        raise NotImplementedError("Task 13")
+        keys = [intent.dedup_key for intent in intents]
+        input_obj = {"kind": kind, "keys": keys}
+
+        async def body(node_dir: Path) -> NodeOutcome:
+            outcomes = {intent.dedup_key: self._apply_one(kind, intent, perform) for intent in intents}
+            return NodeOutcome(
+                status=NodeStatus.DONE,
+                key_facts={"outcomes": outcomes},
+                typed_fields=["outcomes"],
+                executor_used="code",
+                model_used="-",
+                effort_used="-",
+            )
+
+        return await self._dispatch(spec, brief=f"apply: {kind}", input_obj=input_obj, body=body)
+
+    def _apply_one(self, kind: str, intent: HasDedupKey, perform: Callable[[HasDedupKey], str]) -> str:
+        """Perform ``intent`` exactly once, guarded by its ``done/<kind>/<dedup_key>`` marker."""
+        marker = self.run_dir.marker(kind, intent.dedup_key)
+        if marker.exists():
+            return "already-done"
+        outcome = perform(intent)
+        marker.touch()
+        return outcome
 
     def fold_decisions(self) -> None:
         """Journal every decision file the replay index does not hold yet, then rebuild the index.
 
-        Raises:
-            NotImplementedError: Task 13 fills this primitive.
+        Called by ``run.py`` first thing on a relaunch (before dispatching anything), so
+        every ``approve`` call in this run sees every decision recorded while the
+        coordinator was not running. A decision already in the replay index is skipped -
+        it was already folded by an earlier call, in this run or a previous one.
         """
-        raise NotImplementedError("Task 13")
+        for decision_path in sorted(self.run_dir.decisions_dir.glob("*.json")):
+            node_id = decision_path.stem
+            if node_id in self.dispatcher.index.decisions:
+                continue
+            decision = self.run_dir.read_decision(node_id)
+            if decision is None:
+                continue
+            self.dispatcher.journal.append(
+                ApproveDecisionLine(
+                    node_id=decision.node_id,
+                    decision=decision.decision,
+                    reason=decision.reason,
+                    by=decision.by,
+                    token_id=decision.token_id,
+                    at=stamp(self.clock),
+                )
+            )
+            if decision.token_id != "system":  # nosec B105  # noqa: S105 - a token_id VALUE, not a secret
+                self.interactions += 1
+        self.dispatcher.index = build_replay_index(self.dispatcher.journal.lines())
 
     async def _dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:
         """Dispatch through the run's dispatcher, then charge - the ONE path every primitive uses.
@@ -291,3 +563,50 @@ class Coordinator:
         """
         for row_name, charged in record.charged_tokens.items():
             self.tokens_by_row[row_name] = self.tokens_by_row.get(row_name, 0) + charged
+
+
+def _validate_default(payload: ApprovePayload) -> None:
+    """Refuse a payload whose default option is not ``effect == "none"`` (design 2.4).
+
+    Raises:
+        SpecRejected: ``payload.default`` names no option in ``payload.options``, or
+            names one whose effect is ``"external"``.
+    """
+    options_by_id = {option.id: option for option in payload.options}
+    default_option = options_by_id.get(payload.default)
+    if default_option is None or default_option.effect != "none":
+        raise SpecRejected(f"approve default {payload.default!r} does not name a no-effect option")
+
+
+def _branch_record(map_id: str, index: int, outcome: ResultRecord | BaseException) -> ResultRecord:
+    """Turn one :func:`asyncio.gather` outcome into its record: pass a real one through, wrap a raise.
+
+    Args:
+        map_id: The map this branch belongs to; names the synthetic node id.
+        index: The branch's position in the item sequence :meth:`Coordinator.map` was given.
+        outcome: What ``asyncio.gather(..., return_exceptions=True)`` collected for this branch.
+
+    Returns:
+        ``outcome`` unchanged when it is a real record; otherwise a synthetic ``failed``
+        record for ``f"{map_id}@{index}"``, never journaled - it names no real dispatch.
+
+    Raises:
+        BaseException: ``outcome`` is a ``BaseException`` that is not an ``Exception``
+            (a ``SystemExit``, a ``KeyboardInterrupt``, an ``asyncio.CancelledError``) -
+            the coordinator process itself going away, re-raised rather than swallowed.
+    """
+    if not isinstance(outcome, BaseException):
+        return outcome
+    if not isinstance(outcome, Exception):
+        raise outcome
+    return ResultRecord(
+        node_id=f"{map_id}@{index}",
+        attempt=0,
+        status=NodeStatus.FAILED,
+        input_hash="-",
+        duration_s=0.0,
+        executor_used="-",
+        model_used="-",
+        effort_used="-",
+        error=NodeError(type=ErrorType.EXECUTOR_ERROR, message=f"{type(outcome).__name__}: {outcome}", transient=True),
+    )
