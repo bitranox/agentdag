@@ -150,6 +150,11 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 "src/agentdag/adapters/config/*.py" = ["PLR0913"]
 "src/agentdag/adapters/email/*.py" = ["PLR0913"]
 "src/agentdag/adapters/memory/*.py" = ["PLR0913"]
+# Kernel errors (task 9): LockHeld, WorkflowNotFound, SpecRejected, RunRefused and Suspended are
+# the coordinator design's own binding names - every later kernel task (journal, dispatch,
+# primitives, executor, CLI) imports them verbatim, so an Error-suffix rename would break every
+# consumer's import.
+"src/agentdag/domain/errors.py" = ["N818"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
