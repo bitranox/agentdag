@@ -65,17 +65,25 @@ def cli_graph_a() -> None:
     show_default=True,
     help="Directory the scratch fleet is built in.",
 )
-def cli_graph_a_scratch(real_repos_file: Path, scratch: Path) -> None:
+@option(
+    "--refresh",
+    "refresh",
+    is_flag=True,
+    default=False,
+    help="Delete an existing mirror and re-read the real repository instead of reusing it.",
+)
+def cli_graph_a_scratch(*, real_repos_file: Path, scratch: Path, refresh: bool) -> None:
     """Mirror every repository listed in REAL_REPOS_FILE into the scratch fleet.
 
     The real repositories are read once, by ``git clone --mirror``, and are never
     written. The resulting list of mirrors is written to ``<scratch>/REPOS.txt``,
-    which is the input of ``graph-a run``.
+    which is the input of ``graph-a run``. An existing mirror is reused as it stands,
+    however stale; ``--refresh`` throws it away and mirrors again.
     """
     with lib_log_rich.runtime.bind(job_id="cli-graph-a-scratch", extra={"command": "graph-a scratch"}):
         real_repos = parse_repos_text(real_repos_file.read_text())
         logger.info("Building the scratch fleet", extra={"repos": len(real_repos), "scratch": str(scratch)})
-        origins = make_scratch_fleet(real_repos, scratch, GitCli())
+        origins = make_scratch_fleet(real_repos, scratch, GitCli(), refresh=refresh)
         listing = scratch / REPOS_FILE_NAME
         listing.write_text("".join(f"{origin}\n" for origin in origins))
         safe_console.echo(f"{len(origins)} scratch origins under {scratch / 'origin'}")
@@ -101,7 +109,14 @@ def cli_graph_a_scratch(real_repos_file: Path, scratch: Path) -> None:
     show_default=True,
     help="Directory holding one timestamped directory per run.",
 )
-@option("--parallel", type=int, default=2, show_default=True, help="How many branches may run at once.")
+@option(
+    "--parallel",
+    # min=1: the value becomes an asyncio.Semaphore, and Semaphore(0) never admits anybody.
+    type=click.IntRange(min=1),
+    default=2,
+    show_default=True,
+    help="How many branches may run at once.",
+)
 @option("--model", type=str, default="sonnet", show_default=True, help="Model each work node runs on.")
 @option(
     "--lock",

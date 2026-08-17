@@ -18,6 +18,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - `WireGraphA` port on `AppServices`, so the CLI receives the graph A wiring by injection
   instead of importing the composition root.
 - `typed_click.argument`, completing the strictly-typed rich-click decorator facade.
+- Per-node credential isolation: each work node runs against its own `CLAUDE_CONFIG_DIR`
+  under the run store, holding its own copy of the login created owner-only in one step, so a
+  node's token refresh lands in that copy and never in the operator's file, and parallel nodes
+  never share one credential file.
+- `agentdag graph-a scratch --refresh`, which deletes an existing scratch mirror and re-reads
+  the real repository instead of silently reusing a stale one.
 
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
