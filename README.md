@@ -13,7 +13,10 @@
 [![security: bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://github.com/PyCQA/bandit)
 
 
-`agentdag` is a coordinator that runs a small graph of AI-agent nodes with bounded spend, mechanical gates and journaled state. This is the pristine project scaffold; it currently carries the bitranox CLI template's own CLI, configuration and logging demo commands, which later tasks replace with the DAG kernel.
+`agentdag` is a coordinator for small graphs of AI-agent nodes. It dispatches each node, gates what the node produced on something mechanical, and branches only on typed records, never on prose an agent wrote.
+
+The graph A baseline is the first coordinator graph it ships (0.0.1 on PyPI is the scaffold alone): a fleet migration that gives every repository its own worktree, its own agent and its own gate run, and pushes what passed to scratch clones after one console approval. It deliberately has no journal, no token cap and no unattended approve. Those are later milestones, and what their absence costs is what this baseline is for. See [Graph A: fleet migration](#graph-a-fleet-migration) below.
+
 - CLI entry point styled with rich-click (rich output + click ergonomics).
 - Layered configuration system with lib_layered_config (defaults → app → host → user → .env → env).
 - Rich structured logging with lib_log_rich (console, journald, eventlog, Graylog/GELF).
@@ -130,6 +133,10 @@ The CLI leverages [rich-click](https://github.com/ewels/rich-click) so help outp
 ### Available Commands
 
 ```bash
+# Graph A fleet migration (see the section below)
+agentdag graph-a scratch real-repos.txt
+agentdag graph-a run /tmp/agentdag-scratch/REPOS.txt brief.md
+
 # Display package information
 agentdag info
 
@@ -205,7 +212,53 @@ uvx agentdag info
 
 ---
 
-### Email Sending
+## Graph A: fleet migration
+
+Graph A applies one brief to a fleet of repositories: each repository gets its own worktree, its own agent node and its own gate run, and only what passed the gate is offered for pushing.
+
+Two commands, in the order they are used:
+
+```bash
+# 1. read the real repositories once and mirror each into the scratch fleet
+agentdag graph-a scratch real-repos.txt --scratch /tmp/agentdag-scratch
+
+# a mirror that already exists is reused as it stands, however stale;
+# --refresh throws it away and reads the real repository again
+agentdag graph-a scratch real-repos.txt --refresh
+
+# 2. run the graph over the mirrors that step wrote
+agentdag graph-a run /tmp/agentdag-scratch/REPOS.txt brief.md --parallel 2 --model sonnet
+```
+
+`real-repos.txt` holds one path per line; blank lines and lines starting with `#` are ignored. `brief.md` is the change to make, handed to every node as its system prompt. `graph-a scratch` writes the list of mirrors to `<scratch>/REPOS.txt`, which is what `graph-a run` reads.
+
+`graph-a run` prints the run directory as it starts and the path of its `tally.json` when it finishes. That file holds one row per repository, with the gate's exit code and the node's turn and token counts.
+
+### The scratch-clone rule
+
+A run never writes to a real repository.
+
+- `graph-a scratch` reads each real repository exactly once, with `git clone --mirror`.
+- The bare clones under `<scratch>/origin/` are the only push targets a run accepts. A target anywhere else stops the run before the first node is dispatched, and the same check guards the push step itself.
+- Neither clone keeps a remote: the mirror does not point back at the real repository and the worktree does not point at the mirror, so a node's reflex `git push` has nowhere to go. This is not containment. A node with unrestricted Bash can still push to any path it can name, and that needs a sandbox, which the baseline does not have.
+
+### The gate runs one at a time
+
+The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. All gate runs are serialised by one host-wide lock file (`--lock`, default `<tmp>/agentdag-bmk-tool-env.lock`), because the build tool environment is shared across the whole host and two gates running at once rebuild it under each other. `--parallel` therefore bounds the agent nodes, not the gates.
+
+### One credential per node
+
+Each node runs with `CLAUDE_CONFIG_DIR` pointing at its own directory under the run store, holding its own copy of `~/.claude/.credentials.json`, created owner-only. A node's token refresh lands in that copy rather than in the operator's file, and parallel nodes never share one credential file. An operator with no credential file is not an error: the node then fails with the CLI's own "not logged in" message.
+
+### What the baseline does not have
+
+- No journal. The run store is a fresh timestamped directory per invocation, so a crash after the nodes have run and before the approval throws that work away.
+- No token or spend cap. `max_turns` per node is a turn count, not a budget.
+- No unattended approve. The run blocks on a console confirmation, so it cannot run on a schedule or in CI.
+
+---
+
+## Email Sending
 
 The application includes email sending capabilities via [btx-lib-mail](https://pypi.org/project/btx-lib-mail/), supporting both simple notifications and rich HTML emails with attachments.
 
