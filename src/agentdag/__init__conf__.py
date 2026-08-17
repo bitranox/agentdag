@@ -40,7 +40,7 @@ name = "agentdag"
 #: Human-readable summary shown in CLI help output.
 title = "Coordinator that runs a small graph of AI-agent nodes with bounded spend, mechanical gates and journaled state"
 #: Current release version pulled from ``pyproject.toml`` by automation.
-version = "0.0.1b1"
+version = "0.0.1"
 #: Repository homepage presented to users.
 homepage = "https://github.com/bitranox/agentdag"
 #: Author attribution surfaced in CLI output.

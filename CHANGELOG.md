@@ -6,7 +6,7 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 
 ## [Unreleased]
 
-## [0.0.1b1] - 2026-08-17
+## [0.0.1] - 2026-08-17
 
 Beta name claim on PyPI: the package scaffold only, no coordinator yet.
 

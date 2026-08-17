@@ -1,6 +1,6 @@
 [project]
 name = "agentdag"
-version = "0.0.1b1"
+version = "0.0.1"
 description = "Coordinator that runs a small graph of AI-agent nodes with bounded spend, mechanical gates and journaled state"
 readme = "README.md"
 requires-python = ">=3.12"
