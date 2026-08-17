@@ -9,6 +9,7 @@ The executable is resolved to an absolute path once, because Windows'
 environment handed to the child, so a bare name can fail to resolve there.
 
 Contents:
+    * :func:`clear_readonly_and_retry` - the read-only retry a mirror removal needs.
     * :class:`GitCli` - the port implementation.
 """
 
@@ -23,7 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-__all__ = ["GitCli"]
+__all__ = ["GitCli", "clear_readonly_and_retry"]
 
 GIT_EXECUTABLE = shutil.which("git") or "git"
 """Absolute path of the git CLI, falling back to the bare name so a missing git
@@ -52,7 +53,7 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.
     )
 
 
-def _clear_readonly_and_retry(function: Callable[..., object], path: str, excinfo: BaseException) -> None:
+def clear_readonly_and_retry(function: Callable[..., object], path: str, excinfo: BaseException) -> None:
     """Make one entry writable and run the removal step that failed on it again.
 
     git writes everything under ``objects/`` read-only, and Windows refuses to unlink a
@@ -91,7 +92,7 @@ class GitCli:
         because what makes it awkward is git's own doing: it writes ``objects/**``
         read-only, which Windows will not unlink.
         """
-        shutil.rmtree(dest, onexc=_clear_readonly_and_retry)
+        shutil.rmtree(dest, onexc=clear_readonly_and_retry)
 
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest`` with a committer identity.

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
-from agentdag.adapters.graph_a.git_cli import GitCli, _clear_readonly_and_retry
+from agentdag.adapters.graph_a.git_cli import GitCli, clear_readonly_and_retry
 from agentdag.adapters.graph_a.store_fs import FsRunStore
 from agentdag.adapters.graph_a.work_claude_sdk import ClaudeSdkWork
 
@@ -143,7 +143,7 @@ def test_the_read_only_retry_makes_the_entry_writable_and_calls_the_failed_step_
     entry.chmod(stat.S_IRUSR)
     retried: list[str] = []
 
-    _clear_readonly_and_retry(retried.append, str(entry), PermissionError("denied"))
+    clear_readonly_and_retry(retried.append, str(entry), PermissionError("denied"))
 
     assert retried == [str(entry)]
     assert entry.stat().st_mode & stat.S_IWUSR  # 0o400 before, so this is the chmod, not the arrangement
@@ -152,7 +152,7 @@ def test_the_read_only_retry_makes_the_entry_writable_and_calls_the_failed_step_
 def test_the_read_only_retry_lets_a_failure_the_read_only_bit_cannot_explain_through(tmp_path: Path) -> None:
     """Only a read-only entry is handled; anything else propagates rather than vanishing."""
     with pytest.raises(FileNotFoundError):
-        _clear_readonly_and_retry(os.unlink, str(tmp_path / "never-existed"), FileNotFoundError("gone"))
+        clear_readonly_and_retry(os.unlink, str(tmp_path / "never-existed"), FileNotFoundError("gone"))
 
 
 def test_git_cli_ref_sha_reads_the_ref_not_the_object_store(tmp_path: Path) -> None:
