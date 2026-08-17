@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/approve-payload.schema.json",
+  "title": "agentdag approve payload",
+  "description": "The typed suspend payload an approve node writes before the coordinator process EXITS (design 3.4). A decision is one of this payload's options[].id values - that id IS the decision value the journal records (C4). The decision itself arrives as decisions/<node_id>.json, written temp+rename by the CLI or the server, and the coordinator folds it into the journal on relaunch.",
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What is being decided, in plain text for a human reviewer."
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The approve node this payload belongs to."
+    },
+    "artefact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Artefact references to review before deciding."
+    },
+    "options": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The option's stable identifier. It IS the value a decision carries: run.approve's `decision` and the approve_decision journal line record exactly this string (design 3.4, C4)."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable label for this option."
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "none",
+              "external"
+            ],
+            "description": "Whether choosing this option causes an EXTERNAL side effect (a push, a publish, a mail). Validation refuses a payload whose `default` names an option with effect 'external', because the default is applied unattended by the deadline owner (design 2.4, 3.4); and a gate offering any external option needs a human identity distinct from the run's starter (O21)."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "effect"
+        ],
+        "additionalProperties": false
+      },
+      "description": "The choices offered to the reviewer."
+    },
+    "default": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The option id applied if no decision arrives by decide_by. The SERVER or a timer unit applies it and journals `by: system, reason: deadline` - the coordinator process has exited and cannot (design 3.4, O18/M21). Must name an option whose effect is 'none'."
+    },
+    "decide_by": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC deadline for the decision, with an explicit +00:00 offset (design 3.3).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\+00:00$"
+    },
+    "workflow": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the workflow this run executes."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The run this approve payload belongs to."
+    }
+  },
+  "required": [
+    "text",
+    "node_id",
+    "artefact_refs",
+    "options",
+    "default",
+    "decide_by",
+    "workflow",
+    "run_id"
+  ],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "text": "Publish release v2.3.0 to PyPI and tag the repo?",
+      "node_id": "publish_release_gate",
+      "artefact_refs": [
+        "artefacts/draft_release_notes/CHANGELOG_v2.3.0.md",
+        "artefacts/build_wheel/dist/agentdag-2.3.0-py3-none-any.whl"
+      ],
+      "options": [
+        {
+          "id": "approve",
+          "label": "Publish v2.3.0 now",
+          "effect": "external"
+        },
+        {
+          "id": "reject",
+          "label": "Hold this release",
+          "effect": "none"
+        }
+      ],
+      "default": "reject",
+      "decide_by": "2026-08-18T09:00:00+00:00",
+      "workflow": "release-cascade",
+      "run_id": "run-2026-08-17-001"
+    }
+  ]
+}

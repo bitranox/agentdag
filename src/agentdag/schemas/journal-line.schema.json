@@ -1,0 +1,929 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/journal-line.schema.json",
+  "title": "agentdag journal line",
+  "description": "One line of journal.jsonl, one JSON object per line (design 3.1, 3.2, 3.4). audit.jsonl uses the SAME line shapes and is a superset copy: journal.jsonl holds the replay-affecting lines, audit.jsonl holds those plus the ones replay ignores (resource_probe, and policy_change if that loop is ever built) - the two defs below marked 'audit only' never appear in journal.jsonl. Every line carries an `at`: an ISO-8601 UTC timestamp with an explicit +00:00 offset that the SCHEDULER produced and journaled, and all ordering and every deadline comparison uses that field rather than file order (design 3.3, O19). Coordinator code has time.time/datetime.now/etc shadowed by stubs that raise NondeterministicCallError, so it never calls the clock itself.",
+  "$defs": {
+    "scheduler_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp with an explicit +00:00 offset, produced by the scheduler and never by coordinator code calling the clock (3.3). A trailing 'Z' is not used: it is rejected by datetime.fromisoformat before Python 3.11 and hides a local-time producer.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\+00:00$"
+    },
+    "started_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "started"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The content-addressed journal key: v2:sha256(prefix_hash + NUL + canonical(spec)) (3.2)."
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "node_id",
+        "attempt",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "result_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "result"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The same journal key as the started line this result completes (3.2)."
+        },
+        "record": {
+          "$ref": "result-record.schema.json"
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "record",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "spec_rejected_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "spec_rejected"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Why whole-spec validation rejected this planner-emitted node (2.4)."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "reasons",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "clamp_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "clamp"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the node-spec field the coordinator clamped, e.g. model, effort, budget, deadline_s, knowledge (2.3 rule 4)."
+        },
+        "requested": {
+          "description": "The value the planner requested for `field`, before clamping. Type follows `field` (string for model/effort, number for deadline_s, object for budget, array of strings for knowledge), left open here since the design does not pin one type.",
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "array"
+          ]
+        },
+        "applied": {
+          "description": "The value the coordinator actually applied for `field`, after clamping. Same open type as `requested`.",
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "array"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the clamp fired, e.g. 'remaining run budget below top-tier floor' (2.3 rule 4)."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "field",
+        "requested",
+        "applied",
+        "reason",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "escalate_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "escalate"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from_rank": {
+          "type": "integer",
+          "description": "The tier-policy rank of the row the failed attempt ran at (2.3 rule 2)."
+        },
+        "to_rank": {
+          "type": "integer",
+          "description": "The tier-policy rank of the next higher row listing the same role (2.3 rule 2, 5)."
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The new attempt number this escalation dispatches at (2.1, 2.3 rule 5)."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "from_rank",
+        "to_rank",
+        "attempt",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "approve_decision_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "approve_decision"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One of the approve payload's options[].id values, validated against that payload (design 3.4, C4). The example payload offers approve/reject, but a three-option gate records its own ids here."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Free text from the decider, journaled and never branched on. 'deadline' when the default was applied by the deadline owner."
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identity of the human, client or timer that made the decision, DERIVED from the authenticated token and never taken from the caller's payload (design 3.4, O20). 'system' when the deadline owner applied the payload's default."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        },
+        "token_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The bearer token identity that authorised this decision. Duplicate detection happens under the run lock, so a second decision for the same node is refused even from a concurrent caller (design 9, 'approve auth')."
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "decision",
+        "reason",
+        "by",
+        "at",
+        "token_id"
+      ],
+      "additionalProperties": false,
+      "description": "Written by the coordinator when it folds in decisions/<node_id>.json on relaunch (design 3.4). The server and the CLI never append to the journal themselves."
+    },
+    "budget_refused_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "budget_refused"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "row": {
+          "type": "string",
+          "description": "the model row whose cap would be exceeded by the next dispatch (design 3.4; tokens are the capped quantity, decided 2026-08-17)"
+        },
+        "spent_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "tokens charged so far on that row (measured, or the full node budget where the executor reports none)"
+        },
+        "cap_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "the run's token cap for that row, or the token-equivalent of the derived-USD cap when cap_kind is derived_usd"
+        },
+        "cap_kind": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "derived_usd"
+          ]
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "row",
+        "spent_tokens",
+        "cap_tokens",
+        "cap_kind",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "cancel_line": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "cancel"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "True only once the stop is VERIFIED by an EMPTY CGROUP - not a PID check, and never the stop verb's own return value (3.4)."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "node_id",
+        "verified",
+        "at"
+      ],
+      "additionalProperties": false,
+      "description": "The VERIFIED end of a cancel: written once the run scope's cgroup is empty (design 3.4)."
+    },
+    "run_started_line": {
+      "type": "object",
+      "description": "The first line of a run: who started it, with what (design 3.4, O20).",
+      "properties": {
+        "event": {
+          "const": "run_started"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "object",
+          "description": "The validated args the run was started with."
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The verified token identity that started the run; also stored as state.json's owner."
+        },
+        "token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "description": "hash of the policy table in force when the run started (3.5)."
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "run_id",
+        "workflow",
+        "args",
+        "by",
+        "token_id",
+        "policy_version",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "resume_line": {
+      "type": "object",
+      "description": "A relaunch of the coordinator against this run dir, after an approve decision, a crash or a restart (design 3.4, O20).",
+      "properties": {
+        "event": {
+          "const": "resume"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "crash",
+            "restart",
+            "manual"
+          ]
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "run_id",
+        "reason",
+        "by",
+        "token_id",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "cancel_requested_line": {
+      "type": "object",
+      "description": "A cancel INTENT. run.cancel returns at once with status cancelling after WRITING this as a file under decisions/ (never a journal append); the coordinator, still alive, folds it into the journal at its next node boundary or lock wait, and the verified cancel line follows later (design 3.1, 3.4, O25).",
+      "properties": {
+        "event": {
+          "const": "cancel_requested"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The node running when the cancel arrived, or null for a whole-run cancel."
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "run_id",
+        "node_id",
+        "by",
+        "token_id",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "usage_reconciled_line": {
+      "type": "object",
+      "description": "A SECOND line correcting what a dispatch was charged, once an executor that reports no usage in its result publishes it elsewhere (Codex's rollout log, design 5/6, M5). The result line's record is never mutated: replay of the same journal reaches the same numbers by reading both lines in order.",
+      "properties": {
+        "event": {
+          "const": "usage_reconciled"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The journal key of the dispatch being reconciled."
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the corrected numbers came from, e.g. 'codex-rollout:<threadId>'."
+        },
+        "charged_before": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "charged_after": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "node_id",
+        "source",
+        "charged_before",
+        "charged_after",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "run_summary_line": {
+      "type": "object",
+      "description": "Written once at the end of a run: the drift signals of design 3.5, computed by the coordinator from records.",
+      "properties": {
+        "event": {
+          "const": "run_summary"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "description": "hash of the policy table in force for this run"
+        },
+        "overhead_fraction": {
+          "type": "object",
+          "properties": {
+            "median": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "p90": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "median",
+            "p90"
+          ],
+          "additionalProperties": false,
+          "description": "(first-turn input tokens MINUS the brief and the assembled input) / total node tokens, over claude rows only; an executor reporting no tokens drops out (design 3.5, M13)."
+        },
+        "citation_coverage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {
+                "type": "string"
+              },
+              "fanin": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "coverage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "input_window_fraction": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "node_id",
+              "fanin",
+              "coverage",
+              "input_window_fraction"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Per synth: the share of input record ids it named. An INSTRUCTION-COMPLIANCE signal, not a measure of attention - a synth can echo the ids it was handed - so it is read only alongside a content spot-check (design 3.5, M12)."
+        },
+        "journal_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "replay_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "wall time of the last replay of this run, null if never resumed"
+        },
+        "records_per_node": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_by_row": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        },
+        "journal_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Journal line count at the end of the run. A SIGNAL only: there is no Continue-As-New in this design (design 3.4, E9)."
+        },
+        "human_interactions": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many times a human had to answer something during the run - the number the build is judged against (build-plan-high.md)."
+        }
+      },
+      "required": [
+        "event",
+        "run_id",
+        "policy_version",
+        "overhead_fraction",
+        "citation_coverage",
+        "journal_bytes",
+        "replay_seconds",
+        "records_per_node",
+        "tokens_by_row",
+        "at",
+        "journal_lines",
+        "human_interactions"
+      ],
+      "additionalProperties": false
+    },
+    "policy_change_line": {
+      "type": "object",
+      "description": "AUDIT ONLY, and LATER: a change to the policy table (thresholds, tier rows). The review loop that would emit it is cut until ten real runs exist (design 3.5, E11); the table is git-tracked, root-owned and not writable by the coordinator user, so a change is a human edit to a tracked file.",
+      "properties": {
+        "event": {
+          "const": "policy_change"
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from": {},
+        "to": {},
+        "evidence_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        },
+        "policy_version_before": {
+          "type": "string"
+        },
+        "policy_version_after": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "field",
+        "from",
+        "to",
+        "evidence_run_ids",
+        "by",
+        "at",
+        "policy_version_before",
+        "policy_version_after"
+      ],
+      "additionalProperties": false
+    },
+    "resource_probe_line": {
+      "type": "object",
+      "description": "AUDIT ONLY: a live availability reading for a registered resource (design 3.6), never part of a node key and never in journal.jsonl. The probe rows themselves are later than slice 1.",
+      "properties": {
+        "event": {
+          "const": "resource_probe"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "available": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capacity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unit": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "resource",
+        "available",
+        "capacity",
+        "unit",
+        "at"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/started_line"
+    },
+    {
+      "$ref": "#/$defs/result_line"
+    },
+    {
+      "$ref": "#/$defs/run_started_line"
+    },
+    {
+      "$ref": "#/$defs/resume_line"
+    },
+    {
+      "$ref": "#/$defs/spec_rejected_line"
+    },
+    {
+      "$ref": "#/$defs/clamp_line"
+    },
+    {
+      "$ref": "#/$defs/escalate_line"
+    },
+    {
+      "$ref": "#/$defs/approve_decision_line"
+    },
+    {
+      "$ref": "#/$defs/budget_refused_line"
+    },
+    {
+      "$ref": "#/$defs/usage_reconciled_line"
+    },
+    {
+      "$ref": "#/$defs/cancel_requested_line"
+    },
+    {
+      "$ref": "#/$defs/cancel_line"
+    },
+    {
+      "$ref": "#/$defs/run_summary_line"
+    },
+    {
+      "$ref": "#/$defs/policy_change_line"
+    },
+    {
+      "$ref": "#/$defs/resource_probe_line"
+    }
+  ],
+  "examples": [
+    {
+      "event": "run_started",
+      "run_id": "run_2026-08-17_a1",
+      "workflow": "A-fleet-migration",
+      "args": {
+        "seam": "transport"
+      },
+      "by": "rnowotny1966@gmail.com",
+      "token_id": "tok_9f2c",
+      "policy_version": "sha256:3f9a...c210",
+      "at": "2026-08-17T09:11:58+00:00"
+    },
+    {
+      "event": "started",
+      "key": "v2:sha256:71efdc615e8d0fc982701850d21ac019ac7d7a571050e4cd6c4c8faf551a2042",
+      "node_id": "extract_vendor_ids",
+      "attempt": 0,
+      "at": "2026-08-17T09:12:03+00:00"
+    },
+    {
+      "event": "result",
+      "key": "v2:sha256:71efdc615e8d0fc982701850d21ac019ac7d7a571050e4cd6c4c8faf551a2042",
+      "record": {
+        "node_id": "extract_vendor_ids",
+        "attempt": 0,
+        "status": "done",
+        "artefact_refs": [
+          "artefacts/extract_vendor_ids/vendor_ids.json"
+        ],
+        "key_facts": {
+          "vendor_count": 42
+        },
+        "tokens": {
+          "in": 8200,
+          "out": 640,
+          "cache_read": 5100,
+          "reasoning": 0
+        },
+        "charged_tokens": {
+          "sonnet": 8840
+        },
+        "cost_usd": 0.0173,
+        "duration_s": 21.4,
+        "executor_used": "claude",
+        "model_used": "sonnet",
+        "effort_used": "medium",
+        "knowledge_used": [
+          {
+            "dataset": "docs:pci-ids",
+            "content_hash": "sha256:9f2c...ab01"
+          }
+        ],
+        "input_hash": "v2:sha256:71efdc615e8d0fc982701850d21ac019ac7d7a571050e4cd6c4c8faf551a2042",
+        "typed_fields": [
+          "vendor_count"
+        ]
+      },
+      "at": "2026-08-17T09:12:41+00:00"
+    },
+    {
+      "event": "spec_rejected",
+      "node_id": "publish_release",
+      "reasons": [
+        "kind 'apply' is never planner-emitted (2.4)"
+      ],
+      "at": "2026-08-17T09:31:02+00:00"
+    },
+    {
+      "event": "clamp",
+      "node_id": "plan_next_wave",
+      "field": "model",
+      "requested": "fable",
+      "applied": "opus",
+      "reason": "remaining run budget below top-tier floor (2.3 rule 4)",
+      "at": "2026-08-17T09:33:18+00:00"
+    },
+    {
+      "event": "escalate",
+      "node_id": "review_wave2_branch3",
+      "from_rank": 10,
+      "to_rank": 20,
+      "attempt": 1,
+      "at": "2026-08-17T09:44:07+00:00"
+    },
+    {
+      "event": "approve_decision",
+      "node_id": "publish_release_gate",
+      "decision": "approve",
+      "reason": "release notes look correct",
+      "by": "rnowotny1966@gmail.com",
+      "at": "2026-08-17T10:04:11+00:00",
+      "token_id": "tok_9f2c"
+    },
+    {
+      "event": "budget_refused",
+      "node_id": "map_review_wave3",
+      "row": "sonnet",
+      "spent_tokens": 1980000,
+      "cap_tokens": 2000000,
+      "cap_kind": "tokens",
+      "at": "2026-08-17T11:02:55+00:00"
+    },
+    {
+      "event": "cancel",
+      "node_id": "long_running_scan",
+      "verified": true,
+      "at": "2026-08-17T10:09:47+00:00"
+    },
+    {
+      "event": "run_summary",
+      "run_id": "run_2026-08-17_a1",
+      "policy_version": "sha256:3f9a...c210",
+      "overhead_fraction": {
+        "median": 0.31,
+        "p90": 0.58
+      },
+      "citation_coverage": [
+        {
+          "node_id": "s_verdict",
+          "fanin": 12,
+          "coverage": 0.92,
+          "input_window_fraction": 0.44
+        }
+      ],
+      "journal_bytes": 184320,
+      "replay_seconds": 1.8,
+      "records_per_node": 2.1,
+      "tokens_by_row": {
+        "sonnet": 1450000,
+        "opus": 210000
+      },
+      "at": "2026-08-17T09:12:03+00:00",
+      "journal_lines": 412,
+      "human_interactions": 1
+    },
+    {
+      "event": "policy_change",
+      "field": "reduce_tree_fanin",
+      "from": 12,
+      "to": 10,
+      "evidence_run_ids": [
+        "run_2026-08-17_a1",
+        "run_2026-08-18_c2"
+      ],
+      "by": "rn",
+      "at": "2026-08-17T09:12:03+00:00",
+      "policy_version_before": "sha256:3f9a...c210",
+      "policy_version_after": "sha256:77b1...0e4d"
+    },
+    {
+      "event": "resource_probe",
+      "resource": "gpu0-vram",
+      "available": 9.5,
+      "capacity": 24,
+      "unit": "GiB",
+      "at": "2026-08-17T09:12:03+00:00"
+    },
+    {
+      "event": "resume",
+      "run_id": "run_2026-08-17_a1",
+      "reason": "decision",
+      "by": "rnowotny1966@gmail.com",
+      "token_id": "tok_9f2c",
+      "at": "2026-08-17T10:04:12+00:00"
+    },
+    {
+      "event": "usage_reconciled",
+      "key": "v2:sha256:3e2e83b899b1d41e17c67514584f1027970fa48483270c707bdc1e7167b90bb9",
+      "node_id": "review_diff_wave2",
+      "source": "codex-rollout:thr_01H9",
+      "charged_before": {
+        "codex": 400000
+      },
+      "charged_after": {
+        "codex": 61240
+      },
+      "at": "2026-08-17T10:11:03+00:00"
+    },
+    {
+      "event": "cancel_requested",
+      "run_id": "run_2026-08-17_a1",
+      "node_id": "long_running_scan",
+      "by": "rnowotny1966@gmail.com",
+      "token_id": "tok_9f2c",
+      "at": "2026-08-17T10:09:31+00:00"
+    }
+  ]
+}

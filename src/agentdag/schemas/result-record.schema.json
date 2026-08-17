@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/result-record.schema.json",
+  "title": "agentdag result record",
+  "description": "The ONLY thing the coordinator branches on (design 2.2). Every node, whatever ran it, returns one of these on completion, written to nodes/<node_id>/<hash8>/record.json.",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The node this record belongs to."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Which attempt produced this record; matches the node spec's attempt (2.1)."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "failed",
+        "blocked",
+        "needs_context",
+        "needs_continuation",
+        "refused",
+        "cancelled"
+      ],
+      "description": "The coordinator branches only on this typed field (2.2). done: the work succeeded. failed: it was attempted and did not succeed. blocked / needs_context: it could not proceed and the record says why. cancelled: the scheduler stopped it (deadline or cancel). needs_continuation: the node hit its context ceiling and wrote a handover record for a successor (design 3.8). refused: a decision or a policy declined it - an approve rejection marks the branch that produced the payload refused. There is no 'rejected' value (design 2.2, C5)."
+    },
+    "artefact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "References (paths under the node's artefact dir) to the content this node produced. Content lives under the node's artefact dir, never in the record (2.2)."
+    },
+    "key_facts": {
+      "type": "object",
+      "description": "A small typed map the brief's output schema defines; free-form here since the shape varies per node/brief (2.2).",
+      "additionalProperties": true
+    },
+    "typed_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "The key_facts keys the brief declared as TYPED. The coordinator may branch only on a key named here (design 3.3, M7); every other key_facts entry is free text it must not inspect."
+    },
+    "charged_tokens": {
+      "type": "object",
+      "description": "What the cap actually charged for this dispatch, per model row - equals measured tokens when the executor reports them, else the node's full token budget (design 3.4/5, decided 2026-08-17).",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "DERIVED at read time from tokens and the tier row's usd_per_mtoken; zero-marginal for subscription rows; null when tokens are unknown. Never the stored primary quantity - stored here only as a convenience snapshot."
+    },
+    "tokens": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Measured token usage for this dispatch per field; a field is null when the executor does not report it (Codex reports none in the MCP result; reconciled later from its rollout log).",
+      "properties": {
+        "in": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "out": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "in",
+        "out",
+        "cache_read",
+        "reasoning"
+      ],
+      "additionalProperties": false
+    },
+    "duration_s": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall-clock duration of the dispatch, in seconds."
+    },
+    "executor_used": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The actual executor that ran this node (e.g. 'claude', 'mcp:codex/codex'); may differ from the spec's executor after a clamp (2.3 rule 4)."
+    },
+    "model_used": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The actual model alias used, after any tier-policy resolution or clamp."
+    },
+    "effort_used": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The actual effort level used, after any tier-policy resolution or clamp."
+    },
+    "knowledge_used": {
+      "type": "array",
+      "description": "Recorded from day one so the journal can later validate on used-datasets instead of allowed-datasets (2.2, 3.2).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dataset": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The semdex dataset name actually read from."
+          },
+          "content_hash": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Content-addressed hash of the dataset state at read time."
+          }
+        },
+        "required": [
+          "dataset",
+          "content_hash"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "input_hash": {
+      "type": "string",
+      "pattern": "^v2:sha256:[0-9a-f]{64}$",
+      "description": "The journal key this record was dispatched under: v2:sha256(prefix_hash + NUL + canonical(spec)) per design 3.2. Rendered here as 'v2:sha256:<64 hex chars>'; the exact separator/encoding is an implementation choice the design leaves open."
+    },
+    "error": {
+      "type": "object",
+      "description": "Present when status is failed, blocked, needs_context, refused or cancelled.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "agents_empty_result",
+            "auth_failure",
+            "deadline",
+            "executor_error",
+            "schema_mismatch",
+            "knowledge_unavailable",
+            "budget_exceeded",
+            "cancelled_by_user"
+          ],
+          "description": "The closed error vocabulary of design 2.2. agents_empty_result: no artefact refs AND no required key_facts key (design 9). auth_failure: the executor's credential was rejected - non-transient, fails the run, never escalates a tier (3.4). deadline: the node's scope was killed at deadline_s. knowledge_unavailable: a declared knowledge dataset could not be read, so the node returns needs_context rather than done (3.7)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable detail."
+        },
+        "transient": {
+          "type": "boolean",
+          "description": "Whether this failure is transient (executor error, timeout below the deadline). Only a transient failure record permits a same-tier retry for a map branch (2.3 rule 5)."
+        }
+      },
+      "required": [
+        "type",
+        "message",
+        "transient"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "node_id",
+    "attempt",
+    "status",
+    "artefact_refs",
+    "key_facts",
+    "typed_fields",
+    "charged_tokens",
+    "cost_usd",
+    "tokens",
+    "duration_s",
+    "executor_used",
+    "model_used",
+    "effort_used",
+    "knowledge_used",
+    "input_hash"
+  ],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "node_id": "extract_vendor_ids",
+      "attempt": 0,
+      "status": "done",
+      "artefact_refs": [
+        "artefacts/extract_vendor_ids/vendor_ids.json"
+      ],
+      "key_facts": {
+        "vendor_count": 42
+      },
+      "tokens": {
+        "in": 8200,
+        "out": 640,
+        "cache_read": 5100,
+        "reasoning": 0
+      },
+      "charged_tokens": {
+        "sonnet": 8840
+      },
+      "cost_usd": 0.0173,
+      "duration_s": 21.4,
+      "executor_used": "claude",
+      "model_used": "sonnet",
+      "effort_used": "medium",
+      "knowledge_used": [
+        {
+          "dataset": "docs:pci-ids",
+          "content_hash": "sha256:9f2c...ab01"
+        }
+      ],
+      "input_hash": "v2:sha256:71efdc615e8d0fc982701850d21ac019ac7d7a571050e4cd6c4c8faf551a2042",
+      "typed_fields": [
+        "vendor_count"
+      ]
+    },
+    {
+      "node_id": "review_diff_wave2",
+      "attempt": 0,
+      "status": "done",
+      "artefact_refs": [
+        "artefacts/review_diff_wave2/review.md"
+      ],
+      "key_facts": {
+        "findings": 3
+      },
+      "tokens": {
+        "in": null,
+        "out": null,
+        "cache_read": null,
+        "reasoning": null
+      },
+      "charged_tokens": {
+        "codex": 400000
+      },
+      "cost_usd": null,
+      "duration_s": 58.9,
+      "executor_used": "mcp:codex/codex",
+      "model_used": "codex",
+      "effort_used": "medium",
+      "knowledge_used": [],
+      "input_hash": "v2:sha256:3e2e83b899b1d41e17c67514584f1027970fa48483270c707bdc1e7167b90bb9",
+      "typed_fields": [
+        "findings"
+      ]
+    },
+    {
+      "node_id": "w_read_log_3",
+      "attempt": 0,
+      "status": "failed",
+      "artefact_refs": [],
+      "key_facts": {},
+      "typed_fields": [
+        "new_fact_count"
+      ],
+      "tokens": {
+        "in": 6100,
+        "out": 12,
+        "cache_read": 0,
+        "reasoning": 0
+      },
+      "charged_tokens": {
+        "haiku": 6112
+      },
+      "cost_usd": 0.0062,
+      "duration_s": 4.1,
+      "executor_used": "claude",
+      "model_used": "haiku",
+      "effort_used": "low",
+      "knowledge_used": [],
+      "input_hash": "v2:sha256:10f03d6a973d8a275abe7a5f80dd79e6662cfabcda48f828a27fc997e39292f1",
+      "error": {
+        "type": "agents_empty_result",
+        "message": "no artefact refs and no required key_facts key",
+        "transient": false
+      }
+    }
+  ]
+}

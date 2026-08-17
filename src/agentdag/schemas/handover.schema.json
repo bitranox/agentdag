@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handover.schema.json",
+  "title": "agentdag handover record (design 3.8)",
+  "description": "Written by a node that hit its context ceiling; read by its successor as part of the brief. Typed fields only - the coordinator branches on none of the prose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "node_id",
+    "attempt",
+    "continuation",
+    "done",
+    "left",
+    "key_facts",
+    "artefact_refs",
+    "next_step"
+  ],
+  "properties": {
+    "node_id": {
+      "type": "string"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "continuation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0 for the first node of a chain; the successor is dispatched with continuation + 1 in its journal key."
+    },
+    "done": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Short items, one per completed sub-step."
+    },
+    "left": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Short items, one per remaining sub-step, in order."
+    },
+    "key_facts": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The brief's typed output-schema keys that are already known."
+    },
+    "artefact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Paths under the node's artefact dir the successor should read first."
+    },
+    "write_set_state": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "dirty",
+        "committed"
+      ],
+      "description": "Whether the worktree holds uncommitted work the successor must continue from."
+    },
+    "next_step": {
+      "type": "string",
+      "description": "The single next action, one sentence."
+    },
+    "tokens_at_handover": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "examples": [
+    {
+      "node_id": "w_migrate@3",
+      "attempt": 1,
+      "continuation": 0,
+      "done": [
+        "adapted send wrapper",
+        "ran make test once: red on test_mail.py"
+      ],
+      "left": [
+        "fix the two failing mail tests",
+        "run make test",
+        "commit"
+      ],
+      "key_facts": {
+        "failing_tests": 2
+      },
+      "artefact_refs": [
+        "notes/progress.md"
+      ],
+      "write_set_state": "dirty",
+      "next_step": "open tests/test_mail.py and inject the Transport double at the seam",
+      "tokens_at_handover": 118000
+    }
+  ]
+}

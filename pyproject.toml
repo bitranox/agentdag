@@ -77,6 +77,7 @@ dev = [
   "pynacl>=1.6.2",               # CVE-2025-69277
   "urllib3>=2.7.0",              # CVE-2025-66471, CVE-2025-66418
   "virtualenv>=21.7.4",         # CVE-2025-22702
+  "jsonschema>=4.26.0",
 ]
 
 [project.scripts]
@@ -95,6 +96,7 @@ include = [
     "src/agentdag/py.typed",
     "src/agentdag/adapters/config/defaultconfig.toml",
     "src/agentdag/adapters/config/defaultconfig.d/*.toml",
+    "src/agentdag/schemas/*.json",
 ]
 
 [tool.ruff]
