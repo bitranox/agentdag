@@ -257,7 +257,7 @@ Mirror every repository listed in `REAL_REPOS_FILE` into the scratch fleet, and 
 | `--scratch DIR` | Directory the scratch fleet is built in                      |
 | `--refresh`     | Delete an existing mirror and read the real repository again |
 
-**Exit codes:** 0
+**Exit codes:** 0, 22 (two repositories sharing a basename)
 
 ### graph-a run
 

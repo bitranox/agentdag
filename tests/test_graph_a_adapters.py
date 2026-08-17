@@ -128,7 +128,7 @@ def test_git_cli_mirror_does_not_hardlink_objects_from_the_real_repository(tmp_p
 
     objects = [path for path in (bare / "objects").rglob("*") if path.is_file()]
     assert objects  # a mirror with no object file would make this pass for the wrong reason
-    assert objects[0].stat().st_nlink == 1
+    assert all(path.stat().st_nlink == 1 for path in objects)
 
 
 def test_git_cli_remove_mirror_deletes_a_mirror_holding_read_only_objects(tmp_path: Path) -> None:

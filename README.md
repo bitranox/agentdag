@@ -15,7 +15,7 @@
 
 `agentdag` is a coordinator for small graphs of AI-agent nodes. It dispatches each node, gates what the node produced on something mechanical, and branches only on typed records, never on prose an agent wrote.
 
-Version 0.0.1 ships the graph A baseline: a fleet migration that gives every repository its own worktree, its own agent and its own gate run, and pushes what passed to scratch clones after one console approval. It deliberately has no journal, no token cap and no unattended approve. Those are later milestones, and what their absence costs is what this baseline is for. See [Graph A: fleet migration](#graph-a-fleet-migration) below.
+The graph A baseline is the first coordinator graph it ships (0.0.1 on PyPI is the scaffold alone): a fleet migration that gives every repository its own worktree, its own agent and its own gate run, and pushes what passed to scratch clones after one console approval. It deliberately has no journal, no token cap and no unattended approve. Those are later milestones, and what their absence costs is what this baseline is for. See [Graph A: fleet migration](#graph-a-fleet-migration) below.
 
 - CLI entry point styled with rich-click (rich output + click ergonomics).
 - Layered configuration system with lib_layered_config (defaults → app → host → user → .env → env).
@@ -258,7 +258,7 @@ Each node runs with `CLAUDE_CONFIG_DIR` pointing at its own directory under the 
 
 ---
 
-### Email Sending
+## Email Sending
 
 The application includes email sending capabilities via [btx-lib-mail](https://pypi.org/project/btx-lib-mail/), supporting both simple notifications and rich HTML emails with attachments.
 
