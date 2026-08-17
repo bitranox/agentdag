@@ -64,6 +64,44 @@ def test_git_cli_mirror_clone_head_and_default_branch(tmp_path: Path) -> None:
     assert g.ref_sha(bare, "no-such-branch") is None
 
 
+def test_git_cli_clone_leaves_the_worktree_without_a_push_route(tmp_path: Path) -> None:
+    """A work node's reflex ``git push`` must have nowhere to go.
+
+    The worktree keeps no remote at all, so the fleet is not one habit away. What this
+    does NOT do is contain a node with unrestricted Bash: it can still push to any path
+    it can name. Containment is a sandbox, which the baseline does not have.
+    """
+    g = GitCli()
+    real = make_repo(tmp_path, "noremote", "test:\n\t@exit 0\n")
+    bare = tmp_path / "noremote.git"
+    g.mirror(real, bare)
+    wt = tmp_path / "wt"
+    g.clone(bare, wt)
+    (wt / "NEW.md").write_text("new\n")
+    git("add", "-A", cwd=wt)
+    git("commit", "-q", "-m", "would be pushed", cwd=wt)
+    before = git("rev-parse", "main", cwd=bare)
+
+    assert git("remote", cwd=wt) == ""
+    reflex = subprocess.run(  # nosec B603  # noqa: S603
+        [GIT, "push", "origin", "HEAD:main"], cwd=wt, capture_output=True, encoding="utf-8", errors="replace", check=False
+    )
+
+    assert reflex.returncode != 0
+    assert git("rev-parse", "main", cwd=bare) == before
+
+
+def test_git_cli_mirror_keeps_no_remote_pointing_at_the_real_repository(tmp_path: Path) -> None:
+    """The scratch mirror is a dead end: nothing in it names the repository it came from."""
+    g = GitCli()
+    real = make_repo(tmp_path, "mirrored", "test:\n\t@exit 0\n")
+    bare = tmp_path / "mirrored.git"
+
+    g.mirror(real, bare)
+
+    assert git("remote", cwd=bare) == ""
+
+
 def test_git_cli_ref_sha_reads_the_ref_not_the_object_store(tmp_path: Path) -> None:
     """A commit present as an OBJECT but not on the branch must not read as applied.
 

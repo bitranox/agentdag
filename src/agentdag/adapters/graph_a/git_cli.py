@@ -54,14 +54,29 @@ class GitCli:
     """Every git operation graph A performs, over the git CLI."""
 
     def mirror(self, source: Path, dest: Path) -> None:
-        """Create a bare mirror of ``source`` at ``dest``; ``source`` is only read."""
+        """Create a bare mirror of ``source`` at ``dest``; ``source`` is only read.
+
+        The mirror's ``origin`` remote is removed afterwards. A mirror clone records the
+        real repository as a remote with ``remote.origin.mirror=true``, which is a live
+        write route from the scratch tree back into the fleet's real repositories, and
+        nothing needs it: a refresh re-reads the path from the real-repos list.
+        """
         _git("clone", "-q", "--mirror", str(source), str(dest))
+        _git("remote", "remove", "origin", cwd=dest)
 
     def clone(self, origin: Path, dest: Path) -> None:
-        """Clone ``origin`` into a working tree at ``dest`` with a committer identity."""
+        """Clone ``origin`` into a working tree at ``dest`` with a committer identity.
+
+        The worktree keeps no remote: ``apply`` pushes by absolute path, so the clone's
+        ``origin`` is used by nobody and a work node's reflex ``git push`` then has
+        nowhere to go. This is not containment - a node with unrestricted Bash can still
+        push to any path it can name, and that is a sandbox, not a config edit. It
+        removes the route a node reaches for without thinking.
+        """
         # core.fileMode=false: the shared softdev mount reports stray executable bits,
         # which would otherwise turn into mode churn in every commit the work node makes.
         _git("-c", "core.fileMode=false", "clone", "-q", str(origin), str(dest))
+        _git("remote", "remove", "origin", cwd=dest)
         _git("config", "user.email", "agentdag@localhost", cwd=dest)
         _git("config", "user.name", "agentdag", cwd=dest)
 
