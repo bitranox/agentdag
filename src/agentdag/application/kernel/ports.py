@@ -14,6 +14,9 @@ Contents:
     * :class:`LockToken` - proof of a held lock, returned by :meth:`RunLock.acquire`.
     * :class:`ExecutorRequest` - everything an :class:`Executor` needs to run one node.
     * :class:`Executor` - runs one node's dispatch and reports its outcome.
+    * :class:`ResolvedRow` - the model row and executor a spec resolves to.
+    * :class:`Policy` - resolves a spec to a row and carries the run-wide limits.
+    * :class:`IsolationScanner` - takes a content manifest of the run's isolation root.
     * :class:`Scope` - starts, probes and kills the OS-level unit a node runs under.
     * :class:`ScopeHandle` - identifies a unit a :class:`Scope` started.
 """
@@ -30,14 +33,17 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ...domain.journal import JournalLine
-    from ...domain.models import Decision, LockHolder, NodeOutcome, RunState
+    from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RunState
 
 __all__ = [
     "Clock",
     "Executor",
     "ExecutorRequest",
+    "IsolationScanner",
     "Journal",
     "LockToken",
+    "Policy",
+    "ResolvedRow",
     "RunDir",
     "RunLock",
     "Scope",
@@ -207,6 +213,43 @@ class Executor(Protocol):
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
         """Run ``request`` to completion (or a suspend/needs-context outcome) and report it."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRow:
+    """What a tier policy resolves one spec to: a model row, and the executor that drives it."""
+
+    alias: str
+    """The model row's alias - the key tokens are measured and capped per (design 2.3, 3.4)."""
+
+    executor: str
+    """The name of the executor to run this node with, as keyed in the coordinator's executor map."""
+
+
+class Policy(Protocol):
+    """The tier policy: which model row a spec resolves to, and the run-wide executor limits.
+
+    ``version`` is the content hash of the policy table a run was started under, recorded
+    on the run and in its ``run_started`` line so a later run's records are comparable
+    against the table they were produced by (design 2.3).
+    """
+
+    version: str
+    max_turns: int
+    deny_bash: tuple[str, ...]
+    tokens_per_row: Mapping[str, int]
+
+    def resolve(self, spec: NodeSpec) -> ResolvedRow:
+        """Resolve ``spec``'s tier role (and any explicit model) to the row and executor to use."""
+        ...
+
+
+class IsolationScanner(Protocol):
+    """Takes a content manifest of a run's isolation root (design C8, the write-set net)."""
+
+    def snapshot(self, root: Path) -> Mapping[str, str]:
+        """Return relative POSIX path -> content hash for every file under ``root`` worth watching."""
         ...
 
 
