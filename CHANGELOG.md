@@ -23,7 +23,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   node's token refresh lands in that copy and never in the operator's file, and parallel nodes
   never share one credential file.
 - `agentdag graph-a scratch --refresh`, which deletes an existing scratch mirror and re-reads
-  the real repository instead of silently reusing a stale one.
+  the real repository instead of silently reusing a stale one, through `GitPort.remove_mirror`
+  so the read-only object files git writes are removed on Windows too.
+- Neither scratch clone keeps a remote: the mirror does not point back at the real repository
+  and a run's worktree does not point at the mirror, so a work node's reflex `git push` has no
+  route into the fleet. A node with unrestricted Bash is not contained by that; containment is
+  a sandbox, which the baseline does not have.
+- Every push target is validated before the first node is dispatched, so a fleet naming a real
+  repository is refused without spending a run and without asking anybody to approve a push
+  that cannot happen. The apply step keeps the same check as its invariant.
 
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are

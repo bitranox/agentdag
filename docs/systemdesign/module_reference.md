@@ -2,7 +2,7 @@
 
 ## Status
 
-Complete (v1.1.2+)
+Current: the CLI, configuration, logging and email surface, plus the graph A baseline.
 
 ---
 
@@ -11,9 +11,12 @@ Complete (v1.1.2+)
 ### Domain Layer
 - `src/agentdag/domain/behaviors.py`  -  Pure domain functions (greeting)
 - `src/agentdag/domain/enums.py`  -  Type-safe enums (OutputFormat, DeployTarget)
+- `src/agentdag/domain/graph_a.py`  -  Graph A records (WorkResult, Tally, TallySummary, PushIntent) and the pure decisions over them (reduce_tally, stage, dedup_key, is_scratch_target)
 
 ### Application Layer
 - `src/agentdag/application/ports.py`  -  Callable Protocol definitions for adapter functions
+- `src/agentdag/application/graph_a_ports.py`  -  The five graph A ports (GitPort, GatePort, WorkPort, ApprovePort, RunStore) and GraphAWiring, the record holding one run's implementations
+- `src/agentdag/application/graph_a.py`  -  Graph A as a deterministic program: `make_scratch_fleet` (mirror the fleet), `run_graph` (map work and gate, tally, stage, approve) and `apply` (the idempotent push)
 
 ### Adapters Layer
 - `src/agentdag/adapters/config/loader.py`  -  Configuration loading with LRU caching
@@ -36,6 +39,13 @@ Complete (v1.1.2+)
   - `commands/config.py`  -  config, config-deploy, config-generate-examples commands
   - `commands/email.py`  -  send-email, send-notification commands
   - `commands/logging.py`  -  logdemo command
+  - `commands/graph_a.py`  -  graph-a group: the scratch and run commands
+- `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
+  - `git_cli.py`  -  GitPort over the git CLI (mirror, remove_mirror, clone, inspect, push)
+  - `gate_make.py`  -  GatePort: the project's `make test` in a child process, under one host-wide lock
+  - `store_fs.py`  -  RunStore: one timestamped run directory holding worktrees, logs, homes, records and done markers
+  - `work_claude_sdk.py`  -  WorkPort over the Claude Agent SDK, one isolated client and credential per node
+  - `approve_console.py`  -  ApprovePort: the console confirmation asked once before anything is pushed
 
 ### Adapters Layer (In-Memory / Testing)
 - `src/agentdag/adapters/memory/__init__.py`  -  Public facade + Protocol conformance assertions
@@ -45,6 +55,7 @@ Complete (v1.1.2+)
 
 ### Composition Layer
 - `src/agentdag/composition/__init__.py`  -  Wires adapters to ports
+- `src/agentdag/composition/graph_a.py`  -  Builds the GraphAWiring for one run: the production adapters plus a fresh run directory
 
 ### Entry Points
 - `src/agentdag/__main__.py`  -  Thin shim for `python -m`
@@ -60,16 +71,19 @@ Complete (v1.1.2+)
 ### Tests
 - `tests/test_behaviors.py`  -  Domain function tests
 - `tests/test_cache_effectiveness.py`  -  LRU cache behavior tests
-- `tests/test_cli.py`  -  CLI command tests
+- `tests/test_cli_core.py`, `tests/test_cli_config.py`, `tests/test_cli_email.py`  -  CLI command tests
 - `tests/test_config_overrides.py`  -  `--set` parsing tests
 - `tests/test_safe_console.py`  -  Legacy-codepage output tests, plus the guard forbidding direct `click.echo`
 - `tests/test_display.py`  -  Config display formatting tests
-- `tests/test_exit_codes.py`  -  ExitCode enum tests
+- `tests/test_cli_exit_codes.py`  -  ExitCode enum tests
 - `tests/test_mail.py`  -  Email configuration and sending tests
 - `tests/test_metadata.py`  -  Package metadata tests
 - `tests/test_module_entry.py`  -  `python -m` entry tests
 - `tests/test_ports.py`  -  Protocol conformance tests
-- `tests/test_scripts.py`  -  Build script tests
+- `tests/test_graph_a_domain.py`  -  Graph A pure records and decisions
+- `tests/test_graph_a_adapters.py`  -  Graph A adapters over real git repositories and real child processes
+- `tests/test_graph_a_run.py`  -  Graph A end to end, with the work node as the only substitution
+- `tests/test_cli_graph_a.py`  -  `graph-a` CLI stories through the real root group
 
 ---
 
@@ -77,16 +91,18 @@ Complete (v1.1.2+)
 
 ### Layer Assignments
 
-| Directory/Module       | Layer       | Responsibility                                |
-|------------------------|-------------|-----------------------------------------------|
-| `domain/`              | Domain      | Pure logic  -  no I/O, logging, or frameworks |
-| `application/ports.py` | Application | Protocol definitions for adapters             |
-| `adapters/config/`     | Adapters    | Configuration loading, deployment, display    |
-| `adapters/email/`      | Adapters    | SMTP email sending                            |
-| `adapters/logging/`    | Adapters    | lib_log_rich initialization                   |
-| `adapters/cli/`        | Adapters    | Click CLI framework integration               |
-| `adapters/memory/`     | Adapters    | In-memory implementations for testing         |
-| `composition/`         | Composition | Wires adapters to ports                       |
+| Directory/Module         | Layer       | Responsibility                                          |
+|--------------------------|-------------|---------------------------------------------------------|
+| `domain/`                | Domain      | Pure logic  -  no I/O, logging, or frameworks           |
+| `application/ports.py`   | Application | Protocol definitions for adapters                       |
+| `application/graph_a.py` | Application | Graph A as a deterministic program over typed records   |
+| `adapters/config/`       | Adapters    | Configuration loading, deployment, display              |
+| `adapters/email/`        | Adapters    | SMTP email sending                                      |
+| `adapters/logging/`      | Adapters    | lib_log_rich initialization                             |
+| `adapters/cli/`          | Adapters    | Click CLI framework integration                         |
+| `adapters/graph_a/`      | Adapters    | git, gate, run store, work node and approve for graph A |
+| `adapters/memory/`       | Adapters    | In-memory implementations for testing                   |
+| `composition/`           | Composition | Wires adapters to ports                                 |
 
 ### Import Enforcement
 
@@ -232,6 +248,31 @@ Run logging demonstration.
 
 **Exit codes:** 0
 
+### graph-a scratch
+
+Mirror every repository listed in `REAL_REPOS_FILE` into the scratch fleet, and write the list of mirrors to `<scratch>/REPOS.txt`. The real repositories are read once, by `git clone --mirror`, and never written.
+
+| Option          | Description                                                  |
+|-----------------|--------------------------------------------------------------|
+| `--scratch DIR` | Directory the scratch fleet is built in                      |
+| `--refresh`     | Delete an existing mirror and read the real repository again |
+
+**Exit codes:** 0
+
+### graph-a run
+
+Run graph A over the scratch origins in `REPOS_FILE`, applying the change in `BRIEF_FILE`. Every repository gets its own worktree, work node and gate run; nothing is pushed before the resulting push list is approved on the console.
+
+| Option          | Description                                              |
+|-----------------|----------------------------------------------------------|
+| `--scratch DIR` | Scratch directory owning the only permitted push targets |
+| `--runs DIR`    | Directory holding one timestamped directory per run      |
+| `--parallel N`  | How many branches may run at once (minimum 1)            |
+| `--model NAME`  | Model each work node runs on                             |
+| `--lock PATH`   | Host-wide lock file serialising the gate across branches |
+
+**Exit codes:** 0, 22 (a push target outside the scratch tree)
+
 ---
 
 ## Profile Validation
@@ -350,4 +391,4 @@ Use `composition.build_testing()` to wire all in-memory adapters.
 
 ---
 
-**Last Updated:** 2026-01-30 (attachment security)
+**Last Updated:** 2026-08-17 (graph A baseline)
