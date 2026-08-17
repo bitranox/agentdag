@@ -15,11 +15,13 @@ Contents:
 from __future__ import annotations
 
 import shutil
+import stat
 import subprocess  # nosec B404 - driving the git CLI IS this adapter; nothing here goes through a shell
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
 __all__ = ["GitCli"]
 
@@ -50,6 +52,24 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.
     )
 
 
+def _clear_readonly_and_retry(function: Callable[..., object], path: str, excinfo: BaseException) -> None:
+    """Make one entry writable and run the removal step that failed on it again.
+
+    git writes everything under ``objects/`` read-only, and Windows refuses to unlink a
+    read-only file (``WinError 5``), so deleting a mirror dies there where POSIX deletes
+    it without complaint. Only the entry that failed is touched, and only the call that
+    failed is retried: anything that fails a second time, and any failure this cannot
+    explain, propagates.
+
+    Args:
+        function: The removal step that raised, such as ``os.unlink`` or ``os.rmdir``.
+        path: The entry it was called with; it lies under the directory being removed.
+        excinfo: The exception it raised. The retry is the verdict, so it is not read.
+    """
+    Path(path).chmod(stat.S_IWRITE)
+    function(path)
+
+
 class GitCli:
     """Every git operation graph A performs, over the git CLI."""
 
@@ -63,6 +83,15 @@ class GitCli:
         """
         _git("clone", "-q", "--mirror", str(source), str(dest))
         _git("remote", "remove", "origin", cwd=dest)
+
+    def remove_mirror(self, dest: Path) -> None:
+        """Delete the mirror at ``dest``, read-only object files included.
+
+        Removing a mirror belongs to the git port rather than to the coordinator,
+        because what makes it awkward is git's own doing: it writes ``objects/**``
+        read-only, which Windows will not unlink.
+        """
+        shutil.rmtree(dest, onexc=_clear_readonly_and_retry)
 
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest`` with a committer identity.

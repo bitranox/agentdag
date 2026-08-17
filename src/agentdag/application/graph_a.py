@@ -19,7 +19,6 @@ Contents:
 from __future__ import annotations
 
 import asyncio
-import shutil
 from typing import TYPE_CHECKING
 
 from ..domain.graph_a import Tally, is_scratch_target, reduce_tally, stage
@@ -63,7 +62,7 @@ def make_scratch_fleet(real_repos: list[Path], scratch: Path, git: GitPort, *, r
     for repo in real_repos:
         dest = origin / (repo.name + ".git")
         if refresh and dest.exists():
-            shutil.rmtree(dest)
+            git.remove_mirror(dest)
         if not dest.exists():
             git.mirror(repo, dest)
         targets.append(dest)

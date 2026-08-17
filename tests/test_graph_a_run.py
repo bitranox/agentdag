@@ -88,6 +88,9 @@ class RecordingGit:
     def mirror(self, source: Path, dest: Path) -> None:
         self._git.mirror(source, dest)
 
+    def remove_mirror(self, dest: Path) -> None:
+        self._git.remove_mirror(dest)
+
     def clone(self, origin: Path, dest: Path) -> None:
         self._git.clone(origin, dest)
 

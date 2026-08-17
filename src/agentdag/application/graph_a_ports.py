@@ -34,6 +34,10 @@ class GitPort(Protocol):
         """Create a bare mirror of ``source`` at ``dest``, reading ``source`` only."""
         ...
 
+    def remove_mirror(self, dest: Path) -> None:
+        """Delete a mirror at ``dest``, read-only object files included."""
+        ...
+
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest``."""
         ...

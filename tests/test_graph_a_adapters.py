@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
-from agentdag.adapters.graph_a.git_cli import GitCli
+from agentdag.adapters.graph_a.git_cli import GitCli, _clear_readonly_and_retry
 from agentdag.adapters.graph_a.store_fs import FsRunStore
 from agentdag.adapters.graph_a.work_claude_sdk import ClaudeSdkWork
 
@@ -84,7 +84,12 @@ def test_git_cli_clone_leaves_the_worktree_without_a_push_route(tmp_path: Path) 
 
     assert git("remote", cwd=wt) == ""
     reflex = subprocess.run(  # nosec B603  # noqa: S603
-        [GIT, "push", "origin", "HEAD:main"], cwd=wt, capture_output=True, encoding="utf-8", errors="replace", check=False
+        [GIT, "push", "origin", "HEAD:main"],
+        cwd=wt,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
 
     assert reflex.returncode != 0
@@ -100,6 +105,54 @@ def test_git_cli_mirror_keeps_no_remote_pointing_at_the_real_repository(tmp_path
     g.mirror(real, bare)
 
     assert git("remote", cwd=bare) == ""
+
+
+def test_git_cli_remove_mirror_deletes_a_mirror_holding_read_only_objects(tmp_path: Path) -> None:
+    """git writes ``objects/**`` read-only, and Windows will not unlink a read-only file.
+
+    So a plain ``shutil.rmtree`` over a mirror dies there with ``WinError 5`` while
+    passing on POSIX, which removes a read-only file from a writable directory without
+    complaint. The condition is set up the same way on every platform and the test is
+    skipped on none: this run proves the call is reached, CI's windows-latest leg proves
+    the read-only entry is handled.
+    """
+    g = GitCli()
+    real = make_repo(tmp_path, "readonly", "test:\n\t@exit 0\n")
+    bare = tmp_path / "readonly.git"
+    g.mirror(real, bare)
+    objects = [path for path in (bare / "objects").rglob("*") if path.is_file()]
+    assert objects  # a mirror with no object file would make this pass for the wrong reason
+    for obj in objects:
+        obj.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    g.remove_mirror(bare)
+
+    assert not bare.exists()
+
+
+def test_the_read_only_retry_makes_the_entry_writable_and_calls_the_failed_step_again(tmp_path: Path) -> None:
+    """The handler that makes the Windows removal work is checked on its own.
+
+    POSIX ``rmtree`` never calls it - it removes a read-only file from a writable
+    directory itself - so the test above passes here whatever the handler does. Its
+    contract is therefore asserted directly: the entry is made writable, and the exact
+    call that failed is made again with the same path.
+    """
+    entry = tmp_path / "readonly.txt"
+    entry.write_text("kept")
+    entry.chmod(stat.S_IRUSR)
+    retried: list[str] = []
+
+    _clear_readonly_and_retry(retried.append, str(entry), PermissionError("denied"))
+
+    assert retried == [str(entry)]
+    assert entry.stat().st_mode & stat.S_IWUSR  # 0o400 before, so this is the chmod, not the arrangement
+
+
+def test_the_read_only_retry_lets_a_failure_the_read_only_bit_cannot_explain_through(tmp_path: Path) -> None:
+    """Only a read-only entry is handled; anything else propagates rather than vanishing."""
+    with pytest.raises(FileNotFoundError):
+        _clear_readonly_and_retry(os.unlink, str(tmp_path / "never-existed"), FileNotFoundError("gone"))
 
 
 def test_git_cli_ref_sha_reads_the_ref_not_the_object_store(tmp_path: Path) -> None:
