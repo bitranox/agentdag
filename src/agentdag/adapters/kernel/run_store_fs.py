@@ -8,7 +8,7 @@ first-level layout in place::
 Every write under the run dir goes through :meth:`FsRunDir.write_atomic` (or a
 method that itself calls it), so a reader never observes a half-written file:
 the write lands in a sibling temp file first - fsynced and closed - and only
-then replaces the target with one atomic ``os.replace``.
+then replaces the target with one atomic rename.
 
 Contents:
     * :class:`FsRunDir` - the :class:`~agentdag.application.kernel.ports.RunDir` port over this layout.
@@ -140,7 +140,7 @@ class FsRunDir:
         """Write ``text`` to ``rel`` under :attr:`root`, atomically and owner-only.
 
         The write lands in a sibling temp file first (fsynced and closed),
-        which then replaces the target with one ``os.replace`` - a reader never
+        which then replaces the target with one atomic rename - a reader never
         observes a partial write.
 
         Args:
@@ -190,7 +190,7 @@ class FsRunDir:
         written, so two callers racing to decide the same node can never both
         succeed - the loser's ``os.open`` raises before it writes anything
         (design 3.4). The reserved (empty) file is then replaced, in one
-        ``os.replace``, by the real content written through :meth:`write_atomic`.
+        atomic rename, by the real content written through :meth:`write_atomic`.
 
         Args:
             decision: The decision to record; keyed by ``decision.node_id``.
