@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.domain.errors import RunRefused
 from agentdag.domain.models import Decision, RunState, RunStatus
 
 if TYPE_CHECKING:
@@ -85,3 +87,52 @@ def test_marker_intents_dir_artefacts_dir_and_manifest_path(tmp_path: Path) -> N
     assert rd.manifest_path("m1") == rd.root / "manifest" / "m1.json"
     assert rd.worktree("w1") == rd.root / "wt" / "w1"
     assert not (rd.root / "wt" / "w1").exists()  # worktree() does not create it
+
+
+def test_node_dir_refuses_a_backslash_bearing_node_id(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    with pytest.raises(ValueError):
+        rd.node_dir("escape\\node", "71efdc61")
+
+
+def test_write_decision_and_read_decision_refuse_a_traversal_node_id(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    d = Decision(node_id="../x", decision="hold", by="me", token_id="local")
+    with pytest.raises(ValueError):
+        rd.write_decision(d)
+    with pytest.raises(ValueError):
+        rd.read_decision("../x")
+
+
+def test_write_atomic_creates_every_missing_parent_level_owner_only(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    p = rd.write_atomic("nodes/x/abcd1234/artefacts/out.json", "{}")
+    assert p.read_text() == "{}"
+    if sys.platform != "win32":
+        for rel in ("nodes/x", "nodes/x/abcd1234", "nodes/x/abcd1234/artefacts"):
+            assert (rd.root / rel).stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="an existing directory blocking os.replace is POSIX-specific")
+def test_write_atomic_leaves_no_tmp_file_behind_when_the_replace_fails(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    (rd.root / "artefacts" / "blocked.json").mkdir()
+    with pytest.raises(OSError):
+        rd.write_atomic("artefacts/blocked.json", "{}")
+    assert list(rd.root.glob("artefacts/.tmp-*")) == []
+
+
+def test_read_decision_of_an_empty_stub_file_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    stub = rd.decisions_dir / "a_push_list.json"
+    stub.write_text("")
+    with pytest.raises(RunRefused, match=re.escape(str(stub))):
+        rd.read_decision("a_push_list")
+
+
+def test_write_decision_leaves_no_tmp_file_behind_in_decisions_dir(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local")
+    rd.write_decision(d)
+    assert list(rd.decisions_dir.glob(".tmp-*")) == []

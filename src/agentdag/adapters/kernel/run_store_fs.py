@@ -5,10 +5,13 @@ first-level layout in place::
 
     <runs_base>/<run_id>/{decisions,intents,artefacts,wt,nodes,manifest,done}
 
-Every write under the run dir goes through :meth:`FsRunDir.write_atomic` (or a
-method that itself calls it), so a reader never observes a half-written file:
-the write lands in a sibling temp file first - fsynced and closed - and only
-then replaces the target with one atomic rename.
+Every write under the run dir lands in a sibling temp file first - fsynced
+and closed - and only then becomes visible in one atomic filesystem call, so
+a reader never observes a half-written file. Most writes (:meth:`FsRunDir.write_atomic`,
+and :meth:`~FsRunDir.write_state` through it) publish the temp file with an
+atomic rename. :meth:`FsRunDir.write_decision` publishes it with an atomic
+hard link instead, so a decision file is never briefly empty (see its
+docstring for why that distinction matters).
 
 Contents:
     * :class:`FsRunDir` - the :class:`~agentdag.application.kernel.ports.RunDir` port over this layout.
@@ -16,11 +19,13 @@ Contents:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from ...domain.errors import RunRefused
 from ...domain.models import Decision, RunState
 
 __all__ = ["FsRunDir"]
@@ -62,10 +67,11 @@ class FsRunDir:
                 claimed once, never reused.
         """
         root = runs_base / run_id
-        root.mkdir(mode=_OWNER_ONLY_DIR)
+        root.mkdir(mode=_OWNER_ONLY_DIR)  # no exist_ok: a reused run id must raise, not silently succeed
+        self = cls(root)
         for name in _SUBDIRS:
-            (root / name).mkdir(mode=_OWNER_ONLY_DIR)
-        return cls(root)
+            self._mkdir_owner_only(root / name)
+        return self
 
     @classmethod
     def open(cls, runs_base: Path, run_id: str) -> FsRunDir:
@@ -102,11 +108,7 @@ class FsRunDir:
                 traversal attempt rather than a real node id.
         """
         self._validate_node_id(node_id)
-        node_root = self.root / "nodes" / node_id
-        node_root.mkdir(mode=_OWNER_ONLY_DIR, exist_ok=True)
-        leaf = node_root / hash8
-        leaf.mkdir(mode=_OWNER_ONLY_DIR, exist_ok=True)
-        return leaf
+        return self._mkdir_owner_only(self.root / "nodes" / node_id / hash8)
 
     def worktree(self, name: str) -> Path:
         """Return ``wt/<name>``; not created - the git port creates the worktree itself."""
@@ -114,9 +116,7 @@ class FsRunDir:
 
     def intents_dir(self, kind: str) -> Path:
         """Return (creating it) ``intents/<kind>/``."""
-        path = self.root / "intents" / kind
-        path.mkdir(mode=_OWNER_ONLY_DIR, exist_ok=True)
-        return path
+        return self._mkdir_owner_only(self.root / "intents" / kind)
 
     def marker(self, kind: str, key: str) -> Path:
         """Return ``done/<kind>/<key>``, creating the ``done/<kind>/`` directory.
@@ -124,8 +124,7 @@ class FsRunDir:
         The marker file itself is not created here; its existence is whatever
         the caller writes (or does not write) to the returned path.
         """
-        directory = self.root / "done" / kind
-        directory.mkdir(mode=_OWNER_ONLY_DIR, exist_ok=True)
+        directory = self._mkdir_owner_only(self.root / "done" / kind)
         return directory / key
 
     def artefacts_dir(self) -> Path:
@@ -155,16 +154,13 @@ class FsRunDir:
             ValueError: ``rel`` is absolute or escapes :attr:`root` via ``..``.
         """
         target = self._resolve_rel(rel)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            dir=target.parent, prefix=".tmp-", delete=False, mode="w", encoding="utf-8"
-        ) as tmp:
-            if sys.platform != "win32":
-                os.fchmod(tmp.fileno(), _OWNER_ONLY_FILE)
-            tmp.write(text)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        Path(tmp.name).replace(target)
+        self._mkdir_owner_only(target.parent)
+        tmp_path = self._write_temp_file(target.parent, text)
+        try:
+            tmp_path.replace(target)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         return target
 
     def read_state(self) -> RunState:
@@ -176,33 +172,60 @@ class FsRunDir:
         self.write_atomic("state.json", state.model_dump_json(indent=1))
 
     def read_decision(self, node_id: str) -> Decision | None:
-        """Read ``decisions/<node_id>.json``, or ``None`` if no decision is recorded yet."""
+        """Read ``decisions/<node_id>.json``, or ``None`` if no decision is recorded yet.
+
+        Raises:
+            RunRefused: the file exists but is empty or fails to parse. A
+                crash-corrupted decision file must never read as "no decision
+                yet" - a reader would silently drop a decision that a
+                previous, interrupted :meth:`write_decision` reserved, and a
+                later :meth:`write_decision` would then refuse forever
+                without anyone knowing why (design 3.4's write-once
+                contract).
+        """
         self._validate_node_id(node_id)
         path = self.decisions_dir / f"{node_id}.json"
         if not path.is_file():
             return None
-        return Decision.model_validate_json(path.read_text(encoding="utf-8"))
+        try:
+            return Decision.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise RunRefused(f"decision file {path} is unreadable: {exc}") from exc
 
     def write_decision(self, decision: Decision) -> None:
         """Write ``decisions/<node_id>.json`` once; refuses to overwrite an existing one.
 
-        The filename is reserved with an exclusive create BEFORE any content is
-        written, so two callers racing to decide the same node can never both
-        succeed - the loser's ``os.open`` raises before it writes anything
-        (design 3.4). The reserved (empty) file is then replaced, in one
-        atomic rename, by the real content written through :meth:`write_atomic`.
+        The content is written to a fully-formed, fsynced temp file FIRST,
+        then published with :func:`os.link` - a hard link is atomic and
+        raises ``FileExistsError`` when the target already exists, so the
+        reader-visible path is always either absent or complete, never an
+        empty stub. This replaces an earlier design that reserved the final
+        path with an empty ``O_EXCL`` create before writing content: a crash
+        in that window left an empty file behind that :meth:`read_decision`
+        could not parse, and every later :meth:`write_decision` for that node
+        id refused forever, mistaking the stub for a real decision. The temp
+        file is removed afterward regardless of outcome.
+
+        Note:
+            ``os.link`` needs a filesystem that supports hard links (NTFS on
+            Windows; every POSIX filesystem this project targets). If the
+            filesystem does not support it, ``os.link`` raises ``OSError``,
+            which is left to propagate rather than silently falling back to
+            a non-atomic write.
 
         Args:
             decision: The decision to record; keyed by ``decision.node_id``.
 
         Raises:
-            FileExistsError: a decision for this node id is already recorded.
+            FileExistsError: a decision file for this node id already exists.
         """
         self._validate_node_id(decision.node_id)
         final = self.decisions_dir / f"{decision.node_id}.json"
-        fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _OWNER_ONLY_FILE)
-        os.close(fd)
-        self.write_atomic(f"decisions/{decision.node_id}.json", decision.model_dump_json(indent=1))
+        tmp_path = self._write_temp_file(self.decisions_dir, decision.model_dump_json(indent=1))
+        try:
+            os.link(tmp_path, final)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     @staticmethod
     def _validate_node_id(node_id: str) -> None:
@@ -224,3 +247,61 @@ class FsRunDir:
         if pure.is_absolute() or ".." in pure.parts:
             raise ValueError(f"unsafe relative path: {rel!r}")
         return self.root.joinpath(*pure.parts)
+
+    def _mkdir_owner_only(self, target: Path) -> Path:
+        """Create ``target`` and any missing directories between it and :attr:`root`, each owner-only (``0700``).
+
+        ``Path.mkdir(parents=True, mode=...)`` only applies ``mode`` to the
+        leaf directory - any missing parent is created at the platform
+        default (subject to umask), which can leave an intermediate level
+        group- or other-readable. This walks from :attr:`root` (already
+        owner-only) down to ``target``, creating each missing level
+        explicitly at ``0700`` and tolerating a level that already exists (an
+        earlier call already created it, or a sibling node shares it).
+
+        Args:
+            target: A directory at or below :attr:`root`; may equal
+                :attr:`root` itself.
+
+        Returns:
+            ``target``.
+        """
+        current = self.root
+        for part in target.relative_to(self.root).parts:
+            current = current / part
+            with contextlib.suppress(FileExistsError):
+                current.mkdir(mode=_OWNER_ONLY_DIR)
+        return current
+
+    def _write_temp_file(self, directory: Path, text: str) -> Path:
+        """Write ``text`` to a fresh owner-only temp file in ``directory``, fsynced and closed.
+
+        On any failure while creating, chmoding, writing, flushing or
+        fsyncing the temp file, the temp file is removed before the
+        exception propagates - a caller never has to clean up a leaked
+        ``.tmp-*`` file from this step.
+
+        Args:
+            directory: The directory to create the temp file in; must
+                already exist.
+            text: The content to write, as UTF-8.
+
+        Returns:
+            The path of the fsynced, closed temp file.
+        """
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=directory, prefix=".tmp-", delete=False, mode="w", encoding="utf-8"
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                if sys.platform != "win32":
+                    os.fchmod(tmp.fileno(), _OWNER_ONLY_FILE)
+                tmp.write(text)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+        except BaseException:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+            raise
+        return tmp_path
