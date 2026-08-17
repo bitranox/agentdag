@@ -55,14 +55,21 @@ _FORBIDDEN_CALLS = frozenset(
 _FORBIDDEN_MODULES = frozenset({"random", "secrets"})
 """Modules where EVERY attribute call is nondeterministic, so no member list can go stale."""
 
+_STAR_IMPORT_MODULES = frozenset({"time", "random", "uuid", "os", "secrets", "datetime"})
+"""Modules a ``from ... import *`` may never bring in whole: a star import binds an unknown
+set of names into the module namespace, which the alias map (:func:`_alias_map`) cannot
+enumerate - so a later call through one of those names would silently escape this check
+rather than be resolved and judged like every other alias."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Violation:
-    """One forbidden call found in a workflow module's source."""
+    """One forbidden construct found in a workflow module's source: a call, or a star import."""
 
     name: str
     lineno: int
     col_offset: int
+    is_star_import: bool = False
 
 
 def assert_deterministic(module: ModuleType) -> None:
@@ -89,8 +96,18 @@ def assert_deterministic(module: ModuleType) -> None:
     if not found:
         return
     first = min(found, key=lambda violation: (violation.lineno, violation.col_offset))
-    raise NondeterministicCallError(
-        f"{first.name}() at line {first.lineno} is unavailable in coordinator code: "
+    raise NondeterministicCallError(_violation_message(first))
+
+
+def _violation_message(violation: _Violation) -> str:
+    """Render one violation as the refusal message; a star import is spelled differently from a call."""
+    if violation.is_star_import:
+        return (
+            f"{violation.name} at line {violation.lineno} is unavailable in coordinator code: "
+            "it binds names this check cannot resolve; import the specific names instead"
+        )
+    return (
+        f"{violation.name}() at line {violation.lineno} is unavailable in coordinator code: "
         "it breaks resume; take the value from a record or the coordinator's clock"
     )
 
@@ -111,7 +128,7 @@ def _violations(tree: ast.AST) -> list[_Violation]:
     module imported it that way, not left as the literal, unmatchable ``dt.now``.
     """
     aliases = _alias_map(tree)
-    found: list[_Violation] = []
+    found: list[_Violation] = [*_star_import_violations(tree)]
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -124,6 +141,38 @@ def _violations(tree: ast.AST) -> list[_Violation]:
     return found
 
 
+def _star_import_violations(tree: ast.AST) -> list[_Violation]:
+    """Refuse ``from <forbidden module> import *``: it binds names the alias map cannot resolve.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        One violation per ``from <module> import *`` where ``<module>`` is one of
+        :data:`_STAR_IMPORT_MODULES`.
+
+    Example:
+        >>> import ast
+        >>> tree = ast.parse("from time import *\\n")
+        >>> [v.name for v in _star_import_violations(tree)]
+        ['from time import *']
+    """
+    found: list[_Violation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.module not in _STAR_IMPORT_MODULES:
+            continue
+        if any(alias.name == "*" for alias in node.names):
+            found.append(
+                _Violation(
+                    name=f"from {node.module} import *",
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    is_star_import=True,
+                )
+            )
+    return found
+
+
 def _alias_map(tree: ast.AST) -> dict[str, str]:
     """Map every local name ``tree``'s imports bind to the canonical dotted path it reaches.
 
@@ -132,6 +181,13 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
     ``dt`` -> ``datetime.datetime``. A plain ``import time`` binds ``time`` -> ``time``
     too, which is a no-op for resolution but keeps the map total over every name the
     module's imports introduce.
+
+    A DOTTED ``import`` with no ``asname`` (``import os.path``) binds only its ROOT
+    segment (``os``, per Python's own import-binding rule - the name landing in scope
+    is always the top package, however deep the dotted path goes), so this registers
+    ``os`` -> ``os``, never a dead ``os.path`` key nothing could ever look up:
+    :func:`_resolve` only ever looks up a call chain's ROOT, which is always a single,
+    undotted name.
 
     Args:
         tree: The parsed module.
@@ -142,15 +198,19 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
 
     Example:
         >>> import ast
-        >>> tree = ast.parse("from uuid import uuid4\\nimport datetime as d\\n")
+        >>> tree = ast.parse("from uuid import uuid4\\nimport datetime as d\\nimport os.path\\n")
         >>> sorted(_alias_map(tree).items())
-        [('d', 'datetime'), ('uuid4', 'uuid.uuid4')]
+        [('d', 'datetime'), ('os', 'os'), ('uuid4', 'uuid.uuid4')]
     """
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                aliases[alias.asname or alias.name] = alias.name
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+                else:
+                    root = alias.name.split(".", 1)[0]
+                    aliases[root] = root
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             for alias in node.names:
                 aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"

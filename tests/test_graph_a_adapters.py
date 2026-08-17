@@ -240,6 +240,15 @@ def test_gate_writes_the_child_output_to_the_log(tmp_path: Path) -> None:
     assert "on stderr" in written
 
 
+def test_gate_reports_a_held_lock_by_path_instead_of_hanging(tmp_path: Path) -> None:
+    from filelock import FileLock
+
+    with FileLock(str(tmp_path / "l")):
+        gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"), timeout=0.2)
+        with pytest.raises(RuntimeError, match=str(tmp_path / "l")):
+            gate.run(tmp_path, tmp_path / "g.log")
+
+
 @pytest.mark.integration
 def test_gate_runs_real_make_test(tmp_path: Path) -> None:
     # The exact non-zero code is a make implementation detail (GNU make answers a failing

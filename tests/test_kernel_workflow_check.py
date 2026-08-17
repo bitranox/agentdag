@@ -74,6 +74,20 @@ def test_an_aliased_or_from_imported_spelling_is_refused_the_same_as_the_literal
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize("module_name", ["time", "random", "uuid", "os", "secrets", "datetime"])
+def test_a_star_import_from_a_forbidden_module_is_refused_outright(module_name: str) -> None:
+    # A star import binds an unknown set of names, so the alias map has nothing to
+    # resolve against - this must be refused on the import line itself, before any
+    # call through one of those names is ever reached.
+    source = f"from {module_name} import *\n\ndef program(co, args):\n    return None\n"
+
+    with pytest.raises(NondeterministicCallError, match="line 1") as info:
+        assert_deterministic(module_from(source))
+
+    assert f"from {module_name} import *" in str(info.value)
+
+
+@pytest.mark.os_agnostic
 def test_a_call_on_a_call_is_skipped_rather_than_crashing_the_check() -> None:
     # foo() is not a name the alias map or the forbidden set can judge; assert_deterministic
     # must skip it, not raise TypeError/AttributeError walking the chain.

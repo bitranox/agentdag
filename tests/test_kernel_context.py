@@ -192,6 +192,11 @@ def test_work_refuses_the_resolved_executor_when_it_is_not_wired(tmp_path: Path)
     with pytest.raises(KernelError, match="not wired"):
         asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
 
+    # A misconfiguration raises before anything is dispatched: no started line, no
+    # result line - a retry after fixing the wiring is not replaying a half-attempt.
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    assert journal.lines() == []
+
 
 @pytest.mark.os_agnostic
 def test_work_refuses_a_cwd_outside_the_run_root(tmp_path: Path) -> None:
@@ -202,3 +207,6 @@ def test_work_refuses_a_cwd_outside_the_run_root(tmp_path: Path) -> None:
 
     with pytest.raises(KernelError, match="outside the run root"):
         asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=outside))
+
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    assert journal.lines() == []
