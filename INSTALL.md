@@ -138,5 +138,4 @@ pip install "git+https://github.com/bitranox/agentdag"
 
 - Use [fpm](https://fpm.readthedocs.io/) to repackage the Python wheel into `.deb` or `.rpm` for distribution via `apt` or `yum`/`dnf`.
 
-All methods register both the `agentdag` and
-`agentdag` commands on your PATH.
+All methods register the `agentdag` command on your PATH.

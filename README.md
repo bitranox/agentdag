@@ -93,8 +93,7 @@ uv pip install agentdag
 ```
 
 For alternative install paths (pip, pipx, source builds, etc.), see
-[INSTALL.md](INSTALL.md). All supported methods register both the
-`agentdag` and `agentdag` commands on your PATH.
+[INSTALL.md](INSTALL.md). All supported methods register the `agentdag` command on your PATH.
 
 ---
 
