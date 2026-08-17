@@ -330,6 +330,7 @@ def inject_config(
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 
@@ -382,6 +383,7 @@ def inject_config_with_profile_capture(
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 
@@ -442,6 +444,7 @@ def inject_deploy_with_profile_capture(
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 
@@ -486,6 +489,7 @@ def inject_deploy_configuration() -> Callable[[Callable[..., list[Path]]], Calla
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 
@@ -591,6 +595,7 @@ def email_cli_context(
             send_notification=spy.send_notification,
             load_email_config_from_dict=load_email_config_from_dict_in_memory,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return EmailCliContext(factory=lambda: test_services, spy=spy)
 
@@ -640,6 +645,7 @@ def config_cli_context(
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 

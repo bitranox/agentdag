@@ -1,8 +1,9 @@
 """Strictly-typed wrappers for rich_click's partially-typed decorators.
 
-rich_click ships ``py.typed``, but its ``option`` and ``version_option``
-decorators are typed with a partially-unknown return, so the strict type checker
-reports ``reportUnknownMemberType`` at every call site. click's own decorators
+rich_click ships ``py.typed``, but its ``argument``, ``option`` and
+``version_option`` decorators are typed with a partially-unknown return, so the
+strict type checker reports ``reportUnknownMemberType`` at every call site.
+click's own decorators
 are fully typed, but they default the parameter class to ``click.Option`` rather
 than rich_click's ``RichOption``, which would change help rendering.
 
@@ -29,6 +30,7 @@ _CommandDecorator = Callable[[Callable[..., Any]], Callable[..., Any]]
 class _RichClickDecorators(Protocol):
     """rich_click's decorator surface, declared with complete types."""
 
+    argument: Callable[..., _CommandDecorator]
     option: Callable[..., _CommandDecorator]
     version_option: Callable[..., _CommandDecorator]
 
@@ -36,6 +38,11 @@ class _RichClickDecorators(Protocol):
 # ``cast`` is type-only; at runtime these forward to rich_click's own decorators,
 # so ``RichOption``/``RichArgument`` behavior is unchanged.
 _click = cast("_RichClickDecorators", click)
+
+
+def argument(*param_decls: str, **attrs: Any) -> _CommandDecorator:
+    """Typed wrapper over :func:`rich_click.argument`. See module docstring."""
+    return _click.argument(*param_decls, **attrs)
 
 
 def option(*param_decls: str, **attrs: Any) -> _CommandDecorator:
@@ -48,4 +55,4 @@ def version_option(*param_decls: str, **attrs: Any) -> _CommandDecorator:
     return _click.version_option(*param_decls, **attrs)
 
 
-__all__ = ["option", "version_option"]
+__all__ = ["argument", "option", "version_option"]

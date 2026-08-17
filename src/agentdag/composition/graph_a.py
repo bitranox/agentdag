@@ -1,0 +1,40 @@
+"""Production wiring for graph A.
+
+:class:`~agentdag.application.graph_a_ports.GraphAWiring` types its fields as the
+PORTS, so assigning the concrete adapters here is itself the conformance check: if an
+adapter drifts from its protocol, this module stops type-checking.
+
+Contents:
+    * :func:`wire` - build the production wiring for one run.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ..adapters.graph_a import ClaudeSdkWork, ConsoleApprove, FsRunStore, GitCli, MakeTestGate
+from ..application.graph_a_ports import GraphAWiring
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+__all__ = ["wire"]
+
+
+def wire(*, runs: Path, lock: Path) -> GraphAWiring:
+    """Build the production wiring, creating a fresh run directory.
+
+    Args:
+        runs: Directory holding every run; a new timestamped one is created inside it.
+        lock: Host-wide lock file serialising the gate across concurrent branches.
+
+    Returns:
+        The wiring for this run.
+    """
+    return GraphAWiring(
+        git=GitCli(),
+        gate=MakeTestGate(lock=lock),
+        work=ClaudeSdkWork(),
+        approve=ConsoleApprove(),
+        store=FsRunStore.create(runs),
+    )

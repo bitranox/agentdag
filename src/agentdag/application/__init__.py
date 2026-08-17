@@ -18,6 +18,7 @@ from .ports import (
     LoadEmailConfigFromDict,
     SendEmail,
     SendNotification,
+    WireGraphA,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "LoadEmailConfigFromDict",
     "SendEmail",
     "SendNotification",
+    "WireGraphA",
 ]

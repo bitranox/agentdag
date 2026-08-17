@@ -245,6 +245,7 @@ def inject_deploy_with_permission_capture(
             send_notification=prod.send_notification,
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
+            wire_graph_a=prod.wire_graph_a,
         )
         return lambda: test_services
 

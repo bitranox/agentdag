@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from ..adapters.email.sender import EmailConfig
     from ..domain.enums import DeployTarget, OutputFormat
+    from .graph_a_ports import GraphAWiring
 
 
 class GetConfig(Protocol):
@@ -103,6 +104,12 @@ class InitLogging(Protocol):
     def __call__(self, config: Config) -> None: ...
 
 
+class WireGraphA(Protocol):
+    """Build the graph A wiring for one run, creating that run's store."""
+
+    def __call__(self, *, runs: Path, lock: Path) -> GraphAWiring: ...
+
+
 __all__ = [
     "DeployConfiguration",
     "DisplayConfig",
@@ -112,4 +119,5 @@ __all__ = [
     "LoadEmailConfigFromDict",
     "SendEmail",
     "SendNotification",
+    "WireGraphA",
 ]

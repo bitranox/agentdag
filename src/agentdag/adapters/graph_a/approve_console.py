@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import rich_click as click
 
-from ..cli import safe_console
-
 __all__ = ["ConsoleApprove"]
 
 
@@ -29,5 +27,7 @@ class ConsoleApprove:
         Returns:
             ``True`` only if the operator explicitly confirmed; the default is no.
         """
+        from ..cli import safe_console  # noqa: PLC0415 - deferred: the cli package imports this one at import time
+
         safe_console.echo(prompt)
         return click.confirm("approve?", default=False)

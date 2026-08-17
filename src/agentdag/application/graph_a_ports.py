@@ -11,10 +11,12 @@ Contents:
     * :class:`WorkPort` - run one work node against a worktree.
     * :class:`ApprovePort` - ask a human before anything leaves the process.
     * :class:`RunStore` - where a run keeps its worktrees, logs and records.
+    * :class:`GraphAWiring` - the five of them, as one run uses them.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 
     from ..domain.graph_a import WorkResult
 
-__all__ = ["ApprovePort", "GatePort", "GitPort", "RunStore", "WorkPort"]
+__all__ = ["ApprovePort", "GatePort", "GitPort", "GraphAWiring", "RunStore", "WorkPort"]
 
 
 class GitPort(Protocol):
@@ -102,3 +104,19 @@ class RunStore(Protocol):
     def marker(self, key: str) -> Path:
         """Return the done-marker path for ``key``; its existence means already applied."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class GraphAWiring:
+    """The five port implementations one graph A run uses.
+
+    The record lives here rather than in the composition layer so an adapter (the CLI)
+    can name the type it is handed without importing the composition root, which the
+    layer contract forbids. Composition still owns the choice of implementations.
+    """
+
+    git: GitPort
+    gate: GatePort
+    work: WorkPort
+    approve: ApprovePort
+    store: RunStore
