@@ -1,6 +1,6 @@
 [project]
 name = "agentdag"
-version = "0.1.0"
+version = "0.0.1b1"
 description = "Coordinator that runs a small graph of AI-agent nodes with bounded spend, mechanical gates and journaled state"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,7 @@ license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["agents", "coordinator", "dag", "claude", "codex"]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.12",
