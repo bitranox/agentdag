@@ -1,18 +1,22 @@
 """WorkPort over the Claude Agent SDK: one isolated client per node.
 
-Each node gets its own client, its own working tree and its own home directory, and
-``setting_sources=[]`` keeps the coordinator's own project settings out of the node's
-context - the node is told what to do by the brief alone.
+Each node gets its own client, its own working tree and its own agent configuration
+directory, and ``setting_sources=[]`` keeps the coordinator's own project settings out
+of the node's context - the node is told what to do by the brief alone.
 
 The SDK MERGES :attr:`~claude_agent_sdk.ClaudeAgentOptions.env` into the inherited
 process environment rather than replacing it, so overriding ``HOME`` costs the child
-nothing else. What it does cost is the login: the CLI reads that from
-``$HOME/.claude/.credentials.json``, and an empty home answers "Not logged in". The
-credential is therefore linked into the node's home, and nothing else is.
+nothing else. What it does cost is the login: the CLI reads that from its configuration
+directory, and an empty one answers "Not logged in". ``CLAUDE_CONFIG_DIR`` points the
+node at a directory under the run store holding its OWN copy of the credential, so a
+token refresh lands in the node's copy and never in the operator's file, and N parallel
+nodes never share one file. ``HOME`` is overridden as well, because a Node program reads
+``USERPROFILE`` rather than ``HOME`` on Windows and neither is the credential knob.
 
-This is the one genuinely external edge in graph A, so it is not unit-tested: an
-exception here is turned into a failed node, never allowed past the branch, and the
-attended scratch-fleet run is what exercises it.
+The model call itself is the one genuinely external edge in graph A, so it is not
+unit-tested: an exception there is turned into a failed node, never allowed past the
+branch, and the attended scratch-fleet run is what exercises it. The credential copy IS
+unit-tested, at the constructor seam that injects the source path.
 
 Contents:
     * :class:`ClaudeSdkWork` - the port implementation.
@@ -20,6 +24,7 @@ Contents:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
@@ -32,20 +37,54 @@ _PROMPT = (
     "Apply the change described in your system prompt to this repository. Commit with a clear message. Do not push."
 )
 _TOOLS = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
-_CREDENTIALS_REL = Path(".claude") / ".credentials.json"
+_CONFIG_DIR_NAME = ".claude"
+_CREDENTIALS_NAME = ".credentials.json"
+_OWNER_ONLY = 0o600
+
+
+def _default_credentials_path() -> Path:
+    """Return the operator's own Claude credential file.
+
+    Returns:
+        ``~/.claude/.credentials.json``, whether or not it exists.
+    """
+    return Path.home() / _CONFIG_DIR_NAME / _CREDENTIALS_NAME
 
 
 class ClaudeSdkWork:
     """Run one work node as a Claude Agent SDK client."""
 
-    def __init__(self, *, max_turns: int = 25) -> None:
-        """Bound how long a node may run.
+    def __init__(self, *, max_turns: int = 25, credentials_source: Path | None = None) -> None:
+        """Bound how long a node may run and say where its login is copied from.
 
         Args:
             max_turns: Turn ceiling handed to the SDK; the baseline has no spend cap,
                 so this is the only bound on a node.
+            credentials_source: File the per-node credential copy is made from;
+                defaults to the operator's own. Injected so the copy is testable
+                without reading the operator's real login.
         """
         self._max_turns = max_turns
+        self._credentials_source = credentials_source or _default_credentials_path()
+
+    def prepare_config_dir(self, home: Path) -> Path:
+        """Give the node its own agent configuration directory, with its own credential.
+
+        The copy is created with ``O_EXCL`` and mode ``0600`` in one step rather than
+        written and then restricted, so the secret is never briefly world-readable. An
+        existing copy is left alone (the node may have refreshed its token into it), and
+        an absent source is left alone too: the node then fails with the CLI's own "not
+        logged in" message, which is the honest outcome.
+
+        Args:
+            home: The node's isolated home directory.
+
+        Returns:
+            The directory to hand the child as ``CLAUDE_CONFIG_DIR``.
+        """
+        config_dir = home / _CONFIG_DIR_NAME
+        _copy_credential(self._credentials_source, config_dir / _CREDENTIALS_NAME)
+        return config_dir
 
     async def run(self, worktree: Path, brief: str, model: str, home: Path) -> WorkResult:
         """Run the node against ``worktree`` and report what it did.
@@ -59,7 +98,7 @@ class ClaudeSdkWork:
         Returns:
             A typed record of the run: never the node's prose.
         """
-        _link_credentials_into(home)
+        config_dir = self.prepare_config_dir(home)
         options = ClaudeAgentOptions(
             cwd=str(worktree),
             system_prompt=brief,
@@ -68,7 +107,7 @@ class ClaudeSdkWork:
             max_turns=self._max_turns,
             permission_mode="acceptEdits",
             allowed_tools=_TOOLS,
-            env={"HOME": str(home)},
+            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)},
         )
         try:
             async with ClaudeSDKClient(options=options) as client:
@@ -83,27 +122,23 @@ class ClaudeSdkWork:
         return WorkResult(ok=False, error="no ResultMessage")
 
 
-def _link_credentials_into(home: Path) -> None:
-    """Make the operator's Claude login reachable from an isolated agent home.
-
-    A symlink is preferred so the secret stays in exactly one place; where the platform
-    refuses one (Windows without the symlink privilege) a copy is made instead and
-    restricted to the owner. Absent credentials are left alone: the node then reports a
-    failed run with the CLI's own message, which is the honest outcome.
+def _copy_credential(source: Path, destination: Path) -> None:
+    """Copy ``source`` to ``destination`` once, owner-only, never overwriting.
 
     Args:
-        home: The node's home directory.
+        source: The credential to copy; a missing one is not an error.
+        destination: Where the node's own copy goes.
     """
-    source = Path.home() / _CREDENTIALS_REL
-    link = home / _CREDENTIALS_REL
-    if link.is_symlink() or link.exists() or not source.is_file():
+    if not source.is_file():
         return
-    link.parent.mkdir(parents=True, exist_ok=True)
+    payload = source.read_bytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        link.symlink_to(source)
-    except OSError:
-        link.write_bytes(source.read_bytes())
-        link.chmod(0o600)
+        handle = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _OWNER_ONLY)
+    except FileExistsError:
+        return
+    with os.fdopen(handle, "wb") as opened:
+        opened.write(payload)
 
 
 def _to_result(message: ResultMessage) -> WorkResult:

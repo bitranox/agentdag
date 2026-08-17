@@ -69,9 +69,17 @@ class GitCli:
         """Return the commit id ``HEAD`` points at in ``repo``."""
         return _git("rev-parse", "--verify", "-q", "HEAD", cwd=repo).stdout.strip()
 
-    def has_commit(self, repo: Path, sha: str) -> bool:
-        """Report whether ``repo`` already contains commit ``sha``."""
-        return _git("cat-file", "-e", f"{sha}^{{commit}}", cwd=repo, check=False).returncode == 0
+    def ref_sha(self, repo: Path, ref: str) -> str | None:
+        """Return the commit ``ref`` points at in ``repo``, or ``None`` if it has none.
+
+        An object-existence check would not do here: a push whose objects transferred
+        but whose ref update was rejected leaves the commit present in the target while
+        the branch still points elsewhere, so only the REF answers "is this applied?".
+        """
+        found = _git("rev-parse", "--verify", "-q", ref, cwd=repo, check=False)
+        if found.returncode != 0:
+            return None
+        return found.stdout.strip() or None
 
     def default_branch(self, bare_repo: Path) -> str:
         """Return the branch ``HEAD`` points at in a bare repository."""

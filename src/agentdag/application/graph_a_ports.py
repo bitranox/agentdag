@@ -42,8 +42,8 @@ class GitPort(Protocol):
         """Return the commit id ``HEAD`` points at in ``repo``."""
         ...
 
-    def has_commit(self, repo: Path, sha: str) -> bool:
-        """Report whether ``repo`` already contains commit ``sha``."""
+    def ref_sha(self, repo: Path, ref: str) -> str | None:
+        """Return the commit ``ref`` points at in ``repo``, or ``None`` if it has none."""
         ...
 
     def default_branch(self, bare_repo: Path) -> str:

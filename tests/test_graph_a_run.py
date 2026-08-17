@@ -18,7 +18,7 @@ import pytest
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
 from agentdag.adapters.graph_a.store_fs import FsRunStore
-from agentdag.application.graph_a import apply, run_graph
+from agentdag.application.graph_a import apply, make_scratch_fleet, run_graph
 from agentdag.domain.graph_a import PushIntent, WorkResult
 
 GREEN = "test:\n\t@exit 0\n"
@@ -63,6 +63,37 @@ class FailingWork:
         return WorkResult(ok=False, error="refused")
 
 
+class RecordingGit:
+    """The real git adapter with every push it was asked to make written down.
+
+    Delegation, not a patch: ``apply`` takes the git port as a parameter, so this is
+    injected at the same seam production uses and every call still hits real git.
+    """
+
+    def __init__(self) -> None:
+        self._git = GitCli()
+        self.pushes: list[tuple[Path, str]] = []
+
+    def mirror(self, source: Path, dest: Path) -> None:
+        self._git.mirror(source, dest)
+
+    def clone(self, origin: Path, dest: Path) -> None:
+        self._git.clone(origin, dest)
+
+    def head_sha(self, repo: Path) -> str:
+        return self._git.head_sha(repo)
+
+    def ref_sha(self, repo: Path, ref: str) -> str | None:
+        return self._git.ref_sha(repo, ref)
+
+    def default_branch(self, bare_repo: Path) -> str:
+        return self._git.default_branch(bare_repo)
+
+    def push(self, worktree: Path, target: Path, branch: str) -> None:
+        self.pushes.append((target, branch))
+        self._git.push(worktree, target, branch)
+
+
 class YesApprover:
     def confirm(self, prompt: str) -> bool:
         return True
@@ -102,6 +133,7 @@ def scratch_fleet(tmp_path: Path, git_port: GitCli, names: list[str]) -> tuple[P
 def test_run_graph_end_to_end_pushes_after_approve(tmp_path: Path) -> None:
     gitp = GitCli()
     real = make_repo(tmp_path, "real1", GREEN)
+    real_before = git("rev-parse", "main", cwd=real)
     scratch = tmp_path / "scratch"
     origin = scratch / "origin" / "real1.git"
     origin.parent.mkdir(parents=True)
@@ -123,7 +155,9 @@ def test_run_graph_end_to_end_pushes_after_approve(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert git("rev-parse", "main", cwd=origin) == git("rev-parse", "HEAD", cwd=store.worktree("real1"))
-    assert git("rev-parse", "main", cwd=real) != git("rev-parse", "main", cwd=origin)  # the REAL repo is untouched
+    # the REAL repo is untouched: it still points where it did BEFORE the run, which a
+    # bare "differs from the origin" would also say if the run had rewritten it.
+    assert git("rev-parse", "main", cwd=real) == real_before
     assert (store.root / "tally.json").exists()
 
 
@@ -221,7 +255,8 @@ def test_run_graph_a_failed_work_node_never_runs_the_gate(tmp_path: Path) -> Non
     origin.parent.mkdir(parents=True)
     gitp.mirror(real, origin)
     store = FsRunStore.create(tmp_path / "runs")
-    exploding_gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"))
+    # a green gate: the assertion is that it never RAN, proved by the absence of its log
+    unused_gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"))
     rc = asyncio.run(
         run_graph(
             origins=[origin],
@@ -230,7 +265,7 @@ def test_run_graph_a_failed_work_node_never_runs_the_gate(tmp_path: Path) -> Non
             parallel=1,
             scratch_root=scratch,
             git=gitp,
-            gate=exploding_gate,
+            gate=unused_gate,
             work=FailingWork(),
             approve=NoApprover(),
             store=store,
@@ -288,3 +323,108 @@ def test_apply_replay_pushes_nothing_and_refuses_non_scratch(tmp_path: Path) -> 
             git=gitp,
             store=store,
         )
+
+
+def staged_push(tmp_path: Path, name: str) -> tuple[Path, Path, FsRunStore, PushIntent]:
+    """Build a scratch origin with one unpushed commit in its worktree, ready to apply."""
+    gitp = GitCli()
+    real = make_repo(tmp_path, name, GREEN)
+    scratch = tmp_path / "s"
+    origin = scratch / "origin" / f"{name}.git"
+    origin.parent.mkdir(parents=True, exist_ok=True)
+    gitp.mirror(real, origin)
+    store = FsRunStore.create(tmp_path / "runs")
+    worktree = store.worktree(name)
+    gitp.clone(origin, worktree)
+    (worktree / "x").write_text("x")
+    git("add", "-A", cwd=worktree)
+    git("commit", "-q", "-m", "c", cwd=worktree)
+    sha = gitp.head_sha(worktree)
+    return scratch, origin, store, PushIntent(repo=origin, head_sha=sha, dedup_key=f"{name}.git-{sha}")
+
+
+def test_apply_pushes_when_the_commit_is_present_but_the_branch_is_behind(tmp_path: Path) -> None:
+    """A rejected ref update leaves the OBJECT in the target; the push must still happen."""
+    scratch, origin, store, intent = staged_push(tmp_path, "objectsonly")
+    worktree = store.worktree("objectsonly")
+    before = git("rev-parse", "main", cwd=origin)
+    # exactly what a transferred-but-rejected push leaves behind: the object, not the ref
+    git("push", "-q", str(origin), f"{intent.head_sha}:refs/tmp/objects-only", cwd=worktree)
+    assert git("rev-parse", "main", cwd=origin) == before
+    recorder = RecordingGit()
+
+    assert apply([intent], scratch_root=scratch, git=recorder, store=store) == ["pushed"]
+
+    assert recorder.pushes == [(origin, "main")]
+    assert git("rev-parse", "main", cwd=origin) == intent.head_sha
+
+
+def test_apply_reports_already_present_without_pushing_when_the_ref_matches(tmp_path: Path) -> None:
+    scratch, origin, store, intent = staged_push(tmp_path, "alreadythere")
+    worktree = store.worktree("alreadythere")
+    git("push", "-q", str(origin), "HEAD:main", cwd=worktree)  # somebody else already applied it
+    recorder = RecordingGit()
+
+    assert apply([intent], scratch_root=scratch, git=recorder, store=store) == ["already-present"]
+
+    assert recorder.pushes == []
+    assert store.marker(intent.dedup_key).exists()
+    assert git("rev-parse", "main", cwd=origin) == intent.head_sha
+
+
+def test_apply_validates_every_target_before_pushing_any(tmp_path: Path) -> None:
+    scratch, origin, store, intent = staged_push(tmp_path, "validated")
+    outside = PushIntent(repo=tmp_path / "elsewhere.git", head_sha="0" * 40, dedup_key="elsewhere.git-0")
+    before = git("rev-parse", "main", cwd=origin)
+    recorder = RecordingGit()
+
+    with pytest.raises(ValueError, match="not under"):
+        apply([intent, outside], scratch_root=scratch, git=recorder, store=store)
+
+    assert recorder.pushes == []
+    assert git("rev-parse", "main", cwd=origin) == before
+    assert not store.marker(intent.dedup_key).exists()
+
+
+def test_make_scratch_fleet_refuses_two_repositories_sharing_a_basename(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="share the basename") as raised:
+        make_scratch_fleet([tmp_path / "a" / "foo", tmp_path / "b" / "foo"], tmp_path / "scratch", GitCli())
+    message = str(raised.value)
+    assert str(tmp_path / "a" / "foo") in message
+    assert str(tmp_path / "b" / "foo") in message
+
+
+def test_run_graph_refuses_two_origins_sharing_a_basename(tmp_path: Path) -> None:
+    store = FsRunStore.create(tmp_path / "runs")
+    with pytest.raises(ValueError, match="share the basename"):
+        asyncio.run(
+            run_graph(
+                origins=[tmp_path / "one" / "foo.git", tmp_path / "two" / "foo.git"],
+                brief="add a line",
+                model="sonnet",
+                parallel=1,
+                scratch_root=tmp_path / "scratch",
+                git=GitCli(),
+                gate=true_gate(tmp_path),
+                work=CommittingWork(),
+                approve=NoApprover(),
+                store=store,
+            )
+        )
+
+
+def test_make_scratch_fleet_reuses_a_mirror_and_refresh_rebuilds_it(tmp_path: Path) -> None:
+    gitp = GitCli()
+    real = make_repo(tmp_path, "stale", GREEN)
+    scratch = tmp_path / "scratch"
+    origin = make_scratch_fleet([real], scratch, gitp)[0]
+    mirrored_at = git("rev-parse", "main", cwd=origin)
+    (real / "LATER.md").write_text("later\n")
+    git("add", "-A", cwd=real)
+    git("commit", "-q", "-m", "after the mirror", cwd=real)
+
+    assert make_scratch_fleet([real], scratch, gitp) == [origin]
+    assert git("rev-parse", "main", cwd=origin) == mirrored_at  # stale, and silently so
+
+    assert make_scratch_fleet([real], scratch, gitp, refresh=True) == [origin]
+    assert git("rev-parse", "main", cwd=origin) == git("rev-parse", "main", cwd=real)
