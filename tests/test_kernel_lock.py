@@ -46,3 +46,27 @@ def test_a_live_pid_with_a_different_start_time_is_not_the_holder() -> None:
     assert holder_is_alive(me)
     # a reused pid is never the test on its own
     assert not holder_is_alive(me.model_copy(update={"pid_start_time": me.pid_start_time + "x"}))
+
+
+@pytest.mark.os_agnostic
+def test_release_of_a_broken_stale_lock_does_not_touch_the_new_holder(tmp_path: Path) -> None:
+    """acquire() breaking a stale lock hands back a token for the OLD holder.
+
+    If a second process races in afterwards and takes the lock for itself, the
+    first process's (now-stale) token must not be able to unlink that second
+    process's lock - release() only unlinks a lock file that still names its
+    own token's holder.
+    """
+    me = current_holder()
+    dead = LockHolder(host=me.host, boot_id=me.boot_id, pid=2**22 - 1, pid_start_time="1")
+    (tmp_path / "lock").write_text(dead.model_dump_json())
+
+    stale_token = FileRunLock().acquire(tmp_path, me)  # breaks the dead holder's lock, returns token T1
+
+    other = me.model_copy(update={"pid_start_time": me.pid_start_time + "-other"})
+    (tmp_path / "lock").write_text(other.model_dump_json())  # a different process re-acquired it
+
+    FileRunLock().release(stale_token)
+
+    assert (tmp_path / "lock").exists()
+    assert json.loads((tmp_path / "lock").read_text())["pid_start_time"] == other.pid_start_time

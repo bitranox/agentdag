@@ -6,7 +6,7 @@ journal key. No I/O here.
 
 Contents:
     * :class:`Kind`, :class:`NodeStatus`, :class:`ErrorType`, :class:`Isolation`,
-      :class:`TierRole`, :class:`Executor`, :class:`RunStatus` - the kernel's closed
+      :class:`TierRole`, :class:`ExecutorKind`, :class:`RunStatus` - the kernel's closed
       vocabularies, each a :class:`~enum.StrEnum`.
     * :class:`Budget`, :class:`Requirement` - per-node limits.
     * :class:`NodeSpec` - what the planner emits and the coordinator dispatches (2.1).
@@ -32,7 +32,7 @@ __all__ = [
     "Budget",
     "Decision",
     "ErrorType",
-    "Executor",
+    "ExecutorKind",
     "Isolation",
     "Kind",
     "KnowledgeUsed",
@@ -108,7 +108,7 @@ class TierRole(StrEnum):
     TOP = "top"
 
 
-class Executor(StrEnum):
+class ExecutorKind(StrEnum):
     """The two executor families slice 1 knows by name.
 
     An ``mcp:<server>/<tool>`` string stays free text on :class:`NodeSpec` rather

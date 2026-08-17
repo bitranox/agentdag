@@ -1,8 +1,11 @@
 """The journal on disk: one writer, O_APPEND, one JSON object per line (design 3.1).
 
-Every call to :meth:`JsonlJournal.append` writes the same line to two files - the
-journal itself and an audit copy - so the audit log is always a byte-for-byte
-superset of the journal and can never fall behind it.
+Every call to :meth:`JsonlJournal.append` writes the same line to two files, audit
+copy first and then the journal - so the guarantee runs in this direction only:
+the journal is never AHEAD of the audit copy. A crash between the two writes
+leaves at most one extra line in the audit copy that the journal does not have
+yet; replay only ever reads the journal (see :meth:`JsonlJournal.lines`), so that
+extra audit line is simply never replayed, not a correctness problem.
 
 Contents:
     * :class:`JsonlJournal` - the :class:`~agentdag.application.kernel.ports.Journal` port over two JSONL files.
@@ -40,19 +43,22 @@ class JsonlJournal:
         self._audit = audit_path
 
     def append(self, line: JournalLine) -> None:
-        """Append ``line`` to the journal and the audit copy, each fsynced in turn.
+        """Append ``line`` to the audit copy, then the journal, each fsynced in turn.
 
         Each file is opened, written, flushed and fsynced independently under
         ``O_WRONLY | O_CREAT | O_APPEND`` - append mode is what makes a single
         writer's lines land whole even if another process opens the same file at
         the same time; this adapter does not itself enforce single-writer, the
-        run lock does (design 3.1, 3.4).
+        run lock does (design 3.1, 3.4). The audit copy is written FIRST so a
+        crash between the two writes can only leave the audit copy ahead of the
+        journal, never the journal ahead of the audit copy - replay reads the
+        journal, so it never reads a line the audit copy does not also hold.
 
         Args:
             line: The typed line to record.
         """
         text = dump_journal_line(line) + "\n"
-        for path in (self._journal, self._audit):
+        for path in (self._audit, self._journal):
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
