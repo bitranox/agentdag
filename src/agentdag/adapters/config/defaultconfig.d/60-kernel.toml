@@ -1,0 +1,86 @@
+# ==============================================================================
+# Kernel Configuration - the Claude executor's credential and per-run defaults
+# ==============================================================================
+#
+# Settings are loaded via lib_layered_config and can be overridden via:
+#   - Host/User config files (see precedence list in defaultconfig.toml)
+#   - Environment variables (see below)
+#
+# Environment Variable Naming
+# ---------------------------
+# Use lib_layered_config format for all environment variable overrides:
+#
+#   Format: <SLUG>___<SECTION>__<KEY>=<VALUE>
+#
+#   Examples:
+#     AGENTDAG___CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/home/op/.config/agentdag/claude-oauth-token
+#     AGENTDAG___KERNEL__PARALLEL=4
+#
+# .env File Support
+# -----------------
+# In .env files (no prefix needed), use double underscore for nesting:
+#
+#   CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/home/op/.config/agentdag/claude-oauth-token
+#   KERNEL__PARALLEL=4
+#
+# Precedence (lowest to highest):
+#   defaults -> app config -> host config -> user config -> .env file -> env vars
+#
+# IMPORTANT: Never commit a real keyfile path, let alone the token itself, to
+# version control - see the srv Iron rule "No secrets in tracked files".
+#
+[credentials]
+
+# Purpose: path to the operator's Claude Code OAuth-token keyfile (the output of
+#   `claude setup-token`, saved to this path) - the MEASURED default credential path
+#   (D3, RESEARCH workflow/design/probes/d3-subscription-terms.md: arm A2 proved
+#   CLAUDE_CODE_OAUTH_TOKEN authenticates an SDK child whose CLAUDE_CONFIG_DIR is an
+#   EMPTY directory).
+# Type: string (absolute path) or ""
+# Default: "" (empty means: use the credential COPY path instead - a private,
+#   owner-only copy of ~/.claude/.credentials.json into each node's own config dir;
+#   D3 arm C, the CredentialCopy class)
+# Environment Variable: AGENTDAG___CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/path/to/keyfile
+# .env: CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/path/to/keyfile
+# Note: the file itself is never read by this config layer - only its PATH is
+#   configuration; the token is read fresh from disk on every node dispatch.
+claude_oauth_token_file = ""
+
+# ==============================================================================
+# Kernel run defaults - the coordinator's own limits, shared by every workflow
+# ==============================================================================
+[kernel]
+
+# Purpose: where a run's own directory (journal, node dirs, artefacts) is created
+# Type: string (absolute path)
+# Default: "/var/lib/agentdag/runs"
+# Environment Variable: AGENTDAG___KERNEL__RUNS_DIR=/var/lib/agentdag/runs
+# .env: KERNEL__RUNS_DIR=/var/lib/agentdag/runs
+runs_dir = "/var/lib/agentdag/runs"
+
+# Purpose: how many map branches (or top-level nodes) a run may dispatch at once
+# Type: integer
+# Default: 2
+# Environment Variable: AGENTDAG___KERNEL__PARALLEL=2
+# .env: KERNEL__PARALLEL=2
+parallel = 2
+
+# Purpose: the SDK turn ceiling for one node's dispatch (ClaudeAgentOptions.max_turns)
+# Type: integer
+# Default: 25
+# Environment Variable: AGENTDAG___KERNEL__MAX_TURNS=25
+# .env: KERNEL__MAX_TURNS=25
+max_turns = 25
+
+# Purpose: Bash command substrings a node's PreToolUse hook denies outright (design 7)
+# Type: array of strings
+# Default: the six network-egress / publishing commands below
+# Environment Variable: AGENTDAG___KERNEL__DENY_BASH=git push,gh pr,gh release
+# .env: KERNEL__DENY_BASH=git push,gh pr,gh release
+# Note: matched as a substring after whitespace-collapsing (see
+#   agentdag.adapters.kernel.hooks_claude.deny_bash_commands). This is a denylist
+#   for exfiltration/publishing actions, not a general filesystem sandbox: a Bash
+#   command that merely WRITES outside the isolation root (e.g. `printf x > /tmp/y`)
+#   is not caught here - the post-node isolation-root scan is the backstop for that
+#   (measured live: workflow/design/probes/m2-hooks-dontask.md in RESEARCH).
+deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
