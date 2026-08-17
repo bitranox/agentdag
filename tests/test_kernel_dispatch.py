@@ -17,7 +17,17 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.dispatch import Body, Dispatcher
 from agentdag.domain.journal import StartedLine
-from agentdag.domain.models import Budget, ErrorType, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus
+from agentdag.domain.models import (
+    Budget,
+    ErrorType,
+    Isolation,
+    Kind,
+    KnowledgeUsed,
+    NodeOutcome,
+    NodeSpec,
+    NodeStatus,
+    Tokens,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -215,3 +225,31 @@ def test_a_raising_body_is_a_failed_record_not_an_exception(tmp_path: Path) -> N
     assert record.error.transient is True
     assert "clone failed" in record.error.message
     assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]
+
+
+@pytest.mark.os_agnostic
+def test_a_bodys_measurements_survive_into_the_record_the_file_and_the_journal(tmp_path: Path) -> None:
+    dispatcher, journal, run_dir = make(tmp_path / "runs")
+
+    async def measured(_: Path) -> NodeOutcome:
+        return NodeOutcome(
+            status=NodeStatus.DONE,
+            artefact_refs=["tally.json"],
+            tokens=Tokens(**{"in": 10, "out": 20, "cache_read": 5, "reasoning": None}),
+            charged_tokens={"sonnet": 35},
+            knowledge_used=[KnowledgeUsed(dataset="fleet", content_hash="sha256:0")],
+            executor_used="claude",
+            model_used="sonnet",
+            effort_used="-",
+        )
+
+    record = asyncio.run(dispatcher.dispatch(spec("m"), brief="b", input_obj={}, body=measured))
+
+    assert record.tokens is not None
+    assert record.tokens.in_ == 10
+    assert record.charged_tokens == {"sonnet": 35}
+    assert [used.dataset for used in record.knowledge_used] == ["fleet"]
+    # the nested Tokens keeps its wire alias ("in", not "in_") in both files it reaches
+    assert '"in": 10' in next(run_dir.root.glob("nodes/m/*/record.json")).read_text(encoding="utf-8")
+    assert '"in":10' in run_dir.journal_path.read_text(encoding="utf-8")
+    assert len(journal.lines()) == 2
