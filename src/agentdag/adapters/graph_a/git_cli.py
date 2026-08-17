@@ -41,16 +41,24 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.
 
     Returns:
         The completed process, with stdout and stderr decoded as utf-8.
+
+    Raises:
+        RuntimeError: ``check`` is true and git exits non-zero; the message
+            carries git's own stderr rather than the bare
+            ``subprocess.CalledProcessError`` repr, which drops it.
     """
     # Suppressions below: a fixed executable and an argument list, never a shell string.
-    return subprocess.run(  # nosec B603  # noqa: S603
-        [GIT_EXECUTABLE, *args],
-        cwd=cwd,
-        check=check,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        return subprocess.run(  # nosec B603  # noqa: S603
+            [GIT_EXECUTABLE, *args],
+            cwd=cwd,
+            check=check,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"git {' '.join(args)} failed ({exc.returncode}): {exc.stderr.strip()}") from exc
 
 
 def clear_readonly_and_retry(function: Callable[..., object], path: str, excinfo: BaseException) -> None:

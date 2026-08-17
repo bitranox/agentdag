@@ -219,6 +219,11 @@ def test_git_cli_push_moves_the_bare_target_and_leaves_the_source_alone(tmp_path
     assert git("rev-parse", "main", cwd=real) == before
 
 
+def test_git_cli_errors_carry_git_stderr(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match=r"not a git repository|fatal"):
+        GitCli().head_sha(tmp_path)
+
+
 def test_gate_returns_the_command_exit_code_under_the_lock(tmp_path: Path) -> None:
     for code in (0, 1, 3):
         gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", f"raise SystemExit({code})"))

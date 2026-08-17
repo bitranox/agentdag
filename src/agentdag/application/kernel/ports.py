@@ -9,6 +9,7 @@ Contents:
     * :class:`Clock` - the ONE seam the kernel reads wall-clock time through.
     * :func:`stamp` - render a clock reading as the journal's timestamp format.
     * :class:`Journal` - the append-only, replayable log of what a run has done.
+    * :class:`RunDir` - the run directory's on-disk layout (state, journal, decisions, node work areas).
     * :class:`RunLock` - the run directory's exclusive lock.
     * :class:`LockToken` - proof of a held lock, returned by :meth:`RunLock.acquire`.
     * :class:`ExecutorRequest` - everything an :class:`Executor` needs to run one node.
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ...domain.journal import JournalLine
-    from ...domain.models import LockHolder, NodeOutcome
+    from ...domain.models import Decision, LockHolder, NodeOutcome, RunState
 
 __all__ = [
     "Clock",
@@ -37,6 +38,7 @@ __all__ = [
     "ExecutorRequest",
     "Journal",
     "LockToken",
+    "RunDir",
     "RunLock",
     "Scope",
     "ScopeHandle",
@@ -89,6 +91,67 @@ class Journal(Protocol):
 
     def lines(self) -> list[JournalLine]:
         """Return every line the journal holds, parsed and typed, in file order."""
+        ...
+
+
+class RunDir(Protocol):
+    """The run directory's on-disk layout: state, journal, decisions, node work areas (design 3.1).
+
+    One run owns one directory (``root``); everything else is a path under it,
+    created on demand by the method that names it. ``journal_path``,
+    ``audit_path``, ``state_path`` and ``decisions_dir`` are plain attributes
+    rather than methods because every caller needs the same fixed path, not a
+    fresh one built from an argument.
+    """
+
+    root: Path
+    journal_path: Path
+    audit_path: Path
+    state_path: Path
+    decisions_dir: Path
+
+    def node_dir(self, node_id: str, hash8: str) -> Path:
+        """Return (creating it, owner-only) ``nodes/<node_id>/<hash8>/``."""
+        ...
+
+    def worktree(self, name: str) -> Path:
+        """Return ``wt/<name>``; not created - the git port creates the worktree itself."""
+        ...
+
+    def intents_dir(self, kind: str) -> Path:
+        """Return (creating it) ``intents/<kind>/``."""
+        ...
+
+    def marker(self, kind: str, key: str) -> Path:
+        """Return ``done/<kind>/<key>``, creating the ``done/<kind>/`` directory."""
+        ...
+
+    def artefacts_dir(self) -> Path:
+        """Return ``artefacts/``."""
+        ...
+
+    def manifest_path(self, map_id: str) -> Path:
+        """Return ``manifest/<map_id>.json``."""
+        ...
+
+    def write_atomic(self, rel: str, text: str) -> Path:
+        """Write ``text`` to ``rel`` (relative to ``root``) atomically, owner-only."""
+        ...
+
+    def read_state(self) -> RunState:
+        """Read and parse ``state_path``."""
+        ...
+
+    def write_state(self, state: RunState) -> None:
+        """Write ``state_path`` atomically."""
+        ...
+
+    def read_decision(self, node_id: str) -> Decision | None:
+        """Read ``decisions/<node_id>.json``, or ``None`` if no decision is recorded yet."""
+        ...
+
+    def write_decision(self, decision: Decision) -> None:
+        """Write ``decisions/<node_id>.json`` once; refuses to overwrite an existing one."""
         ...
 
 

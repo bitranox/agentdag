@@ -6,6 +6,7 @@ Contents:
     * :func:`~.lock_file.current_holder` - identify the calling process as a lock holder.
     * :func:`~.lock_file.holder_is_alive` - whether a recorded holder is still the live process.
     * :class:`~.clock_utc.UtcClock` - the clock port over the system's UTC wall clock.
+    * :class:`~.run_store_fs.FsRunDir` - the run directory port over its on-disk layout.
 """
 
 from __future__ import annotations
@@ -13,5 +14,6 @@ from __future__ import annotations
 from .clock_utc import UtcClock
 from .journal_jsonl import JsonlJournal
 from .lock_file import FileRunLock, current_holder, holder_is_alive
+from .run_store_fs import FsRunDir
 
-__all__ = ["FileRunLock", "JsonlJournal", "UtcClock", "current_holder", "holder_is_alive"]
+__all__ = ["FileRunLock", "FsRunDir", "JsonlJournal", "UtcClock", "current_holder", "holder_is_alive"]
