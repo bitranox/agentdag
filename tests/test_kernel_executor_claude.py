@@ -19,16 +19,17 @@ from typing import Any
 
 import pytest
 
-# _append_transcript and _input_total are internal helpers this fix round's review
-# explicitly asked to be unit-tested directly (owner-only file mode; the three-field
-# sum) rather than only indirectly through ClaudeExecutor.run(), which would need a
-# real SDK/network call this module's own design keeps out of unit tests.
+# append_transcript and input_total are tested seams this fix round's review asked to
+# be unit-tested directly (owner-only file mode; the three-field sum) rather than only
+# indirectly through ClaudeExecutor.run(), which would need a real SDK/network call
+# this module's own design keeps out of unit tests - both are public, per the same
+# review, exactly because they are tested this way.
 from agentdag.adapters.kernel.executor_claude import (
     ClaudeExecutor,
     CredentialCopy,
     OAuthTokenFile,
-    _append_transcript,  # pyright: ignore[reportPrivateUsage]
-    _input_total,  # pyright: ignore[reportPrivateUsage]
+    append_transcript,
+    input_total,
     outcome_from_usage,
 )
 from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_root
@@ -148,6 +149,13 @@ def test_child_env_is_an_allowlist_and_the_credential_never_touches_the_operator
         "SYSTEMROOT",
         "COMSPEC",
         "PATHEXT",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "WINDIR",
+        "SYSTEMDRIVE",
+        "PROGRAMDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
     }
     src = tmp_path / "creds.json"
     src.write_text('{"t": 1}')
@@ -177,7 +185,7 @@ def test_child_env_creates_home_and_config_dir_owner_only(tmp_path: Path) -> Non
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits are not meaningful on Windows")
 def test_append_transcript_writes_the_file_owner_only(tmp_path: Path) -> None:
     path = tmp_path / "transcript.jsonl"
-    _append_transcript(path, {"note": "hello"})
+    append_transcript(path, {"note": "hello"})
     mode = stat.S_IMODE(path.stat().st_mode)
     assert mode == 0o600
     assert "hello" in path.read_text(encoding="utf-8")
@@ -186,16 +194,23 @@ def test_append_transcript_writes_the_file_owner_only(tmp_path: Path) -> None:
 @pytest.mark.os_agnostic
 def test_input_total_sums_the_three_input_fields() -> None:
     assert (
-        _input_total({"input_tokens": 50, "cache_creation_input_tokens": 3873, "cache_read_input_tokens": 119786})
+        input_total({"input_tokens": 50, "cache_creation_input_tokens": 3873, "cache_read_input_tokens": 119786})
         == 50 + 3873 + 119786
     )
-    assert _input_total({}) == 0
-    assert _input_total({"input_tokens": 7}) == 7
+    assert input_total({}) == 0
+    assert input_total({"input_tokens": 7}) == 7
 
 
 @pytest.mark.os_agnostic
 def test_options_for_passes_a_validated_effort_and_rejects_an_unknown_one(tmp_path: Path) -> None:
-    """``_options_for`` never touches the network, so this is a real-wiring unit test."""
+    """``_options_for`` never touches the network, so this is a real-wiring unit test.
+
+    Stays on the private ``_options_for`` (not the public ``build_options_env``,
+    which only builds the env, not a full ``ClaudeAgentOptions``) because checking
+    ``options.effort`` needs the real options object; both ignores are narrow and
+    would go away only if ``_options_for`` itself became public or its effort value
+    got hoisted out alongside the env in ``build_options_env``.
+    """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
@@ -206,44 +221,49 @@ def test_options_for_passes_a_validated_effort_and_rejects_an_unknown_one(tmp_pa
 
 
 @pytest.mark.os_agnostic
-def test_run_never_claims_an_effort_the_dispatch_did_not_run_under(tmp_path: Path) -> None:
-    """An invalid effort raises INSIDE ``_options_for`` before any SDK/network call -
-    ``run()``'s broad except-Exception guard catches it and must stamp "-", never the
-    invalid requested value, since the dispatch never actually ran under it.
+def test_run_raises_kernel_error_for_an_unknown_effort_before_any_dispatch(tmp_path: Path) -> None:
+    """An invalid effort is a config bug, validated by ``_validated_effort`` in
+    ``run()`` itself, BEFORE its own broad except-Exception guard - it must propagate
+    out of ``run()``, never come back as a FAILED/``executor_error`` record ``run()``
+    itself produced (a retrier would just try the identical bad request again).
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
-    outcome = asyncio.run(executor.run(_request(tmp_path, effort="bogus")))
-    assert outcome.status == "failed"
-    assert outcome.effort_used == "-"
+    request = _request(tmp_path, effort="turbo")
+    with pytest.raises(KernelError, match="turbo"):
+        asyncio.run(executor.run(request))
+    assert not (request.node_dir / "transcript.jsonl").exists()  # no SDK call was ever made
 
 
 @pytest.mark.os_agnostic
 def test_run_raises_kernel_error_for_a_cwd_outside_the_isolation_root_before_any_dispatch(tmp_path: Path) -> None:
-    """A cwd outside the isolation root is a config bug, caught by ``_cwd_rel`` before
-    ``ClaudeSDKClient`` is ever constructed - also network-free.
+    """A cwd outside the isolation root is a config bug, checked by ``_cwd_rel`` in
+    ``run()`` itself, BEFORE ``ClaudeSDKClient`` is ever constructed AND before
+    ``run()``'s own broad except-Exception guard - it must propagate, never come back
+    as a FAILED/``executor_error`` record ``run()`` itself produced.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
     outside_cwd = tmp_path / "elsewhere"
     outside_cwd.mkdir()
-    outcome = asyncio.run(executor.run(_request(tmp_path, cwd=outside_cwd)))
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.type == "executor_error"
-    assert "KernelError" in outcome.error.message
+    request = _request(tmp_path, cwd=outside_cwd)
+    with pytest.raises(KernelError, match="isolation_root"):
+        asyncio.run(executor.run(request))
+    assert not (request.node_dir / "transcript.jsonl").exists()  # no SDK call was ever made
 
 
 @pytest.mark.os_agnostic
-def test_options_for_blanks_every_non_allowlisted_inherited_variable_under_the_keyfile_path(
+def test_build_options_env_blanks_every_non_allowlisted_inherited_variable_under_the_keyfile_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A TRUE allowlist, not a secret-name guess: ``SSH_AUTH_SOCK`` and
     ``AWS_ACCESS_KEY_ID`` name neither token/secret/password/authorization/credential,
     so a regex-based blanklist would have let both through - this proves neither does,
-    while PATH/HOME and the credential itself survive.
+    while PATH/HOME and the credential itself survive. Drives the PUBLIC
+    ``build_options_env`` directly (no ``reportPrivateUsage`` ignore needed) - it is
+    the pure env-building half of ``_options_for``, hoisted out for exactly this.
     """
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAFAKEFAKEFAKEFAKE")
@@ -253,7 +273,7 @@ def test_options_for_blanks_every_non_allowlisted_inherited_variable_under_the_k
     keyfile.write_text("sk-ant-oat01-FROM-KEYFILE\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
     request = _request(tmp_path)
-    env = executor._options_for(request).env  # pyright: ignore[reportPrivateUsage]
+    env = executor.build_options_env(request)
     assert env["SSH_AUTH_SOCK"] == ""
     assert env["AWS_ACCESS_KEY_ID"] == ""
     # The keyfile path carries the NODE's own credential value, not the coordinator's
@@ -264,18 +284,33 @@ def test_options_for_blanks_every_non_allowlisted_inherited_variable_under_the_k
 
 
 @pytest.mark.os_agnostic
-def test_options_for_blanks_the_inherited_oauth_token_under_the_credential_copy_path(
+def test_build_options_env_blanks_the_inherited_oauth_token_under_the_credential_copy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The copy path carries NO ``CLAUDE_CODE_OAUTH_TOKEN`` of its own, so the
-    coordinator's own inherited one must be blanked, not merged through.
+    coordinator's own inherited one must be blanked, not merged through. Drives the
+    PUBLIC ``build_options_env`` directly, same reasoning as the keyfile-path test
+    above.
     """
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "operator-own-value-must-never-leak")
     src = tmp_path / "creds.json"
     src.write_text('{"t": 1}')
     executor = ClaudeExecutor(CredentialCopy(src), deny_bash=())
-    env = executor._options_for(_request(tmp_path)).env  # pyright: ignore[reportPrivateUsage]
+    env = executor.build_options_env(_request(tmp_path))
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+
+
+@pytest.mark.os_agnostic
+def test_build_options_env_raises_kernel_error_for_an_unknown_effort(tmp_path: Path) -> None:
+    """The effort validation hoisted into ``build_options_env`` fires on its own,
+    independent of :meth:`ClaudeExecutor._options_for` - proves it is not just a
+    side effect of the other test's coverage of that private method.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    with pytest.raises(KernelError, match="turbo"):
+        executor.build_options_env(_request(tmp_path, effort="turbo"))
 
 
 @pytest.mark.os_agnostic

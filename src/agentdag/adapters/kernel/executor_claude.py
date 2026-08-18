@@ -34,24 +34,27 @@ A2 proved ``CLAUDE_CODE_OAUTH_TOKEN`` authenticates a child whose
 owner-only copy of the operator's ``.credentials.json``, mirroring M1's
 ``_copy_credential``).
 
-Every streamed message is scrubbed (:func:`scrub`) and appended to
-``node_dir/transcript.jsonl`` as it arrives, owner-only (``0600``). The redaction
-guarantee is exactly two mechanisms, nothing broader: a dict VALUE is redacted when
-its own KEY is named like a secret (``password``, ``token``, ...); a STRING value
-anywhere - regardless of its key - is redacted when it matches one of the known
-secret token SHAPES (``sk-ant-...``, ``oat01-...``, ``ghp_...``, ``pypi-...``,
-``Bearer ...``). Anything else a node prints - an arbitrary string that is neither
-named nor shaped like a secret - reaches the transcript unredacted. :func:`outcome_from_usage`
-is the pure translation from one dispatch's terminal usage to the typed
-:class:`~agentdag.domain.models.NodeOutcome` the coordinator branches on; it is
-unit-tested with no SDK call at all (``tests/test_kernel_executor_claude.py``).
+Every streamed message is scrubbed (:func:`~agentdag.domain.scrub.scrub`, the domain
+module - this adapter used to define it locally, see that module's own docstring for
+why it moved) and appended to ``node_dir/transcript.jsonl`` (:func:`append_transcript`)
+as it arrives, owner-only (``0600``). The redaction guarantee is exactly two
+mechanisms, nothing broader: a dict VALUE is redacted when its own KEY is named like a
+secret (``password``, ``token``, ...); a STRING value anywhere - regardless of its key
+- is redacted when it matches one of the known secret token SHAPES (``sk-ant-...``,
+``oat01-...``, ``ghp_...``, ``pypi-...``, ``Bearer ...``). Anything else a node prints
+- an arbitrary string that is neither named nor shaped like a secret - reaches the
+transcript unredacted. :func:`outcome_from_usage` is the pure translation from one
+dispatch's terminal usage to the typed :class:`~agentdag.domain.models.NodeOutcome`
+the coordinator branches on; it is unit-tested with no SDK call at all
+(``tests/test_kernel_executor_claude.py``).
 
 Contents:
     * :data:`DEFAULT_TOOLS` - the tool set a node gets when the caller does not override it.
     * :class:`CredentialSource` - what :class:`ClaudeExecutor` needs from a credential.
     * :class:`OAuthTokenFile` - a per-operator OAuth-token keyfile (the measured default).
     * :class:`CredentialCopy` - a private, owner-only copy of ``.credentials.json``.
-    * :func:`scrub` - recursively redact secret-shaped dict values.
+    * :func:`append_transcript` - scrub and append one streamed message, owner-only.
+    * :func:`input_total` - sum the three input-token fields a usage mapping carries.
     * :func:`outcome_from_usage` - pure: one dispatch's terminal usage -> :class:`NodeOutcome`.
     * :class:`ClaudeExecutor` - the :class:`~agentdag.application.kernel.ports.Executor` implementation.
 """
@@ -61,7 +64,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -69,6 +71,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClie
 
 from ...domain.errors import KernelError
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
+from ...domain.scrub import scrub
 from .hooks_claude import deny_bash_commands, deny_outside_root
 
 if TYPE_CHECKING:
@@ -86,8 +89,9 @@ __all__ = [
     "CredentialCopy",
     "CredentialSource",
     "OAuthTokenFile",
+    "append_transcript",
+    "input_total",
     "outcome_from_usage",
-    "scrub",
 ]
 
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
@@ -105,8 +109,12 @@ _NO_VALUE = "-"
 # secret" (see _blank_everything_else, which blanks literally everything not listed
 # here rather than pattern-matching names). Proxy and CA-bundle vars are here because a
 # node genuinely needs them to reach the network through the same path the coordinator
-# does; SYSTEMROOT/USERPROFILE/COMSPEC/PATHEXT are Windows-only (harmless elsewhere,
-# since _allowlisted_env() only copies a key that is actually set).
+# does; SYSTEMROOT/USERPROFILE/COMSPEC/PATHEXT/APPDATA/LOCALAPPDATA/WINDIR/SYSTEMDRIVE/
+# PROGRAMDATA/HOMEDRIVE/HOMEPATH are Windows-only (harmless elsewhere, since
+# _allowlisted_env() only copies a key that is actually set) - Node and the CLI itself
+# read APPDATA/LOCALAPPDATA on Windows. UNVERIFIED LIVE: no D3/M2 probe has run this
+# module on a Windows host, so this list is read from what a Windows Node/CLI process
+# is documented to need, not measured against a real Windows dispatch.
 _ALLOWLIST_KEYS = (
     "PATH",
     "LANG",
@@ -129,17 +137,13 @@ _ALLOWLIST_KEYS = (
     "USERPROFILE",
     "COMSPEC",
     "PATHEXT",
-)
-
-# scrub()'s KEY pass: a dict value is redacted when its OWN KEY is named like a secret.
-_SECRET_KEY_RE = re.compile(r"(?i)token|secret|password|authorization|credential")
-
-# scrub()'s VALUE pass: a string value is redacted wherever it matches a KNOWN secret
-# token shape, regardless of its key - catches a secret echoed back under an innocuous
-# key (e.g. "content") that _SECRET_KEY_RE alone would never see.
-_SECRET_TOKEN_SHAPE_RE = re.compile(
-    r"sk-ant-[A-Za-z0-9_-]{8,}|oat01-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}"
-    r"|pypi-[A-Za-z0-9_-]{20,}|Bearer [A-Za-z0-9._-]{16,}"
+    "APPDATA",
+    "LOCALAPPDATA",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "PROGRAMDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
 )
 
 _AUTH_FAILURE_TEXT = "Not logged in"
@@ -327,59 +331,12 @@ def _copy_credential(source: Path, destination: Path) -> None:
         opened.write(payload)
 
 
-def scrub(value: Any) -> Any:
-    """Recursively redact a secret-shaped dict KEY or a secret-shaped string VALUE.
-
-    Two independent passes, applied together on every recursive call:
-
-    * KEY pass: a dict value is replaced with ``"[scrubbed]"`` whole when its own
-      key matches :data:`_SECRET_KEY_RE` (``(?i)token|secret|password|authorization|
-      credential``) - catches ``{"password": "hunter2"}`` regardless of what the
-      value looks like.
-    * VALUE pass: a STRING value - reached under any key, or as a list element, or
-      as the top-level value itself - has every substring matching
-      :data:`_SECRET_TOKEN_SHAPE_RE` (a known secret token shape: ``sk-ant-...``,
-      ``oat01-...``, ``ghp_...``, ``pypi-...``, ``Bearer ...``) replaced with
-      ``"[scrubbed]"`` - catches a token echoed back under an innocuous key (e.g.
-      ``{"content": "leaked: sk-ant-oat01-..."}}``) that the KEY pass alone would
-      never see.
-
-    Anything else - a string that is neither secret-keyed nor secret-shaped, a
-    number, a bool, ``None`` - passes through unchanged. Used on every message this
-    module streams to ``transcript.jsonl`` (:func:`_append_transcript`) and on the
-    recorded ``error.message`` text in :meth:`ClaudeExecutor.run`'s failure path, and
-    directly by ``tests/test_kernel_secrets.py`` to prove the redaction is real, not
-    vacuous.
-
-    Args:
-        value: A JSON-shaped value - typically one streamed SDK message rendered to a
-            dict, or a bare string - about to be written to disk.
-
-    Returns:
-        A structurally identical copy with every secret-keyed value and every
-        secret-shaped string substring redacted.
-
-    Example:
-        >>> scrub({"tool_input": {"password": "hunter2", "content": "see sk-ant-oat01-ABCDEFGH"}})
-        {'tool_input': {'password': '[scrubbed]', 'content': 'see [scrubbed]'}}
-    """
-    if isinstance(value, dict):
-        mapping = cast("dict[Any, Any]", value)
-        return {key: "[scrubbed]" if _SECRET_KEY_RE.search(str(key)) else scrub(val) for key, val in mapping.items()}
-    if isinstance(value, list):
-        elements = cast("list[Any]", value)
-        return [scrub(item) for item in elements]
-    if isinstance(value, str):
-        return _SECRET_TOKEN_SHAPE_RE.sub("[scrubbed]", value)
-    return value
-
-
 def _classify_error(text: str) -> NodeError:
     """Classify a failed dispatch's result text: the CLI's own login failure, or a generic executor error.
 
-    ``text`` is scrubbed (:func:`scrub`'s VALUE pass) before it becomes
-    ``NodeError.message`` - the model's own final text is exactly the kind of string
-    that could echo a secret shape back, and this message is what
+    ``text`` is scrubbed (:func:`~agentdag.domain.scrub.scrub`'s VALUE pass) before it
+    becomes ``NodeError.message`` - the model's own final text is exactly the kind of
+    string that could echo a secret shape back, and this message is what
     :meth:`Dispatcher._run_and_record` writes into ``record.json`` unscrubbed by
     anything else in that path.
     """
@@ -389,14 +346,16 @@ def _classify_error(text: str) -> NodeError:
     return NodeError(type=ErrorType.EXECUTOR_ERROR, message=scrubbed, transient=True)
 
 
-def _input_total(usage: Mapping[str, Any]) -> int:
+def input_total(usage: Mapping[str, Any]) -> int:
     """Sum the three input-token fields a usage mapping carries: what the model just saw (design 3.8).
 
     Both ``ResultMessage.usage`` (the dispatch's terminal usage) and
     ``AssistantMessage.usage`` (one turn's usage, streamed) carry the same three
     fields; this is the one place that arithmetic is written, reused by
     :func:`outcome_from_usage` for the terminal figure and by
-    :meth:`ClaudeExecutor._run` for ``first_turn_input_tokens``.
+    :meth:`ClaudeExecutor._run` for ``first_turn_input_tokens``. Public (and tested
+    directly, ``tests/test_kernel_executor_claude.py``) because it is a tested seam
+    like :func:`outcome_from_usage`, not a private implementation detail.
 
     Args:
         usage: A usage mapping; each field defaults to 0 if this SDK version does
@@ -406,7 +365,7 @@ def _input_total(usage: Mapping[str, Any]) -> int:
         ``input_tokens + cache_creation_input_tokens + cache_read_input_tokens``.
 
     Example:
-        >>> _input_total({"input_tokens": 50, "cache_creation_input_tokens": 3873, "cache_read_input_tokens": 119786})
+        >>> input_total({"input_tokens": 50, "cache_creation_input_tokens": 3873, "cache_read_input_tokens": 119786})
         123709
     """
     return (
@@ -443,7 +402,7 @@ def outcome_from_usage(
             for the CLI's own "Not logged in" text to name an auth failure specifically.
         usage: ``ResultMessage.usage`` (or ``{}``); only the four cache/token fields
             are read, each defaulting to 0 if this SDK version does not emit it.
-        first_turn_input: :func:`_input_total` of the FIRST ``AssistantMessage.usage``
+        first_turn_input: :func:`input_total` of the FIRST ``AssistantMessage.usage``
             this dispatch saw (design 3.8: what the model just saw), recorded by
             :meth:`ClaudeExecutor._run` as it streams - a distinct figure from the
             terminal ``usage`` (the LAST turn's), kept in ``key_facts`` for M3's
@@ -466,7 +425,7 @@ def outcome_from_usage(
         ... ).status
         <NodeStatus.DONE: 'done'>
     """
-    in_tokens = _input_total(usage)
+    in_tokens = input_total(usage)
     out_tokens = int(usage.get("output_tokens", 0))
     cache_read = int(usage.get("cache_read_input_tokens", 0))
     tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
@@ -596,27 +555,45 @@ class ClaudeExecutor:
     tools: tuple[str, ...] = field(default=DEFAULT_TOOLS, kw_only=True)
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
-        """Run ``request`` to completion and report its outcome.
+        """Validate ``request``, then run it to completion and report its outcome.
 
-        Any exception - the model call is the one genuinely external edge here (M1's
-        docstring) - becomes a FAILED outcome with ``executor_error`` (transient),
-        never past this method: :mod:`.dispatch`'s own ``Exception`` guard is a second,
-        outer layer; this one is the first, and the only place that can report the
-        MORE SPECIFIC ``auth_failure`` when the SDK itself completes but reports one.
+        ``request.cwd``/``request.effort`` are checked BEFORE the broad exception
+        guard below, not inside it: both a cwd outside the isolation root and an
+        unknown effort level are config bugs in whatever BUILT the request, never a
+        transient executor failure a retry could fix, so :func:`_cwd_rel` and
+        :func:`_validated_effort` raise :class:`~agentdag.domain.errors.KernelError`
+        straight out of this method - :mod:`.dispatch`'s own outer ``Exception`` guard
+        (``_run_body``) still turns that into a record one layer up (a raising body is
+        always a record there, never a dead run), but THIS method never mislabels a
+        config bug as ``executor_error``/``transient=True``, which would tell a
+        retrier to try the identical bad request again.
+
+        Any OTHER exception - the model call is the one genuinely external edge here
+        (M1's docstring) - becomes a FAILED outcome with ``executor_error``
+        (transient), never past this method: this is the first of the two guards
+        described above, and the only place that can report the MORE SPECIFIC
+        ``auth_failure`` when the SDK itself completes but reports one.
+
+        Raises:
+            KernelError: ``request.cwd`` is not under ``request.isolation_root``, or
+                ``request.effort`` is set but names no known SDK effort level - both
+                checked before ``ClaudeSDKClient`` is ever constructed.
         """
+        cwd_rel = _cwd_rel(request)
+        _validated_effort(request.effort)  # side effect only here: raise on an unknown value, nothing to keep
         try:
-            return await self._run(request)
+            return await self._run(request, cwd_rel)
         except Exception as exc:  # the external edge: never let it past this node
             return NodeOutcome(
                 status=NodeStatus.FAILED,
                 executor_used="claude",
                 model_used=request.model,
-                # Never request.effort here: reaching this branch means the dispatch
-                # did not complete (it may not even have started - _cwd_rel and
-                # _validated_effort both raise, via this same except, BEFORE any SDK
-                # call), so there is no dispatch this record could truthfully say ran
-                # under a given effort. Only _outcome_for, on a real ResultMessage,
-                # ever stamps request.effort.
+                # Never request.effort here: reaching this branch means the SDK
+                # dispatch itself did not complete (request.cwd/request.effort are
+                # already known good by this point - see the Raises note above), so
+                # there is no dispatch this record could truthfully say ran under a
+                # given effort. Only _outcome_for, on a real ResultMessage, ever
+                # stamps request.effort.
                 effort_used=_NO_VALUE,
                 # scrub()'s VALUE pass: an exception string CAN carry a header (an SDK
                 # HTTP client's own error text sometimes echoes an Authorization value)
@@ -628,22 +605,25 @@ class ClaudeExecutor:
                 ),
             )
 
-    async def _run(self, request: ExecutorRequest) -> NodeOutcome:
-        """Do the real work of :meth:`run`, inside its exception guard."""
-        cwd_rel = _cwd_rel(request)  # validated BEFORE any dispatch: a config bug, not a transient failure
-        options = self._options_for(request)  # validates request.effort BEFORE any dispatch too
+    async def _run(self, request: ExecutorRequest, cwd_rel: str) -> NodeOutcome:
+        """Do the real work of :meth:`run`, inside its exception guard.
+
+        ``cwd_rel`` is a parameter, computed by :meth:`run` BEFORE this method is even
+        called (and before its own try/except), so a bad one never reaches here.
+        """
+        options = self._options_for(request)
         transcript_path = request.node_dir / "transcript.jsonl"
         first_turn_input = 0
         seen_first_turn = False
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
             async for message in client.receive_response():
-                _append_transcript(transcript_path, message)
+                append_transcript(transcript_path, message)
                 if isinstance(message, AssistantMessage):
                     usage = message.usage or {}
                     self._on_turn(usage)
                     if not seen_first_turn:
-                        first_turn_input = _input_total(usage)
+                        first_turn_input = input_total(usage)
                         seen_first_turn = True
                 if isinstance(message, ResultMessage):
                     return self._outcome_for(request, message, first_turn_input, cwd_rel)
@@ -655,11 +635,31 @@ class ClaudeExecutor:
             error=NodeError(type=ErrorType.EXECUTOR_ERROR, message="no ResultMessage", transient=True),
         )
 
+    def build_options_env(self, request: ExecutorRequest) -> dict[str, str]:
+        """Validate ``request.effort`` and build this dispatch's TRUE-allowlisted env.
+
+        The pure half of :meth:`_options_for`, hoisted out into its own public method
+        so a test can drive it directly (no ``# pyright: ignore[reportPrivateUsage]``
+        needed - it is a tested seam like :func:`outcome_from_usage`), and so a future
+        caller that only needs the env (not a full ``ClaudeAgentOptions``) has one.
+
+        Raises:
+            KernelError: ``request.effort`` is set but is not one of the SDK's known
+                effort levels (:func:`_validated_effort`) - validated here too so a
+                caller driving only this method still gets the same fail-before-
+                dispatch guarantee :meth:`_options_for` gives; the validated value
+                itself is discarded, since this method's own return is the env, not
+                the effort (:meth:`_options_for` re-validates to get that value, an
+                idempotent, side-effect-free re-check, not a second real validation).
+        """
+        _validated_effort(request.effort)
+        known = self.credentials.child_env(request.node_dir)
+        return {**_blank_everything_else(known), **known}
+
     def _options_for(self, request: ExecutorRequest) -> ClaudeAgentOptions:
         """Build this dispatch's SDK options: hooks, credential, a TRUE-allowlisted env, a validated effort."""
         effort = _validated_effort(request.effort)  # raises KernelError BEFORE the call on an unknown value
-        known = self.credentials.child_env(request.node_dir)
-        env = {**_blank_everything_else(known), **known}
+        env = self.build_options_env(request)
         return ClaudeAgentOptions(
             cwd=str(request.cwd),
             system_prompt=request.brief,
@@ -723,8 +723,22 @@ class ClaudeExecutor:
         """
 
 
-def _append_transcript(path: Path, message: object) -> None:
+def append_transcript(path: Path, message: object) -> None:
     """Scrub and append one streamed SDK message to ``path`` as a single JSON line, owner-only (``0600``).
+
+    Public (and tested directly, ``tests/test_kernel_executor_claude.py`` and
+    ``tests/test_kernel_secrets.py``) because it is a tested seam like :func:`scrub`
+    and :func:`outcome_from_usage`, not a private implementation detail.
+
+    Non-``str`` leaves ``json.dumps`` would otherwise need ``default=str`` for (a
+    ``Path``, a ``datetime``, an SDK type with no ``dict`` shape) are converted to
+    their string form FIRST, via ``json.loads(json.dumps(obj, default=str))``, and
+    :func:`~agentdag.domain.scrub.scrub` runs on the RESULT of that round-trip, not on
+    the raw object graph. Order matters: ``scrub``'s VALUE pass only ever inspects
+    ``str`` values, so a secret-shaped leaf that reaches ``scrub`` as some other type
+    (and would only become a matchable string once ``default=str`` stringifies it)
+    would escape the VALUE pass entirely if the stringification happened AFTER
+    scrubbing instead of before.
 
     Opened with ``os.open`` rather than :meth:`~pathlib.Path.open` because
     ``Path.open("a")`` creates a NEW file at whatever mode ``0666`` minus the
@@ -736,12 +750,15 @@ def _append_transcript(path: Path, message: object) -> None:
     ask for the right mode directly). A pre-existing file (a crash-window rerun
     reopening the same transcript) keeps its already-owner-only mode; ``O_CREAT``
     without ``O_EXCL`` does not re-chmod it, which is fine since it was created this
-    same way originally.
+    same way originally. ``os.fdopen`` (rather than a bare ``os.write``/``os.close``
+    pair) is what :func:`_copy_credential` already uses to write a whole payload in
+    one call: a short write on a partial-write filesystem condition must not silently
+    truncate a JSONL line, and wrapping the fd in a buffered file object is what makes
+    ``.write`` retry internally until the whole payload lands (or raises).
     """
-    line = scrub(_message_to_jsonable(message))
-    payload = (json.dumps(line, default=str) + "\n").encode("utf-8")
+    normalized = json.loads(json.dumps(_message_to_jsonable(message), default=str))
+    line = scrub(normalized)
+    payload = (json.dumps(line) + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY_FILE)
-    try:
-        os.write(fd, payload)
-    finally:
-        os.close(fd)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(payload)

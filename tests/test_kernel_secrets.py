@@ -4,9 +4,10 @@ secret-token prefixes and require zero hits.
 The run dir is produced through the Task 13 primitives (a real ``Dispatcher`` over a
 real ``FsRunDir``/``JsonlJournal``), dispatching one node whose BRIEF contains a
 planted secret and whose FAKE body writes a transcript line containing that same
-secret THROUGH the real ``scrub`` function :mod:`agentdag.adapters.kernel.executor_claude`
-uses - so the redaction is exercised, not vacuous (a scrub that never ran would still
-pass a test that never gave it anything to redact).
+secret THROUGH the real ``scrub`` function (:mod:`agentdag.domain.scrub` - a pure
+domain module; :mod:`agentdag.adapters.kernel.executor_claude` imports it from there,
+same as this test does) - so the redaction is exercised, not vacuous (a scrub that
+never ran would still pass a test that never gave it anything to redact).
 
 ``scrub`` is two independent passes (see its own docstring): a KEY pass (a value is
 redacted when its own key is named like a secret) and a VALUE pass (a string is
@@ -30,13 +31,14 @@ import pytest
 
 from agentdag.adapters.kernel.clock_utc import UtcClock
 
-# _append_transcript is the real wiring test_append_transcript_redacts_a_secret_shaped_value_...
+# append_transcript is the real wiring test_append_transcript_redacts_a_secret_shaped_value_...
 # below drives directly, per this fix round's review, rather than calling scrub() in isolation.
-from agentdag.adapters.kernel.executor_claude import _append_transcript, scrub  # pyright: ignore[reportPrivateUsage]
+from agentdag.adapters.kernel.executor_claude import append_transcript
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.domain.models import Budget, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus
+from agentdag.domain.scrub import scrub
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,7 +52,7 @@ class _FakeStreamedMessage:
     """A minimal stand-in for a real streamed SDK message (``AssistantMessage`` etc.).
 
     A plain ``@dataclass`` so ``_message_to_jsonable``'s ``is_dataclass`` branch - the
-    REAL code path ``_append_transcript`` uses in production for every streamed SDK
+    REAL code path ``append_transcript`` uses in production for every streamed SDK
     message - renders it as a structured dict with a real ``content`` key, not via
     ``repr()`` (which a plain ``dict`` argument would hit instead, since a dict is not
     itself a dataclass).
@@ -117,7 +119,7 @@ def test_transcript_and_record_never_carry_a_planted_secret_after_scrub(tmp_path
 @pytest.mark.os_agnostic
 def test_scrub_key_pass_is_selective_not_a_blanket_redaction() -> None:
     """Mutation check for the KEY pass: the SAME non-token-shaped value is redacted
-    only when its own key matches ``_SECRET_KEY_RE`` - proving the KEY pass depends on
+    only when its own key matches ``SECRET_KEY_RE`` - proving the KEY pass depends on
     the key, not just on some value being present (a blanket redaction would catch
     both branches, or neither). ``PLANTED`` (``sk-ant-oat01-...``) is deliberately NOT
     used here: since the VALUE pass added by this fix round would also catch its
@@ -134,7 +136,7 @@ def test_scrub_key_pass_is_selective_not_a_blanket_redaction() -> None:
 def test_append_transcript_redacts_a_secret_shaped_value_under_a_non_secret_key(tmp_path: Path) -> None:
     """Design 9's other half: ``scrub()``'s VALUE pass catches a token-shaped string
     even under a key ("content") that is not itself named like a secret - driven
-    through the REAL wiring (``_append_transcript``), not by calling ``scrub()``
+    through the REAL wiring (``append_transcript``), not by calling ``scrub()``
     directly, exercising exactly what ``ClaudeExecutor._run`` does with every streamed
     message. This is a non-vacuous mutation-control target: with the VALUE pass
     removed from ``scrub()``, this specific assertion fails (verified by hand at
@@ -143,7 +145,7 @@ def test_append_transcript_redacts_a_secret_shaped_value_under_a_non_secret_key(
     """
     planted_shaped = "sk-ant-oat01-PLANTED-0123456789"
     path = tmp_path / "transcript.jsonl"
-    _append_transcript(path, _FakeStreamedMessage(content=f"leaked: {planted_shaped}"))
+    append_transcript(path, _FakeStreamedMessage(content=f"leaked: {planted_shaped}"))
     text = path.read_text(encoding="utf-8")
     for prefix in _SECRET_PREFIXES:
         assert prefix not in text, f"{prefix!r} leaked into transcript.jsonl"

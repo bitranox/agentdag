@@ -21,12 +21,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...domain.errors import KernelError
 from ...domain.journal import ResultLine, StartedLine
 from ...domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
+from ...domain.scrub import scrub
 from .ports import format_stamp, stamp
 from .replay import build_replay_index
 
@@ -204,6 +205,13 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
     ``Exception`` only: ``SystemExit`` and ``KeyboardInterrupt`` are the coordinator
     process itself going away, and must stay a crash - a crash leaves a ``started`` line
     with no ``result``, which is exactly what the next run re-dispatches.
+
+    The exception's own text is scrubbed (:func:`~agentdag.domain.scrub.scrub`) before
+    it becomes ``NodeError.message``: a raising body can carry a secret-shaped string
+    in its exception text just as readily as a streamed executor message can (an HTTP
+    client's own error sometimes echoes a header back), and ``record.json`` is the
+    same sink :mod:`agentdag.adapters.kernel.executor_claude` already scrubs before
+    writing to.
     """
     try:
         return await body(node_dir)
@@ -213,7 +221,11 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
             executor_used="-",
             model_used="-",
             effort_used="-",
-            error=NodeError(type=ErrorType.EXECUTOR_ERROR, message=f"{type(exc).__name__}: {exc}", transient=True),
+            error=NodeError(
+                type=ErrorType.EXECUTOR_ERROR,
+                message=cast("str", scrub(f"{type(exc).__name__}: {exc}")),
+                transient=True,
+            ),
         )
 
 

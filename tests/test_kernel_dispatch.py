@@ -248,6 +248,25 @@ def test_a_raising_body_is_a_failed_record_not_an_exception(tmp_path: Path) -> N
 
 
 @pytest.mark.os_agnostic
+def test_a_raising_bodys_secret_shaped_exception_text_is_scrubbed_in_the_record(tmp_path: Path) -> None:
+    """Design 9's guarantee reaches a raising body's own exception text too, not just
+    a streamed executor message: ``record.json`` is the same sink either way.
+    """
+    dispatcher, _, _ = make(tmp_path / "runs")
+    secret = "Bearer abcdefghijklmnopqrstuvwxyz0123456789"
+
+    async def raising(_: Path) -> NodeOutcome:
+        raise RuntimeError(f"auth: {secret}")
+
+    record = asyncio.run(dispatcher.dispatch(spec("s"), brief="b", input_obj={}, body=raising))
+
+    assert record.status == NodeStatus.FAILED
+    assert record.error is not None
+    assert secret not in record.error.message
+    assert "[scrubbed]" in record.error.message
+
+
+@pytest.mark.os_agnostic
 def test_a_bodys_measurements_survive_into_the_record_the_file_and_the_journal(tmp_path: Path) -> None:
     dispatcher, journal, run_dir = make(tmp_path / "runs")
 
