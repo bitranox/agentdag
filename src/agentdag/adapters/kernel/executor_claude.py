@@ -69,7 +69,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage
 
-from ...domain.errors import KernelError
+from ...domain.kernel_errors import KernelError
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
 from ...domain.scrub import scrub
 from .hooks_claude import deny_bash_commands, deny_outside_root
@@ -561,7 +561,7 @@ class ClaudeExecutor:
         guard below, not inside it: both a cwd outside the isolation root and an
         unknown effort level are config bugs in whatever BUILT the request, never a
         transient executor failure a retry could fix, so :func:`_cwd_rel` and
-        :func:`_validated_effort` raise :class:`~agentdag.domain.errors.KernelError`
+        :func:`_validated_effort` raise :class:`~agentdag.domain.kernel_errors.KernelError`
         straight out of this method - :mod:`.dispatch`'s own outer ``Exception`` guard
         (``_run_body``) still turns that into a record one layer up (a raising body is
         always a record there, never a dead run), but THIS method never mislabels a

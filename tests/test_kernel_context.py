@@ -20,7 +20,7 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
-from agentdag.domain.errors import KernelError
+from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import Budget, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, TierRole
 
 if TYPE_CHECKING:

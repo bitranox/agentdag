@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
-from agentdag.domain.errors import RunRefused
+from agentdag.domain.kernel_errors import RunRefused
 from agentdag.domain.models import Decision, RunState, RunStatus
 
 if TYPE_CHECKING:
@@ -139,6 +139,22 @@ def test_write_atomic_refuses_absolute_and_traversal_paths(tmp_path: Path) -> No
         rd.write_atomic("/etc/passwd", "x")
     with pytest.raises(ValueError):
         rd.write_atomic("../escape.json", "x")
+
+
+def test_marker_refuses_a_kind_or_key_that_would_escape_the_run_dir(tmp_path: Path) -> None:
+    # An intent's dedup_key is composed by a workflow from data it read off the fleet, and
+    # `directory / key` with an ABSOLUTE key discards `directory` outright - so an
+    # unvalidated key puts the idempotency marker for a real, irreversible effect outside
+    # the run. The plain key beside them is the control: the guard still lets one through.
+    rd = FsRunDir.create(tmp_path, "r1")
+
+    assert rd.marker("push", "a.git-" + "a" * 40).parent == rd.root / "done" / "push"
+
+    for bad in ("../../escape", "/etc/passwd", "..", ".", "", "a/b", "a\\b", "a\x00b"):
+        with pytest.raises(RunRefused, match="unsafe marker key"):
+            rd.marker("push", bad)
+        with pytest.raises(RunRefused, match="unsafe marker kind"):
+            rd.marker(bad, "k")
 
 
 def test_marker_intents_dir_artefacts_dir_and_manifest_path(tmp_path: Path) -> None:

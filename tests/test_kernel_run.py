@@ -28,8 +28,8 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
-from agentdag.domain.errors import LockHeld, RunRefused, WorkflowNotFound
 from agentdag.domain.journal import ResultLine, RunSummaryLine, dump_journal_line, parse_journal_line
+from agentdag.domain.kernel_errors import LockHeld, RunRefused, WorkflowNotFound
 from agentdag.domain.models import NodeStatus, ResultRecord, RunStatus, Tokens
 
 if TYPE_CHECKING:

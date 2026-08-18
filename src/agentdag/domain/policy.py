@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from .errors import SpecRejected
+from .kernel_errors import SpecRejected
 from .models import Kind, TierRole
 
 __all__ = [

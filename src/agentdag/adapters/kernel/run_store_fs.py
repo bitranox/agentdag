@@ -27,7 +27,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from ...application.kernel.ports import DecisionFileRef
-from ...domain.errors import RunRefused
+from ...domain.kernel_errors import RunRefused
 from ...domain.keys import hash8
 from ...domain.models import Decision, RunState
 
@@ -38,6 +38,32 @@ _OWNER_ONLY_FILE = 0o600
 _SUBDIRS = ("decisions", "intents", "artefacts", "wt", "nodes", "manifest", "done")
 _HEX8 = re.compile(r"[0-9a-f]{8}")
 """The shape a payload hash must shorten to before it may name a decision file."""
+
+
+def _refuse_unsafe_path_component(what: str, value: str) -> None:
+    """Refuse a string that must name ONE directory entry and nothing else.
+
+    The same rule :meth:`FsRunDir._validate_node_id` applies to a node id, stated once
+    here because a marker's ``kind`` and ``key`` need it too: a component that is empty,
+    carries a separator or a NUL, or is ``.``/``..`` does not name an entry inside its
+    parent - it renames, escapes or discards it.
+
+    Args:
+        what: What is being validated, for the message (e.g. ``"marker key"``).
+        value: The candidate component.
+
+    Raises:
+        RunRefused: ``value`` is not a single safe path component.
+
+    Example:
+        >>> _refuse_unsafe_path_component("marker key", "a.git-abc")
+        >>> _refuse_unsafe_path_component("marker key", "../escape")
+        Traceback (most recent call last):
+        ...
+        agentdag.domain.kernel_errors.RunRefused: unsafe marker key: '../escape'
+    """
+    if not value or value in {".", ".."} or any(bad in value for bad in ("/", "\\", "\x00")):
+        raise RunRefused(f"unsafe {what}: {value!r}")
 
 
 class FsRunDir:
@@ -128,7 +154,26 @@ class FsRunDir:
 
         The marker file itself is not created here; its existence is whatever
         the caller writes (or does not write) to the returned path.
+
+        Both parts are validated first. ``key`` is an intent's ``dedup_key``, which a
+        workflow composes from data it read off the fleet, so an absolute or ``..``
+        key would put the idempotency marker for a real effect OUTSIDE the run
+        directory - and ``directory / key`` with an absolute ``key`` discards
+        ``directory`` entirely rather than joining to it.
+
+        Args:
+            kind: The intent kind; the subdirectory under ``done/``.
+            key: The intent's dedup key; the marker file's name.
+
+        Returns:
+            The path the marker would live at.
+
+        Raises:
+            RunRefused: ``kind`` or ``key`` is empty, contains a path separator or a
+                NUL, or is ``.`` or ``..``.
         """
+        _refuse_unsafe_path_component("marker kind", kind)
+        _refuse_unsafe_path_component("marker key", key)
         directory = self._mkdir_owner_only(self.root / "done" / kind)
         return directory / key
 

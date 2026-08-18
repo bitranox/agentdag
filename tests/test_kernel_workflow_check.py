@@ -13,7 +13,7 @@ import types
 import pytest
 
 from agentdag.application.kernel.workflow_check import assert_deterministic
-from agentdag.domain.errors import NondeterministicCallError
+from agentdag.domain.kernel_errors import NondeterministicCallError
 
 FORBIDDEN_CALLS = [
     "time.time()",

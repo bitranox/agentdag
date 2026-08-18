@@ -1,4 +1,13 @@
-"""Domain-specific exceptions for typed error handling at boundaries."""
+"""Domain-specific exceptions for typed error handling at boundaries.
+
+The coordinator kernel's own family lives next door in
+:mod:`agentdag.domain.kernel_errors`; nothing here is part of it.
+
+Contents:
+    * :class:`ConfigurationError` - missing, invalid or incomplete configuration.
+    * :class:`DeliveryError` - email delivery failed at the SMTP level.
+    * :class:`InvalidRecipientError` - an address failed RFC 5321/5322 validation.
+"""
 
 from __future__ import annotations
 
@@ -49,65 +58,8 @@ class InvalidRecipientError(ValueError):
     """
 
 
-class KernelError(Exception):
-    """Base of the coordinator kernel's typed errors.
-
-    Example:
-        >>> from agentdag.domain.errors import KernelError
-        >>> issubclass(KernelError, Exception)
-        True
-    """
-
-
-class LockHeld(KernelError):
-    """Another live coordinator holds this run dir's lock."""
-
-
-class NondeterministicCallError(KernelError):
-    """A workflow module reaches for the clock or randomness; that breaks resume (design 3.3)."""
-
-
-class WorkflowNotFound(KernelError):
-    """No built-in workflow of that name."""
-
-
-class SpecRejected(KernelError):
-    """Whole-spec validation refused a node (design 2.4)."""
-
-
-class RunRefused(KernelError):
-    """run.start / resume refused before anything ran (missing runs dir, live lock, bad args)."""
-
-
-class Suspended(Exception):
-    """Control flow, not an error: an approve node has no decision yet, the coordinator exits (design 3.4).
-
-    ``payload_hash`` names WHICH payload the run is waiting on, because a decision is
-    recorded per (node id, payload hash): one node suspending twice under a CHANGED payload
-    asks two different questions, and only the hash tells them apart. ``None`` when the
-    raiser had no payload to bind to.
-
-    Example:
-        >>> from agentdag.domain.errors import Suspended
-        >>> Suspended("a_push_list", payload_hash="sha256:ab").payload_hash
-        'sha256:ab'
-    """
-
-    def __init__(self, node_id: str, *, payload_hash: str | None = None) -> None:
-        super().__init__(node_id)
-        self.node_id = node_id
-        self.payload_hash = payload_hash
-
-
 __all__ = [
     "ConfigurationError",
     "DeliveryError",
     "InvalidRecipientError",
-    "KernelError",
-    "LockHeld",
-    "NondeterministicCallError",
-    "RunRefused",
-    "SpecRejected",
-    "Suspended",
-    "WorkflowNotFound",
 ]

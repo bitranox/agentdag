@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ...domain.errors import WorkflowNotFound
+from ...domain.kernel_errors import WorkflowNotFound
 from . import graph_a
 
 if TYPE_CHECKING:
@@ -80,7 +80,7 @@ def get_workflow(name: str) -> WorkflowDef:
         'graph-a'
         >>> get_workflow("nope")
         Traceback (most recent call last):
-        agentdag.domain.errors.WorkflowNotFound: no workflow named 'nope'; known: ['graph-a']
+        agentdag.domain.kernel_errors.WorkflowNotFound: no workflow named 'nope'; known: ['graph-a']
     """
     try:
         return WORKFLOWS[name]

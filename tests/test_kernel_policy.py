@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.kernel.policy_yaml import load_policy
-from agentdag.domain.errors import SpecRejected
+from agentdag.domain.kernel_errors import SpecRejected
 from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
 
 if TYPE_CHECKING:

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
+from kernel_fakes import CommittingExecutor, fleet, git, policy_path
 
 from agentdag.adapters import cli as cli_mod
 from agentdag.adapters.cli.exit_codes import ExitCode
@@ -26,12 +27,11 @@ from agentdag.adapters.graph_a.git_cli import GitCli
 from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
-from agentdag.adapters.kernel.lock_file import FileRunLock
+from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
-from tests.kernel_fakes import CommittingExecutor, fleet, git, policy_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -287,6 +287,41 @@ def test_run_start_refuses_a_missing_runs_dir_and_a_missing_required_arg(cli_run
     assert bad.exit_code == ExitCode.INVALID_ARGUMENT
     assert "scratch" in bad.output
     assert not list((tmp_path / "runs").iterdir())  # a refused start creates no run dir
+
+
+@pytest.mark.os_agnostic
+def test_a_failed_run_prints_a_scrubbed_exception_not_the_secret_it_carried(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The CLI's exception-to-output sink redacts, like every other sink that text reaches.
+
+    An exception's own text is not safe by construction: it quotes whatever it was handed,
+    and a lock file's recorded holder is a string read off disk. The dispatcher and the
+    executor already scrub theirs before writing a record; the console is a sink too.
+
+    Driven end to end through the real lock adapter: the run dir is given a lock file
+    naming a LIVE holder (this very process, so the liveness test really passes) whose
+    host field carries a token-shaped string, and ``run resume`` then fails with the
+    ``LockHeld`` that quotes it.
+    """
+    (tmp_path / "runs").mkdir()
+    obj = services_with(CommittingExecutor(), tmp_path)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    secret = "sk-ant-oat01-DEADBEEF"
+    holder = current_holder().model_copy(update={"host": secret})
+    (tmp_path / "runs" / run_id / "lock").write_text(holder.model_dump_json(), encoding="utf-8")
+
+    failed = cli_runner.invoke(
+        cli_mod.cli, ["run", "resume", run_id, "--runs", str(tmp_path / "runs"), "--foreground"], obj=obj
+    )
+
+    assert failed.exit_code == ExitCode.GENERAL_ERROR
+    assert f"run {run_id} failed:" in failed.output
+    assert secret not in failed.output
+    assert "[scrubbed]" in failed.output
 
 
 @pytest.mark.os_agnostic

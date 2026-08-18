@@ -28,7 +28,7 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ...domain.errors import NondeterministicCallError
+from ...domain.kernel_errors import NondeterministicCallError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

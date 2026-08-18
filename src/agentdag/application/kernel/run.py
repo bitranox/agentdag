@@ -38,8 +38,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from ...domain.errors import RunRefused, Suspended
 from ...domain.journal import ResumeLine, RunStartedLine
+from ...domain.kernel_errors import RunRefused, Suspended
 from ...domain.models import RunState, RunStatus
 from .context import Coordinator
 from .dispatch import Dispatcher

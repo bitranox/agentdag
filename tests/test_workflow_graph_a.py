@@ -30,9 +30,9 @@ from agentdag.application.kernel.replay import build_replay_index
 from agentdag.application.kernel.run import RunOutcome, run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.graph_a import GraphAArgs, perform_push
-from agentdag.domain.errors import SpecRejected
 from agentdag.domain.graph_a import PushIntent, dedup_key
 from agentdag.domain.journal import ResultLine, RunSummaryLine, StartedLine
+from agentdag.domain.kernel_errors import KernelError, SpecRejected
 from agentdag.domain.models import (
     ErrorType,
     NodeError,
@@ -101,12 +101,39 @@ def launch_over(
     )
 
 
-def coordinator_over(run_dir: FsRunDir, tmp_path: Path) -> Coordinator:
+class RecordingGit(GitCli):
+    """The real git adapter with every push it was asked to make written down.
+
+    A subclass, not a patch: it is injected at the ``git=`` seam production uses, and
+    every call - the recorded push included - still runs real git.
+    """
+
+    def __init__(self) -> None:
+        """Start with no pushes recorded."""
+        super().__init__()
+        self.pushes: list[tuple[Path, Path, str]] = []
+
+    def push(self, worktree: Path, target: Path, branch: str) -> None:
+        """Record (worktree, target, branch), then push for real."""
+        self.pushes.append((worktree, target, branch))
+        super().push(worktree, target, branch)
+
+
+def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = None) -> Coordinator:
     """Build a coordinator over an EXISTING run directory, with the real adapters.
 
     Used only to hand :func:`~agentdag.application.workflows.graph_a.perform_push` the git port
     and the worktree layout it reads. Nothing is dispatched through it, so the journal
     is untouched.
+
+    Args:
+        run_dir: The run directory to build over.
+        tmp_path: The test's temporary directory, for the gate lock.
+        git: The git port to inject; defaults to the plain shipped adapter. A test that
+            has to prove NO push was made passes :class:`RecordingGit`.
+
+    Returns:
+        The coordinator.
     """
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     return Coordinator(
@@ -118,7 +145,7 @@ def coordinator_over(run_dir: FsRunDir, tmp_path: Path) -> Coordinator:
         clock=UtcClock(),
         executors={},
         gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
-        git=GitCli(),
+        git=git if git is not None else GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
         parallel=1,
@@ -303,6 +330,42 @@ def test_a_push_whose_target_already_points_at_the_commit_is_reported_not_repeat
     real = tmp_path / "a"
     with pytest.raises(SpecRejected):
         perform_push(co, tmp_path / "scratch", PushIntent(repo=real, head_sha=head, dedup_key=dedup_key(real, head)))
+
+
+@pytest.mark.os_agnostic
+def test_a_worktree_whose_head_moved_after_the_approval_is_refused_and_never_pushed(tmp_path: Path) -> None:
+    # `git push HEAD:<branch>` sends whatever the worktree points at NOW, while the approval
+    # was recorded against a payload naming ONE commit. Without re-reading HEAD, anything
+    # that moved it between the two - a re-dispatched work node on a resume, a hand-run git
+    # command in the run directory - would be pushed under an approval never given for it.
+    executor = CommittingExecutor()
+    _, run_dir = launch(tmp_path, executor)  # suspends at the approve node, intents staged
+    scratch = tmp_path / "scratch"
+    origin = scratch / "origin" / "a.git"
+    worktree = run_dir.worktree("a")
+    approved = git("rev-parse", "HEAD", cwd=worktree)
+    before_approved = git("rev-parse", "HEAD~1", cwd=worktree)
+    intent = PushIntent(repo=origin, head_sha=approved, dedup_key=dedup_key(origin, approved))
+    recorder = RecordingGit()
+    co = coordinator_over(run_dir, tmp_path, git=recorder)
+
+    # Control: with HEAD still on the approved commit the push goes through, so the refusal
+    # below is the HEAD check firing and not some unrelated guard on the same path.
+    assert perform_push(co, scratch, intent) == "pushed"
+    assert len(recorder.pushes) == 1
+
+    (worktree / "after-approval.txt").write_text("a commit nobody approved\n", encoding="utf-8")
+    git("add", "-A", cwd=worktree)
+    git("commit", "-q", "-m", "after the approval", cwd=worktree)
+    moved = PushIntent(repo=origin, head_sha=approved, dedup_key=dedup_key(origin, approved) + "-2")
+    # Wind the target back off the approved commit, so the already-present short-circuit
+    # does not answer first and the HEAD check is what this actually exercises.
+    git("update-ref", "refs/heads/main", before_approved, cwd=origin)
+
+    with pytest.raises(KernelError, match=re.escape(approved)):
+        perform_push(co, scratch, moved)
+
+    assert len(recorder.pushes) == 1  # still the control's push: the second one never happened
 
 
 @pytest.mark.os_agnostic

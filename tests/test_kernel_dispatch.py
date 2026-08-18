@@ -16,8 +16,8 @@ import pytest
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.dispatch import Body, Dispatcher
-from agentdag.domain.errors import KernelError
 from agentdag.domain.journal import StartedLine
+from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
     Budget,
     ErrorType,
@@ -292,3 +292,60 @@ def test_a_bodys_measurements_survive_into_the_record_the_file_and_the_journal(t
     assert '"in": 10' in next(run_dir.root.glob("nodes/m/*/record.json")).read_text(encoding="utf-8")
     assert '"in":10' in run_dir.journal_path.read_text(encoding="utf-8")
     assert len(journal.lines()) == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_body_raising_a_kernel_error_is_recorded_non_transient(tmp_path: Path) -> None:
+    # A KernelError is how the kernel reports a CONFIGURATION or PROGRAM bug (an effort the
+    # policy does not name, a cwd outside the isolation root). The same inputs reproduce it
+    # every time, so recording it as retryable would only spend the budget again. The
+    # RuntimeError arm beside it is the control: the two must not agree.
+    dispatcher, _, _ = make(tmp_path / "runs")
+
+    async def config_bug(_: Path) -> NodeOutcome:
+        raise KernelError("effort 'turbo' is not a row in the policy")
+
+    async def outside_failure(_: Path) -> NodeOutcome:
+        raise RuntimeError("the API hung up")
+
+    bug = asyncio.run(dispatcher.dispatch(spec("k"), brief="b", input_obj={}, body=config_bug))
+    outside = asyncio.run(dispatcher.dispatch(spec("o"), brief="b", input_obj={}, body=outside_failure))
+
+    assert bug.status == NodeStatus.FAILED
+    assert bug.error is not None
+    assert bug.error.transient is False
+    assert "not a row in the policy" in bug.error.message
+    assert outside.error is not None
+    assert outside.error.transient is True
+
+
+@pytest.mark.os_agnostic
+def test_two_node_ids_doing_identical_work_dispatch_once_and_both_get_the_record(tmp_path: Path) -> None:
+    # The journal key carries no node id BY DESIGN (design 3.2's identity table), so two
+    # nodes whose spec identity, brief, input and dependency prefix all match share one key:
+    # the second is served the first's record, body unrun. That is idempotent dedup - a map
+    # over a fleet listing the same item twice is the legitimate case - and the served
+    # record names the FIRST node, which is what a reader of records.json must expect.
+    dispatcher, journal, run_dir = make(tmp_path / "runs")
+    ran: list[str] = []
+
+    def counting(node_id: str) -> Body:
+        async def body(_: Path) -> NodeOutcome:
+            ran.append(node_id)
+            return done(v=1)
+
+        return body
+
+    first = asyncio.run(dispatcher.dispatch(spec("twin_a"), brief="b", input_obj={}, body=counting("twin_a")))
+    # A fresh dispatcher, because within ONE run the replay index is built at construction:
+    # the second id is served only once the first's result line is in the folded journal,
+    # which is exactly the resume case this dedup matters for.
+    resumed = Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=TickingClock())
+    second = asyncio.run(resumed.dispatch(spec("twin_b"), brief="b", input_obj={}, body=counting("twin_b")))
+
+    assert ran == ["twin_a"]  # the second id ran no body at all
+    assert first.node_id == "twin_a"
+    assert second.node_id == "twin_a"  # the served record names the node that DID the work
+    assert second.input_hash == first.input_hash
+    assert resumed.dispatched_keys == dispatcher.dispatched_keys
+    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]

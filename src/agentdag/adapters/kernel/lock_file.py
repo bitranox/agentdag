@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from ...application.kernel.ports import LockToken
-from ...domain.errors import LockHeld
+from ...domain.kernel_errors import LockHeld
 from ...domain.models import LockHolder
 
 __all__ = ["FileRunLock", "current_holder", "holder_is_alive"]
@@ -111,15 +111,38 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
+def _boot_differs(recorded_boot_id: str) -> bool:
+    """Return whether ``recorded_boot_id`` names a boot that is provably not this one.
+
+    ``"-"`` on either side means the boot id was not readable when it was captured (off
+    Linux, or with no ``/proc``), and two unknowns prove nothing - so only two real,
+    DIFFERENT ids count as a difference.
+
+    Args:
+        recorded_boot_id: The boot id written into the lock file.
+
+    Returns:
+        Whether both ids are known and they disagree.
+    """
+    current = _read_boot_id()
+    return "-" not in {recorded_boot_id, current} and recorded_boot_id != current
+
+
 def holder_is_alive(holder: LockHolder) -> bool:
     """Return whether ``holder`` is still the same live process (design 3.4).
 
-    A bare pid is never enough: pids recycle. ``holder`` counts as alive only if
-    its pid exists AND its recorded start time matches the pid's current start
-    time - unless the recorded start time is ``"-"`` (unavailable when it was
-    captured), in which case existence alone stands in. If the LIVE start time
-    cannot be read but a real one was recorded, the two cannot be proven equal,
-    so this reports ``False`` rather than trusting a bare pid match.
+    Checked in this order, cheapest disproof first:
+
+    * a holder recorded under a DIFFERENT boot id is dead by definition - the machine
+      rebooted since, so nothing it recorded survives, and its pid now belongs to some
+      unrelated process (the very case the pid test alone cannot see through);
+    * a bare pid is never enough either, because pids recycle within one boot: the pid
+      must exist AND its recorded start time must match the pid's current start time.
+
+    The recorded start time being ``"-"`` (unavailable when it was captured) leaves
+    existence alone standing in. If the LIVE start time cannot be read but a real one
+    was recorded, the two cannot be proven equal, so this reports ``False`` rather than
+    trusting a bare pid match.
 
     Args:
         holder: The recorded holder to check.
@@ -127,6 +150,8 @@ def holder_is_alive(holder: LockHolder) -> bool:
     Returns:
         Whether ``holder``'s process is still running and still the same process.
     """
+    if _boot_differs(holder.boot_id):
+        return False
     if not _pid_exists(holder.pid):
         return False
     if holder.pid_start_time == "-":

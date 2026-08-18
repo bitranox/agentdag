@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from ...domain.errors import KernelError
 from ...domain.journal import ResultLine, StartedLine
+from ...domain.kernel_errors import KernelError
 from ...domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scrub import scrub
@@ -61,6 +61,12 @@ class _Call:
 @dataclass
 class Dispatcher:
     """Serves a node's result from the journal, or runs its body once and records it.
+
+    The journal key carries no node id (design 3.2's identity table), so two nodes whose
+    work is identical - same spec identity, same brief, same input, same dependency
+    prefix - share one key: the second is SERVED the first's record, body unrun, and that
+    record's ``node_id`` names the FIRST node. That is deliberate dedup (a map over a
+    fleet that lists the same item twice is the legitimate case), not a collision.
 
     Attributes:
         journal: Where a dispatch's ``started`` and ``result`` lines are appended.
@@ -209,6 +215,14 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
     process itself going away, and must stay a crash - a crash leaves a ``started`` line
     with no ``result``, which is exactly what the next run re-dispatches.
 
+    A :class:`~agentdag.domain.kernel_errors.KernelError` is stamped
+    ``transient=False`` and anything else ``transient=True``: the kernel raises that
+    family for a CONFIGURATION or PROGRAM bug (an effort the policy does not name, a
+    cwd outside the isolation root, a dependency dispatched out of order), which the
+    same inputs reproduce every time, so retrying it only burns the budget. Every
+    other exception comes from the outside world the body was talking to, where a
+    retry is the reasonable default.
+
     The exception's own text is scrubbed (:func:`~agentdag.domain.scrub.scrub`) before
     it becomes ``NodeError.message``: a raising body can carry a secret-shaped string
     in its exception text just as readily as a streamed executor message can (an HTTP
@@ -218,18 +232,33 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
     """
     try:
         return await body(node_dir)
+    except KernelError as exc:  # a config or program bug: the same inputs fail the same way
+        return _failed_outcome(exc, transient=False)
     except Exception as exc:  # a raising branch is a FAILED RECORD, never a dead fleet
-        return NodeOutcome(
-            status=NodeStatus.FAILED,
-            executor_used="-",
-            model_used="-",
-            effort_used="-",
-            error=NodeError(
-                type=ErrorType.EXECUTOR_ERROR,
-                message=cast("str", scrub(f"{type(exc).__name__}: {exc}")),
-                transient=True,
-            ),
-        )
+        return _failed_outcome(exc, transient=True)
+
+
+def _failed_outcome(exc: Exception, *, transient: bool) -> NodeOutcome:
+    """Build the failed outcome a raising body is recorded as, with its text scrubbed.
+
+    Args:
+        exc: What the body raised.
+        transient: Whether a retry could plausibly succeed - see :func:`_run_body`.
+
+    Returns:
+        A failed :class:`~agentdag.domain.models.NodeOutcome` naming the exception type.
+    """
+    return NodeOutcome(
+        status=NodeStatus.FAILED,
+        executor_used="-",
+        model_used="-",
+        effort_used="-",
+        error=NodeError(
+            type=ErrorType.EXECUTOR_ERROR,
+            message=cast("str", scrub(f"{type(exc).__name__}: {exc}")),
+            transient=transient,
+        ),
+    )
 
 
 def _refuse_empty(outcome: NodeOutcome) -> NodeOutcome:

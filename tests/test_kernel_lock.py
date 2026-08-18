@@ -9,11 +9,15 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder, holder_is_alive
-from agentdag.domain.errors import LockHeld
+from agentdag.domain.kernel_errors import LockHeld
 from agentdag.domain.models import LockHolder
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+BOOT_ID_UNREADABLE = current_holder().boot_id == "-"
+"""Whether this host records a real boot id at all; ``"-"`` means it could not be read
+(off Linux, or with no ``/proc``), and the boot comparison is then inert BY DESIGN."""
 
 
 @pytest.mark.os_agnostic
@@ -70,3 +74,32 @@ def test_release_of_a_broken_stale_lock_does_not_touch_the_new_holder(tmp_path: 
 
     assert (tmp_path / "lock").exists()
     assert json.loads((tmp_path / "lock").read_text())["pid_start_time"] == other.pid_start_time
+
+
+@pytest.mark.os_linux
+@pytest.mark.skipif(BOOT_ID_UNREADABLE, reason="no /proc boot id to compare against")
+def test_a_holder_from_a_previous_boot_is_dead_whatever_its_pid_says() -> None:
+    # THIS process, so the pid exists and its start time matches - every liveness signal
+    # except the boot id says alive. After a reboot that pid belongs to some unrelated
+    # process, which is exactly the case the pid test cannot see through, so the lock would
+    # be reported held forever by a coordinator that died with the previous boot.
+    me = current_holder()
+    assert holder_is_alive(me)
+
+    from_last_boot = me.model_copy(update={"boot_id": "00000000-0000-0000-0000-000000000000"})
+
+    assert not holder_is_alive(from_last_boot)
+    # An unknown boot id on either side proves nothing, so it must NOT count as a difference.
+    assert holder_is_alive(me.model_copy(update={"boot_id": "-"}))
+
+
+@pytest.mark.os_linux
+@pytest.mark.skipif(BOOT_ID_UNREADABLE, reason="no /proc boot id to compare against")
+def test_a_lock_left_by_a_previous_boot_is_broken_rather_than_held(tmp_path: Path) -> None:
+    me = current_holder()
+    from_last_boot = me.model_copy(update={"boot_id": "00000000-0000-0000-0000-000000000000"})
+    (tmp_path / "lock").write_text(from_last_boot.model_dump_json())
+
+    FileRunLock().acquire(tmp_path, me)  # no LockHeld: the machine rebooted since that holder
+
+    assert json.loads((tmp_path / "lock").read_text())["boot_id"] == me.boot_id

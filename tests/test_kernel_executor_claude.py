@@ -34,7 +34,7 @@ from agentdag.adapters.kernel.executor_claude import (
 )
 from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_root
 from agentdag.application.kernel.ports import ExecutorRequest
-from agentdag.domain.errors import KernelError
+from agentdag.domain.kernel_errors import KernelError
 
 
 def decision(result: dict[str, Any]) -> str | None:

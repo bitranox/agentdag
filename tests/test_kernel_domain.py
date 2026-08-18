@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from agentdag.domain.errors import Suspended
 from agentdag.domain.journal import ApproveDecisionLine, ResultLine, StartedLine, dump_journal_line, parse_journal_line
+from agentdag.domain.kernel_errors import Suspended
 from agentdag.domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash, record_hash
 from agentdag.domain.models import (
     Budget,

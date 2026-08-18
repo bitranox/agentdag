@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from ...domain.errors import KernelError, SpecRejected, Suspended
 from ...domain.journal import ApproveDecisionLine
+from ...domain.kernel_errors import KernelError, SpecRejected, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scan import diff_manifests, stray_paths
@@ -82,7 +82,10 @@ class Coordinator:
         git: Every git operation a workflow performs.
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: Resolves a spec to a model row, and carries the executor limits.
-        parallel: How many map branches may run at once.
+        parallel: How many map branches may run at once, across the WHOLE run - the
+            semaphore behind it is built once here and shared by every :meth:`map`
+            call, so two maps running at the same time still admit ``parallel``
+            branches between them, not ``parallel`` each.
         tokens_by_row: Tokens charged per model row so far, summed from every record.
         declared_write_sets: Every dispatched spec's node id -> its ``write_set``, as
             given at dispatch time (design C8) - what :meth:`scan` judges a write
@@ -128,6 +131,11 @@ class Coordinator:
         self.scanner = scanner
         self.policy = policy
         self.parallel = parallel
+        # Run-wide, not per-map: `parallel` is what this HOST may run at once (worktrees,
+        # the shared bmk tool env, the executor's own concurrency), so a second concurrent
+        # map must not double it. asyncio.Semaphore binds to the running loop lazily, on
+        # the first `async with`, so building it here - outside the loop - is fine.
+        self._map_semaphore = asyncio.Semaphore(parallel)
         self.tokens_by_row: dict[str, int] = {}
         self.declared_write_sets: dict[str, tuple[str, ...]] = {}
 
@@ -388,7 +396,12 @@ class Coordinator:
     async def map(
         self, map_id: str, items: Sequence[_ItemT], body: Callable[[int, _ItemT], Awaitable[ResultRecord]]
     ) -> list[ResultRecord]:
-        """Fan out over ``items``, at most :attr:`parallel` at once; one raising branch never kills the run.
+        """Fan out over ``items``; one raising branch never kills the run.
+
+        The concurrency limit is the coordinator's ONE run-wide semaphore, not a fresh
+        per-map one: at most :attr:`parallel` branches run at once counting every map
+        this run has in flight, so a workflow that fans out twice concurrently still
+        holds the host to the limit the operator asked for.
 
         Each branch's own dispatch (inside ``body``) still goes through :meth:`_dispatch`,
         so a raising branch never bypasses charging - only a branch that raises OUTSIDE any
@@ -411,10 +424,9 @@ class Coordinator:
                 :func:`~agentdag.application.kernel.dispatch._run_body`'s own rule, so it
                 is never swallowed into a synthetic record.
         """
-        semaphore = asyncio.Semaphore(self.parallel)
 
         async def bounded(index: int, item: _ItemT) -> ResultRecord:
-            async with semaphore:
+            async with self._map_semaphore:
                 return await body(index, item)
 
         outcomes = await asyncio.gather(*(bounded(i, item) for i, item in enumerate(items)), return_exceptions=True)

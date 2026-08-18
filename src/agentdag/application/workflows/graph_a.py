@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from ...domain.errors import KernelError, SpecRejected
 from ...domain.graph_a import (
     PushIntent,
     Tally,
@@ -46,6 +45,7 @@ from ...domain.graph_a import (
     reduce_tally,
     stage,
 )
+from ...domain.kernel_errors import KernelError, SpecRejected
 from ...domain.keys import content_hash
 from ...domain.models import (
     ApproveOption,
@@ -519,6 +519,14 @@ def _decide_by(co: Coordinator) -> str:
 def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
     """Push one staged intent to its scratch clone, or report that it is already there.
 
+    The worktree's HEAD is re-read and compared with ``intent.head_sha`` immediately
+    before the push. That comparison is where the approve-binds-to-payload guarantee is
+    cashed out: a human approved a payload naming THIS commit, the payload's hash is what
+    the decision was recorded against, and ``git push HEAD:<branch>`` sends whatever the
+    worktree points at NOW - so without the check, anything that moved HEAD between the
+    approval and the push (a re-dispatched work node on a resume, a hand-run git command
+    in the run directory) would be pushed under an approval that was never given for it.
+
     Args:
         co: The coordinator, for the git port and the worktree path.
         scratch: The scratch directory this run owns.
@@ -533,7 +541,9 @@ def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
         calling that already-present would abandon the push forever.
 
     Raises:
-        KernelError: ``intent`` is not a :class:`~agentdag.domain.graph_a.PushIntent`.
+        KernelError: ``intent`` is not a :class:`~agentdag.domain.graph_a.PushIntent`,
+            or the worktree's HEAD is no longer the approved commit - nothing is pushed
+            and the apply node records the failure.
         SpecRejected: the target is not a bare clone under ``<scratch>/origin``.
     """
     if not isinstance(intent, PushIntent):
@@ -543,7 +553,13 @@ def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
     branch = co.git.default_branch(intent.repo)
     if co.git.ref_sha(intent.repo, branch) == intent.head_sha:
         return "already-present"
-    co.git.push(co.run_dir.worktree(_worktree_name(intent.repo)), intent.repo, branch)
+    worktree = co.run_dir.worktree(_worktree_name(intent.repo))
+    head_now = co.git.head_sha(worktree)
+    if head_now != intent.head_sha:
+        raise KernelError(
+            f"{worktree} is at {head_now}, not the approved {intent.head_sha}; nothing was pushed to {intent.repo}"
+        )
+    co.git.push(worktree, intent.repo, branch)
     return "pushed"
 
 

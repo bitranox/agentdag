@@ -26,9 +26,9 @@ from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.summary import append_run_summary
-from agentdag.domain.errors import RunRefused, SpecRejected, Suspended
 from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.journal import RunSummaryLine
+from agentdag.domain.kernel_errors import RunRefused, SpecRejected, Suspended
 from agentdag.domain.keys import content_hash, hash8
 from agentdag.domain.models import (
     ApproveOption,
@@ -170,6 +170,57 @@ def test_map_contains_a_raising_branch_and_still_returns_every_other_record(tmp_
     assert [r.status for r in records] == [NodeStatus.DONE, NodeStatus.FAILED, NodeStatus.DONE]
     assert records[1].error is not None
     assert records[1].node_id == "m@1"
+
+
+@pytest.mark.os_agnostic
+def test_two_concurrent_maps_never_exceed_parallel_dispatches_between_them(tmp_path: Path) -> None:
+    # `parallel` is what the HOST may run at once (worktrees, the shared bmk tool env, the
+    # executor's own concurrency), so it has to hold across the whole run: a per-map
+    # semaphore lets a workflow that fans out twice at the same time run 2 x parallel
+    # branches. The counter is raised on entry and lowered on exit inside the branch body,
+    # so its high-water mark IS the real concurrency, not an inference from timings.
+    co, _ = coordinator(tmp_path)  # parallel=2
+    in_flight = 0
+    peak = 0
+
+    async def body(_: int, __: str) -> ResultRecord:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.05)  # long enough that every admitted branch overlaps the others
+        in_flight -= 1
+        return _record()
+
+    async def both_maps() -> None:
+        await asyncio.gather(
+            co.map("m1", ["a", "b", "c"], body),
+            co.map("m2", ["d", "e", "f"], body),
+        )
+
+    asyncio.run(both_maps())
+
+    assert peak <= co.parallel
+
+
+def _record() -> ResultRecord:
+    """A minimal DONE record a map branch can return without dispatching anything."""
+    return ResultRecord(
+        node_id="b",
+        attempt=0,
+        status=NodeStatus.DONE,
+        artefact_refs=["x"],
+        key_facts={},
+        typed_fields=[],
+        tokens=None,
+        charged_tokens={},
+        cost_usd=None,
+        duration_s=0.0,
+        executor_used="code",
+        model_used="-",
+        effort_used="-",
+        knowledge_used=[],
+        input_hash="sha256:0",
+    )
 
 
 @pytest.mark.os_agnostic

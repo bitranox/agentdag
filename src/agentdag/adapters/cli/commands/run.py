@@ -58,7 +58,7 @@ import sys
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import rich_click as click
 import tomllib
@@ -71,10 +71,11 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
-from agentdag.domain.errors import WorkflowNotFound
 from agentdag.domain.journal import ResultLine
+from agentdag.domain.kernel_errors import WorkflowNotFound
 from agentdag.domain.keys import content_hash, hash8
 from agentdag.domain.models import ApprovePayload, Decision, RunState, RunStatus
+from agentdag.domain.scrub import scrub
 
 from .. import safe_console
 from ..constants import CLICK_CONTEXT_SETTINGS
@@ -143,21 +144,28 @@ the COORDINATOR process itself (never a dispatched Claude node) reads it to reso
 own config search path (``~/.config/agentdag``). A dispatched node's own env does NOT
 inherit this ``HOME`` - see the next paragraph.
 
-``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS`` are here for :class:`SystemdScope
-<agentdag.adapters.kernel.scope_systemd.SystemdScope>` itself, not the coordinator's own
-needs: ``scope.start()`` launches ``systemd-run`` with THIS env (:func:`_clean_env`), and
-``systemd-run --user`` refuses outright without one of the two ("Failed to connect to
-user scope bus via local transport" - measured live on ``lxc-pydev`` while building this
-module: an empty env makes it fail even though ``systemd-run`` is on PATH and the user
-manager is up). Neither var is a secret - a socket path and a runtime directory path,
-not a credential. Both reach the ``systemd-run`` PARENT and, once it hands off to the
-scoped command, the COORDINATOR process itself - but never a dispatched Claude node's
-OWN env, which :mod:`agentdag.adapters.kernel.executor_claude` builds from its own,
-entirely separate ``_ALLOWLIST_KEYS`` (neither var, nor this module's ``HOME``, is in
-it). A ``make test`` GATE node's subprocess is the one exception: it runs through
-:class:`~agentdag.adapters.graph_a.gate_make.MakeTestGate`, which passes no ``env=``
-override to ``subprocess.run`` and so inherits the coordinator's WHOLE process
-environment - this allowlist, including both vars, reaches it too."""
+``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS`` stay in this list, and both reasons are
+about a ``systemd --user`` client rather than about the coordinator's own bookkeeping.
+First, this env is not only the child's: ``scope.start()`` hands it to
+:class:`SystemdScope <agentdag.adapters.kernel.scope_systemd.SystemdScope>`, which passes
+it as the environment of the ``systemd-run`` process ITSELF, and ``systemd-run --user``
+refuses outright without one of the two ("Failed to connect to user scope bus via local
+transport" - measured live on ``lxc-pydev`` while building this module: an empty env makes
+it fail even though ``systemd-run`` is on PATH and the user manager is up). Second, the
+coordinator process launched inside the scope re-enters
+:func:`~agentdag.composition.kernel.wire_kernel` to build its own wiring, and that calls
+``_choose_scope()``, which probes ``systemctl --user is-system-running`` - a user-bus
+client too, so without the two vars that probe answers from a session it cannot reach.
+Neither var is a secret: a socket path and a runtime directory path, not a credential.
+
+Neither reaches a dispatched Claude node, whose env
+:mod:`agentdag.adapters.kernel.executor_claude` builds from its own, entirely separate
+``_ALLOWLIST_KEYS`` (neither var, nor this module's ``HOME``, is in it), and neither
+reaches a ``make test`` GATE subprocess either: that runs through
+:class:`~agentdag.adapters.graph_a.gate_make.MakeTestGate`, which passes its own explicit
+:data:`~agentdag.adapters.graph_a.gate_make.GATE_ENV_ALLOWLIST` env and deliberately
+leaves both out, so a ``systemd-run --user --scope`` started from inside the gate cannot
+create a unit that would outlive this run's own scope."""
 
 _RUNS_OPTION = option(
     "--runs",
@@ -662,7 +670,12 @@ def _run_foreground(
             )
         )
     except Exception as exc:
-        safe_console.echo(f"run {run_id} failed: {exc}")
+        # The one exception-to-output sink outside the kernel: an exception's text can carry a
+        # secret-shaped string it echoed back (a header, a URL with a token in it), exactly as a
+        # node body's can, and the dispatcher and the executor already scrub theirs before
+        # writing. The console is a sink like any file, so it gets the same guarantee.
+        message = cast("str", scrub(f"{exc}"))
+        safe_console.echo(f"run {run_id} failed: {message}")
         raise SystemExit(ExitCode.GENERAL_ERROR) from exc
 
 
