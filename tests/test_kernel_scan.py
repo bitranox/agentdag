@@ -38,6 +38,23 @@ def test_scan_flags_a_write_outside_the_write_set_but_not_a_mode_change_or_an_ed
 
 
 @pytest.mark.os_agnostic
+def test_only_the_partial_staging_prefix_excuses_a_write_under_wt() -> None:
+    # What the `wt/.partial-*/**` entry in Coordinator.scan's allowed list actually buys, pinned
+    # here rather than inferred from a green end-to-end run: without it, a staging clone caught in
+    # a sibling branch's scan window IS a stray write; with it, it is not. Asserting only the
+    # `with` half would pass equally against a glob that allowed the whole of `wt/`.
+    changed = ["wt/.partial-b/x"]
+    without_the_prefix = ["wt/a/**", "nodes/**", "manifest/**", "intents/**", "artefacts/**", "done/**"]
+    with_the_prefix = [*without_the_prefix, "wt/.partial-*/**"]
+
+    assert stray_paths(changed, allowed=without_the_prefix) == ["wt/.partial-b/x"]
+    assert stray_paths(changed, allowed=with_the_prefix) == []
+    # The exclusion is the STAGING namespace, not `wt/` at large: a real worktree nobody declared
+    # is still a finding under the very same allowed list.
+    assert stray_paths(["wt/other/STRAY"], allowed=with_the_prefix) == ["wt/other/STRAY"]
+
+
+@pytest.mark.os_agnostic
 def test_scan_skips_git_object_churn_and_the_runs_own_control_files(tmp_path: Path) -> None:
     (tmp_path / ".git" / "objects").mkdir(parents=True)
     (tmp_path / ".git" / "objects" / "pack.idx").write_text("git internals")

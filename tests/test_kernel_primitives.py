@@ -8,6 +8,7 @@ are code primitives - no executor is needed to exercise them.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,9 +24,11 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
+from agentdag.application.kernel.summary import append_run_summary
 from agentdag.domain.errors import SpecRejected, Suspended
 from agentdag.domain.graph_a import PushIntent
-from agentdag.domain.keys import content_hash
+from agentdag.domain.journal import RunSummaryLine
+from agentdag.domain.keys import content_hash, hash8
 from agentdag.domain.models import (
     ApproveOption,
     ApprovePayload,
@@ -251,10 +254,14 @@ def test_scan_treats_the_watched_nodes_own_bookkeeping_and_a_siblings_declared_w
     assert r2.key_facts["stray"] == []
 
 
-def payload(default: str = "hold") -> ApprovePayload:
-    """Build the approve payload these tests suspend and resolve."""
+def payload(default: str = "hold", *, text: str = "push?") -> ApprovePayload:
+    """Build the approve payload these tests suspend and resolve.
+
+    ``text`` is what a test varies to make a DIFFERENT payload for the same node - the
+    changed push list design 3.4's binding exists for.
+    """
     return ApprovePayload(
-        text="push?",
+        text=text,
         node_id="a",
         artefact_refs=[],
         options=[
@@ -268,6 +275,22 @@ def payload(default: str = "hold") -> ApprovePayload:
     )
 
 
+def payload_hash_of(p: ApprovePayload) -> str:
+    """Hash a payload exactly as ``Coordinator.approve`` does, so a test can bind a decision to it."""
+    return content_hash(p.model_dump_json(indent=1))
+
+
+def approved(
+    node_id: str,
+    p: ApprovePayload,
+    *,
+    verdict: str = "approve",
+    token_id: str = "local",  # noqa: S107 - a token IDENTITY, not a secret
+) -> Decision:
+    """Build a decision bound to ``p``: the pair (node id, payload hash) IS its identity."""
+    return Decision(node_id=node_id, decision=verdict, by="me", token_id=token_id, payload_hash=payload_hash_of(p))
+
+
 @pytest.mark.os_agnostic
 def test_approve_suspends_without_a_decision_and_returns_it_when_one_is_journaled(tmp_path: Path) -> None:
     co, rd = coordinator(tmp_path)
@@ -276,16 +299,18 @@ def test_approve_suspends_without_a_decision_and_returns_it_when_one_is_journale
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
 
     assert info.value.node_id == "a"
-    assert list(rd.root.glob("nodes/a/*/payload.json"))
+    assert info.value.payload_hash == payload_hash_of(payload())  # WHICH payload to answer
+    assert list(rd.root.glob(f"nodes/a/{hash8(payload_hash_of(payload()))}/payload.json"))
 
-    rd.write_decision(Decision(node_id="a", decision="approve", by="me", token_id="local"))
+    rd.write_decision(approved("a", payload()))
     co2, _ = coordinator(tmp_path, rd=rd)
     co2.fold_decisions()  # what run.py does on relaunch
 
     result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
 
     assert result.decision == "approve"
-    assert co2.dispatcher.index.decisions["a"].by == "me"
+    assert result.payload_hash == payload_hash_of(payload())  # the decision names what it was applied to
+    assert co2.dispatcher.index.decisions["a", payload_hash_of(payload())].by == "me"
 
     co2.fold_decisions()  # a second call, no new decision file: the folded decision must not duplicate
 
@@ -301,36 +326,106 @@ def test_approve_refuses_a_default_with_an_external_effect(tmp_path: Path) -> No
 
 
 @pytest.mark.os_agnostic
-def test_approve_accepts_a_decision_whose_payload_hash_matches_the_payload_on_offer(tmp_path: Path) -> None:
+def test_a_decision_for_an_old_payload_suspends_again_on_the_new_one_and_dispatches_nothing(
+    tmp_path: Path,
+) -> None:
+    # M3's retry turning a failed repo into a passed one, or a worktree edited by hand between
+    # the suspend and the resume, changes the push list. The old approval is not an approval of
+    # the new list, so the run must ASK again - and it must leave the new payload on disk to ask
+    # about, which the earlier refuse-and-tell-them-to-approve-again shape never did.
+    co, rd = coordinator(tmp_path)
+    old, new = payload(), payload(text="push? (one repo more)")
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=old))
+    rd.write_decision(approved("a", old))
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()
+
+    with pytest.raises(Suspended) as info:
+        asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=new))
+
+    assert info.value.payload_hash == payload_hash_of(new)
+    new_payload_file = rd.root / "nodes" / "a" / hash8(payload_hash_of(new)) / "payload.json"
+    assert json.loads(new_payload_file.read_text(encoding="utf-8"))["text"] == new.text
+    assert not list(rd.root.glob("nodes/a/*/record.json"))  # suspended before anything was dispatched
+
+    # ... and answering the NEW payload resumes it, with no file deleted and no hand editing.
+    rd.write_decision(approved("a", new))
+    co3, _ = coordinator(tmp_path, rd=rd)
+    co3.fold_decisions()
+
+    result = asyncio.run(co3.approve(code("a", Kind.APPROVE), payload=new))
+
+    assert result.decision == "approve"
+    assert result.payload_hash == payload_hash_of(new)
+    assert len(co3.dispatcher.index.decisions) == 2  # both answers, under their own payload hashes
+
+
+@pytest.mark.os_agnostic
+def test_a_second_decision_on_the_same_payload_is_refused_write_once(tmp_path: Path) -> None:
     co, rd = coordinator(tmp_path)
     with pytest.raises(Suspended):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
-    matching_hash = content_hash(payload().model_dump_json(indent=1))
-    rd.write_decision(Decision(node_id="a", decision="approve", by="me", token_id="local", payload_hash=matching_hash))
+    rd.write_decision(approved("a", payload(), verdict="hold"))
+
+    with pytest.raises(FileExistsError):
+        rd.write_decision(approved("a", payload(), verdict="approve"))
+
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()
+    result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
+    assert result.decision == "hold"  # the first answer stands
+
+
+@pytest.mark.os_agnostic
+def test_a_decision_folded_without_a_payload_hash_still_answers_any_payload(tmp_path: Path) -> None:
+    # A decision file written before the binding existed carries no hash and folds as ("a", "").
+    # It has to keep working, or an in-flight run started by an older build cannot be resumed.
+    co, rd = coordinator(tmp_path)
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
+    legacy = Decision(node_id="a", decision="approve", by="me", token_id="local")
+    (rd.decisions_dir / "a.json").write_text(legacy.model_dump_json(indent=1), encoding="utf-8")
     co2, _ = coordinator(tmp_path, rd=rd)
     co2.fold_decisions()
 
     result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
 
     assert result.decision == "approve"
+    assert ("a", "") in co2.dispatcher.index.decisions
+    assert result.payload_hash == payload_hash_of(payload())  # bound to what it was actually applied to
 
 
 @pytest.mark.os_agnostic
-def test_approve_refuses_a_decision_made_for_a_different_payload(tmp_path: Path) -> None:
-    # M3's retry turning a failed repo into a passed one, or a worktree edited by hand between
-    # the suspend and the resume, changes the push list; a stale approval must never carry over.
+def test_human_interactions_counts_decisions_not_nodes(tmp_path: Path) -> None:
+    # One approve node, two payloads, two answers: the human was asked twice, so the run summary
+    # must say 2. Keyed by node id alone this read 1.
     co, rd = coordinator(tmp_path)
-    with pytest.raises(Suspended):
-        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
-    stale_hash = "sha256:" + "0" * 64
-    rd.write_decision(Decision(node_id="a", decision="approve", by="me", token_id="local", payload_hash=stale_hash))
-    co2, _ = coordinator(tmp_path, rd=rd)
-    co2.fold_decisions()
+    first, second = payload(), payload(text="push? (one repo more)")
+    rd.write_decision(approved("a", first))
+    rd.write_decision(approved("a", second, verdict="hold"))
+    co.fold_decisions()
 
-    with pytest.raises(SpecRejected, match="different payload"):
-        asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
+    append_run_summary(co, replay_seconds=None)
 
-    assert not list(rd.root.glob("nodes/a/*/record.json"))  # refused before anything was dispatched
+    summary = co.dispatcher.journal.lines()[-1]
+    assert isinstance(summary, RunSummaryLine)
+    assert summary.human_interactions == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_system_decision_is_not_a_human_interaction(tmp_path: Path) -> None:
+    # The control for the test above: it must be able to report a number OTHER than the
+    # decision count, or "counts decisions" is not what it proves.
+    co, rd = coordinator(tmp_path)
+    rd.write_decision(approved("a", payload(), token_id="system"))
+    co.fold_decisions()
+
+    append_run_summary(co, replay_seconds=None)
+
+    summary = co.dispatcher.journal.lines()[-1]
+    assert isinstance(summary, RunSummaryLine)
+    assert summary.human_interactions == 0
 
 
 @pytest.mark.os_agnostic
@@ -345,4 +440,4 @@ def test_fold_decisions_ignores_a_reserved_cancel_file(tmp_path: Path) -> None:
     co.fold_decisions()  # must not raise, and must not journal or count either file
 
     assert len(co.dispatcher.journal.lines()) == lines_before
-    assert "a" not in co.dispatcher.index.decisions
+    assert co.dispatcher.index.decisions == {}

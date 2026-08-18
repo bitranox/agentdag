@@ -189,12 +189,22 @@ class RunDir(Protocol):
         """Write ``state_path`` atomically."""
         ...
 
-    def read_decision(self, node_id: str) -> Decision | None:
-        """Read ``decisions/<node_id>.json``, or ``None`` if no decision is recorded yet."""
+    def read_decision(self, node_id: str, payload_hash: str) -> Decision | None:
+        """Read this (node id, payload hash)'s decision, or ``None`` if none is recorded yet."""
         ...
 
     def write_decision(self, decision: Decision) -> None:
-        """Write ``decisions/<node_id>.json`` once; refuses to overwrite an existing one."""
+        """Publish ``decision`` write-once per (node id, payload hash); refuses to overwrite one.
+
+        Raises:
+            ValueError: ``decision.payload_hash`` is missing - the hash is half the
+                decision's identity, so a decision that names no payload cannot be filed.
+            FileExistsError: this (node id, payload hash) already has a decision.
+        """
+        ...
+
+    def list_decisions(self) -> list[Decision]:
+        """Return every recorded decision in a deterministic order; reserved cancel files excluded."""
         ...
 
 

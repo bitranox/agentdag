@@ -84,7 +84,14 @@ class ResumeLine(_Line):
 
 
 class ApproveDecisionLine(_Line):
-    """A decision folded into the journal from ``decisions/<node_id>.json`` (design 3.4)."""
+    """A decision folded into the journal from ``decisions/<node_id>.<hash8>.json`` (design 3.4).
+
+    ``payload_hash`` is the other half of the decision's identity: decisions are recorded
+    per (``node_id``, ``payload_hash``), so an approval binds to the exact payload a human
+    was shown and never carries over to a changed one. Every line this kernel appends
+    carries it; the empty-string default exists only so a line written before the field
+    existed still parses, and the replay index keys such a line as ``(node_id, "")``.
+    """
 
     event: Literal["approve_decision"] = "approve_decision"
     node_id: str
@@ -92,6 +99,7 @@ class ApproveDecisionLine(_Line):
     reason: str
     by: str
     token_id: str
+    payload_hash: str = ""
 
 
 class RunSummaryLine(_Line):

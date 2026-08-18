@@ -291,6 +291,13 @@ class RunState(BaseModel):
     owner: str
     status: RunStatus
     cursor: str | None = None
+    cursor_payload_hash: str | None = None
+    """The content hash of the payload the run is suspended ON, alongside ``cursor``'s node id.
+
+    A decision is recorded per (node id, payload hash), so the node id alone does not say WHICH
+    payload a decider is being asked about: a run that suspends again on a CHANGED payload keeps
+    the same ``cursor`` and moves this. ``None`` whenever the run is not suspended.
+    """
     policy_version: str
     tokens_by_row: dict[str, int] = Field(default_factory=dict)
     holder: LockHolder | None = None
@@ -324,15 +331,17 @@ class ApprovePayload(BaseModel):
 class Decision(BaseModel):
     """A decision recorded against an approve node, mirroring the approve_decision journal line.
 
-    ``payload_hash`` is the content hash of the payload this decision was made FOR (design
-    3.4's binding): a human approving a push list must have that exact approval bound to that
-    exact list, never silently carried over to a changed one (a retry turning a failed repo
-    into a passed one, or a worktree edited by hand between the suspend and the resume).
-    ``None`` for a decision that predates this field, or one an unattended default writes with
-    no human-reviewed payload to bind to; :meth:`~agentdag.application.kernel.context.Coordinator.approve`
-    accepts either unconditionally. This field is NOT carried onto the journal's
-    ``approve_decision`` line - that schema is fixed (``additionalProperties: false``) - so the
-    binding lives on the decision FILE only, read back at approve time.
+    ``payload_hash`` is the content hash of the payload this decision was made FOR, and it is
+    half the decision's IDENTITY (design 3.4's binding, the idempotency key D2 took from DBOS's
+    ``send(..., idempotency_key)``): a decision is recorded per (node id, payload hash), not per
+    node id, so a human approving a push list has that approval bound to that exact list and a
+    CHANGED list (a retry turning a failed repo into a passed one, or a worktree edited by hand
+    between the suspend and the resume) simply does not match - the run suspends again on the
+    new payload rather than applying an approval nobody gave.
+    :meth:`~agentdag.application.kernel.ports.RunDir.write_decision` REQUIRES it, because it
+    names the file the decision is published as, and it is carried onto the journal's
+    ``approve_decision`` line. ``None`` only for a decision file written before this field
+    existed, which the replay index keys as ``(node_id, "")``.
     """
 
     model_config = ConfigDict(frozen=True)

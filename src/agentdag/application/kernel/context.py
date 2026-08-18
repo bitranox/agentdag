@@ -463,50 +463,64 @@ class Coordinator:
         return rel
 
     async def approve(self, spec: NodeSpec, *, payload: ApprovePayload) -> Decision:
-        """Return the recorded decision, or write the payload and suspend the run.
+        """Return the decision recorded for THIS payload, or write the payload and suspend the run.
 
-        Never blocks and never polls: with no decision recorded yet, this writes the
-        payload and RAISES - the coordinator process exits, and a later relaunch that has
-        folded a decision (:meth:`fold_decisions`) is what makes this call return.
+        Never blocks and never polls: with no decision recorded for the payload on
+        offer, this writes the payload and RAISES - the coordinator process exits, and a
+        later relaunch that has folded a matching decision (:meth:`fold_decisions`) is
+        what makes this call return.
+
+        The lookup is by (node id, payload hash), never by node id alone, and that IS
+        design 3.4's binding (the idempotency key D2 took from DBOS's
+        ``send(..., idempotency_key)``): a decision answers one exact payload. When the
+        payload CHANGES between the suspend and the resume - M3's retry turning a failed
+        repo into a passed one, a worktree edited by hand - the old decision simply does
+        not match, so the run writes the NEW payload and suspends again on it rather
+        than applying an approval for a list nobody was shown. Nothing is refused and
+        nothing has to be deleted by hand: the decider answers the new payload, and both
+        answers stay on disk under their own hashes. A decision folded from a file
+        written before the hash existed keys as ``(node_id, "")`` and is used as the
+        fallback, unbound, exactly as it behaved before this field existed.
 
         Two different ``payload.json`` locations are intentional, one per path below.
         The SUSPEND path writes to ``nodes/<node_id>/<hash8(payload content
         hash)>/payload.json`` BEFORE any dispatch happens - there IS no dispatch
         node_dir yet at that point (the coordinator is about to raise and exit), so
-        this is the only stable, content-addressed place to put it. Once a decision
-        exists, the DONE path instead writes ``payload.json`` INSIDE the dispatch's
-        own body, into the record's REAL node_dir (``hash8`` of the call's journal
-        key, computed by :class:`~agentdag.application.kernel.dispatch.Dispatcher`
-        itself) - so ``artefact_refs`` names a file that actually exists under the
-        SAME hash as the record that references it, rather than the differently-hashed
-        directory the suspend path used (a payload-content hash, not a journal-key
-        hash - the two hashes agree only by coincidence).
+        this is the only stable, content-addressed place to put it, and it is where the
+        decider reads the payload they are answering. An existing file there is left
+        alone: the same payload hashes to the same directory, so rewriting it could only
+        ever reproduce the same bytes. Once a decision exists, the DONE path instead
+        writes ``payload.json`` INSIDE the dispatch's own body, into the record's REAL
+        node_dir (``hash8`` of the call's journal key, computed by
+        :class:`~agentdag.application.kernel.dispatch.Dispatcher` itself) - so
+        ``artefact_refs`` names a file that actually exists under the SAME hash as the
+        record that references it, rather than the differently-hashed directory the
+        suspend path used (a payload-content hash, not a journal-key hash - the two
+        hashes agree only by coincidence).
 
         Args:
             spec: The approve node's spec.
             payload: What to show the human, including the option to fall back on.
 
         Returns:
-            The recorded :class:`~agentdag.domain.models.Decision`, once one exists.
+            The recorded :class:`~agentdag.domain.models.Decision`, once one exists,
+            carrying the payload hash it was applied to.
 
         Raises:
             SpecRejected: ``payload.default`` does not name an option whose
                 ``effect == "none"`` - a default the coordinator could apply unattended
-                must never itself leave the process (design 2.4); or the folded
-                decision's ``payload_hash`` names a DIFFERENT payload than the one
-                being presented now (design 3.4's binding - see :meth:`_refuse_stale_decision`).
-            Suspended: no decision is recorded yet for ``spec.node_id``.
+                must never itself leave the process (design 2.4).
+            Suspended: no decision is recorded yet for this (node id, payload hash);
+                the exception carries the hash, so a caller knows WHICH payload to ask about.
         """
         _validate_default(payload)
         payload_text = payload.model_dump_json(indent=1)
+        payload_hash = content_hash(payload_text)
 
-        line = self.dispatcher.index.decisions.get(spec.node_id)
+        line = self._folded_decision(spec.node_id, payload_hash)
         if line is None:
-            suspend_dir = self.run_dir.node_dir(spec.node_id, hash8(content_hash(payload_text)))
-            rel_suspend_payload = f"{suspend_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
-            self.run_dir.write_atomic(rel_suspend_payload, payload_text)
-            raise Suspended(spec.node_id)
-        self._refuse_stale_decision(spec.node_id, payload_text)
+            self._write_suspend_payload(spec.node_id, payload_hash, payload_text)
+            raise Suspended(spec.node_id, payload_hash=payload_hash)
 
         async def body(node_dir: Path) -> NodeOutcome:
             rel_payload = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
@@ -522,40 +536,41 @@ class Coordinator:
             )
 
         await self._dispatch(
-            spec, brief=f"approve: {spec.node_id}", input_obj={"payload_hash": content_hash(payload_text)}, body=body
+            spec, brief=f"approve: {spec.node_id}", input_obj={"payload_hash": payload_hash}, body=body
         )
         return Decision(
-            node_id=line.node_id, decision=line.decision, reason=line.reason, by=line.by, token_id=line.token_id
+            node_id=line.node_id,
+            decision=line.decision,
+            reason=line.reason,
+            by=line.by,
+            token_id=line.token_id,
+            payload_hash=payload_hash,
         )
 
-    def _refuse_stale_decision(self, node_id: str, payload_text: str) -> None:
-        """Refuse a folded decision that was made for a DIFFERENT payload than this one (design 3.4).
-
-        The journal's ``approve_decision`` line carries no payload hash - its schema is
-        fixed (``additionalProperties: false``) - so the binding lives only on the
-        decision FILE, read back here rather than off :attr:`~Dispatcher.index`. A
-        decision with no hash (one written before this field existed, or by an
-        unattended default with no human-reviewed payload to bind to) is accepted as
-        before: only a decision that NAMES a payload and disagrees with the one on
-        offer now is refused, so a changed push list (a retry turning a failed repo
-        into a passed one, or a worktree edited by hand between the suspend and the
-        resume) can never be applied under an approval the human never actually saw.
+    def _folded_decision(self, node_id: str, payload_hash: str) -> ApproveDecisionLine | None:
+        """Return the folded decision for this (node, payload), or the unbound legacy one.
 
         Args:
-            node_id: The approve node whose folded decision is being checked.
-            payload_text: The CURRENT payload's canonical JSON text, as :meth:`approve`
-                is about to present it.
+            node_id: The approve node being asked about.
+            payload_hash: The content hash of the payload on offer right now.
 
-        Raises:
-            SpecRejected: the decision file's ``payload_hash`` does not match
-                ``payload_text``'s own content hash.
+        Returns:
+            The decision line recorded for exactly this payload; failing that, one
+            folded from a decision file written before ``payload_hash`` existed (keyed
+            ``(node_id, "")``), which is unbound and therefore answers any payload -
+            the pre-binding behaviour, kept so an in-flight run written by an older
+            build still resumes. ``None`` when neither exists.
         """
-        decision_file = self.run_dir.read_decision(node_id)
-        if decision_file is None or decision_file.payload_hash is None:
+        decisions = self.dispatcher.index.decisions
+        return decisions.get((node_id, payload_hash)) or decisions.get((node_id, ""))
+
+    def _write_suspend_payload(self, node_id: str, payload_hash: str, payload_text: str) -> None:
+        """Publish the payload the decider is being asked about, unless it is already there."""
+        suspend_dir = self.run_dir.node_dir(node_id, hash8(payload_hash))
+        if (suspend_dir / "payload.json").exists():
             return
-        current_hash = content_hash(payload_text)
-        if decision_file.payload_hash != current_hash:
-            raise SpecRejected(f"decision for {node_id!r} was made for a different payload; approve again")
+        rel = f"{suspend_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
+        self.run_dir.write_atomic(rel, payload_text)
 
     async def apply(
         self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: Callable[[HasDedupKey], str]
@@ -603,29 +618,25 @@ class Coordinator:
 
         Called by ``run.py`` first thing on a relaunch (before dispatching anything), so
         every ``approve`` call in this run sees every decision recorded while the
-        coordinator was not running. A decision already in the replay index is skipped -
-        it was already folded by an earlier call, in this run or a previous one. How
+        coordinator was not running. A decision is identified by (node id, PAYLOAD
+        hash), so a node that was asked about two payloads folds two lines: skipping on
+        node id alone would silently drop the answer to the newer question and leave
+        ``approve`` reading the older verdict. A pair already in the replay index is
+        skipped - it was folded by an earlier call, in this run or a previous one. How
         many of the run's decisions were HUMAN ones (a run-summary field) is not
-        tracked here: :attr:`dispatcher`'s index already holds the latest decision per
-        node id after this call, which is a per-RUN view (folded from the whole
-        journal), so ``run.py`` counts it from there rather than from a per-launch
-        counter that would read zero on any relaunch that finds every decision already
-        folded.
+        tracked here: :attr:`dispatcher`'s index already holds every folded decision
+        after this call, which is a per-RUN view (folded from the whole journal), so
+        ``summary.py`` counts it from there rather than from a per-launch counter that
+        would read zero on any relaunch that finds every decision already folded.
 
-        ``decisions/`` also holds two RESERVED files that are not decisions, both
-        written by M3: ``<node_id>.cancel.json`` (a per-node cancel) and
-        ``_run.cancel.json`` (a whole-run cancel). Both end ``.cancel.json``, so a
-        single suffix check skips either shape without trying to parse it as a
-        :class:`~agentdag.domain.models.Decision`.
+        Which files under ``decisions/`` are decisions at all - and the reserved cancel
+        shapes that are not - is
+        :meth:`~agentdag.application.kernel.ports.RunDir.list_decisions`'s job, not this
+        one's; the layout belongs to the port.
         """
-        for decision_path in sorted(self.run_dir.decisions_dir.glob("*.json")):
-            if decision_path.name.endswith(".cancel.json"):
-                continue
-            node_id = decision_path.stem
-            if node_id in self.dispatcher.index.decisions:
-                continue
-            decision = self.run_dir.read_decision(node_id)
-            if decision is None:
+        for decision in self.run_dir.list_decisions():
+            payload_hash = decision.payload_hash or ""
+            if (decision.node_id, payload_hash) in self.dispatcher.index.decisions:
                 continue
             self.dispatcher.journal.append(
                 ApproveDecisionLine(
@@ -634,6 +645,7 @@ class Coordinator:
                     reason=decision.reason,
                     by=decision.by,
                     token_id=decision.token_id,
+                    payload_hash=payload_hash,
                     at=stamp(self.clock),
                 )
             )

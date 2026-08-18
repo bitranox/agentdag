@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import CommittingExecutor, StrayExecutor, fleet, git, launch, policy_path
+from kernel_fakes import CommittingExecutor, StrayExecutor, decide, fleet, git, launch, policy_path
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
@@ -26,14 +27,13 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.replay import build_replay_index
-from agentdag.application.kernel.run import run_coordinator
+from agentdag.application.kernel.run import RunOutcome, run_coordinator
 from agentdag.application.workflows import get_workflow
-from agentdag.application.workflows.graph_a import perform_push
+from agentdag.application.workflows.graph_a import GraphAArgs, perform_push
 from agentdag.domain.errors import SpecRejected
 from agentdag.domain.graph_a import PushIntent, dedup_key
 from agentdag.domain.journal import ResultLine, RunSummaryLine, StartedLine
 from agentdag.domain.models import (
-    Decision,
     ErrorType,
     NodeError,
     NodeOutcome,
@@ -67,6 +67,35 @@ def node_by_key(lines: list[JournalLine]) -> dict[str, str]:
 def records_of(lines: list[JournalLine], prefix: str) -> list[ResultRecord]:
     """Every record the journal holds for nodes whose id starts with ``prefix``."""
     return [line.record for line in lines if isinstance(line, ResultLine) and line.record.node_id.startswith(prefix)]
+
+
+def launch_over(tmp_path: Path, run_dir: FsRunDir, args: GraphAArgs, executor: CommittingExecutor) -> RunOutcome:
+    """Launch one graph A run over a run directory the TEST built, with the real adapters.
+
+    ``kernel_fakes.launch`` builds the run directory and the fleet itself, which a test that
+    has to seed the run directory first (a stale staging dir) or hand-write the repos file
+    (a refused fleet member) cannot use.
+    """
+    return asyncio.run(
+        run_coordinator(
+            run_dir=run_dir,
+            journal=JsonlJournal(run_dir.journal_path, run_dir.audit_path),
+            clock=UtcClock(),
+            lock=FileRunLock(),
+            holder=current_holder(),
+            workflow=get_workflow("graph-a"),
+            args=args,
+            executors={"claude": executor},
+            gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+            git=GitCli(),
+            scanner=IsolationScanner(),
+            policy=load_policy(policy_path()),
+            parallel=args.parallel,
+            by="tester",
+            token_id="local",
+            resume_reason=None,
+        )
+    )
 
 
 def coordinator_over(run_dir: FsRunDir, tmp_path: Path) -> Coordinator:
@@ -129,7 +158,7 @@ def test_graph_a_suspends_at_the_approve_then_a_decision_resumes_it_to_a_push(tm
     assert run_dir.read_state().status == RunStatus.SUSPENDED
     assert sorted(executor.calls) == ["w_migrate@0", "w_migrate@1"]
 
-    run_dir.write_decision(Decision(node_id="a_push_list", decision="approve", by="tester", token_id="local"))
+    approved_hash = decide(run_dir, "approve")
     outcome2, _ = launch(tmp_path, executor, resume="decision")
 
     assert outcome2.status == RunStatus.DONE
@@ -139,7 +168,7 @@ def test_graph_a_suspends_at_the_approve_then_a_decision_resumes_it_to_a_push(tm
     assert git("rev-parse", "main", cwd=tmp_path / "a") != git("rev-parse", "main", cwd=origin)
     index = build_replay_index(journal_of(run_dir))
     assert index.crash_window == set()
-    assert index.decisions["a_push_list"].by == "tester"
+    assert index.decisions["a_push_list", approved_hash].by == "tester"
     assert index.run_started is not None
     summary = [line for line in journal_of(run_dir) if isinstance(line, RunSummaryLine)][-1]
     assert summary.human_interactions == 1
@@ -192,7 +221,7 @@ def test_replay_of_a_finished_run_dispatches_nothing_and_reproduces_the_key_sequ
     executor = CommittingExecutor()
     launch(tmp_path, executor)
     run_dir = FsRunDir.open(tmp_path / "runs", "r1")
-    run_dir.write_decision(Decision(node_id="a_push_list", decision="hold", by="tester", token_id="local"))
+    decide(run_dir, "hold")
     launch(tmp_path, executor, resume="decision")
     lines_before = journal_of(run_dir)
 
@@ -254,7 +283,7 @@ def test_a_push_whose_target_already_points_at_the_commit_is_reported_not_repeat
     # journal. So the guard is exercised directly, against a real origin the run really pushed to.
     executor = CommittingExecutor()
     _, run_dir = launch(tmp_path, executor)
-    run_dir.write_decision(Decision(node_id="a_push_list", decision="approve", by="tester", token_id="local"))
+    decide(run_dir, "approve")
     launch(tmp_path, executor, resume="decision")
     origin = tmp_path / "scratch" / "origin" / "a.git"
     head = git("rev-parse", "main", cwd=origin)
@@ -310,33 +339,40 @@ def test_a_stale_partial_clone_staging_dir_is_cleaned_before_the_branchs_own_sna
     stale.mkdir(parents=True)
     (stale / "leftover").write_text("dead clone", encoding="utf-8")
 
-    executor = CommittingExecutor()
-    outcome = asyncio.run(
-        run_coordinator(
-            run_dir=run_dir,
-            journal=JsonlJournal(run_dir.journal_path, run_dir.audit_path),
-            clock=UtcClock(),
-            lock=FileRunLock(),
-            holder=current_holder(),
-            workflow=get_workflow("graph-a"),
-            args=args,
-            executors={"claude": executor},
-            gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
-            git=GitCli(),
-            scanner=IsolationScanner(),
-            policy=load_policy(policy_path()),
-            parallel=1,
-            by="tester",
-            token_id="local",
-            resume_reason=None,
-        )
-    )
+    outcome = launch_over(tmp_path, run_dir, args, CommittingExecutor())
 
     assert not stale.exists()
     assert outcome.status == RunStatus.SUSPENDED  # a normal suspend at the approve, like any clean run
     tally = json.loads((run_dir.root / "artefacts" / "tally.json").read_text(encoding="utf-8"))
     rows = {row["repo"]: row["status"] for row in tally["rows"]}
     assert rows[str(origins[1])] == "passed"  # the branch the stale staging dir belonged to
+    # Name the mechanism, not just the outcome: branch b's scan saw NOTHING, which is what
+    # "cleaned before the branch took its own `before` manifest" means. A pass reached via the
+    # `wt/.partial-*/**` exclusion instead of via the ordering would leave the removal in the
+    # diff; test_kernel_scan.py pins what that exclusion does and does not cover on its own.
+    scans = records_of(journal_of(run_dir), "g_scan@1")
+    assert [record.key_facts["stray"] for record in scans] == [[]]
+
+
+@pytest.mark.os_agnostic
+def test_a_fleet_member_claiming_the_partial_staging_namespace_is_refused(tmp_path: Path) -> None:
+    # `wt/.partial-*` is the coordinator's own: the scan excuses every write under it and the next
+    # launch's stale-staging cleanup deletes it. A fleet member landing there would be unwatched
+    # AND destroyed, so the name is refused up front, before anything is dispatched.
+    args, _ = fleet(tmp_path, ["a"], parallel=1)
+    origin = args.scratch / "origin" / ".partial-x.git"
+    GitCli().mirror(tmp_path / "a", origin)
+    args.repos_file.write_text(f"{origin}\n", encoding="utf-8")
+    base = tmp_path / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = FsRunDir.create(base, "r1")
+
+    with pytest.raises(SpecRejected, match=re.escape(".partial-")):
+        launch_over(tmp_path, run_dir, args, CommittingExecutor())
+
+    # Refused in the program body, before any dispatch: the fleet guard runs ahead of g_discover.
+    assert started_keys(journal_of(run_dir)) == []
+    assert not run_dir.worktree(".partial-x").exists()
 
 
 @pytest.mark.os_agnostic

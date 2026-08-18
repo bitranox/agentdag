@@ -31,7 +31,10 @@ class ReplayIndex:
         results: The LATEST result record for every key that has one.
         crash_window: Keys with a ``started`` line and no later ``result`` - the
             candidates for redispatch when the coordinator resumes after a crash.
-        decisions: The LATEST approve decision per node id.
+        decisions: The LATEST approve decision per (node id, payload hash) - a decision's
+            full identity, since one approve node asked about two different payloads is two
+            different questions with two independent answers. A line written before
+            ``payload_hash`` existed keys as ``(node_id, "")``.
         key_sequence: Every ``started`` key, in file order, duplicates included -
             each is a real dispatch attempt, so this is the oracle a replay-purity
             check compares a fresh run's dispatch order against.
@@ -41,7 +44,7 @@ class ReplayIndex:
 
     results: dict[str, ResultRecord]
     crash_window: set[str]
-    decisions: dict[str, ApproveDecisionLine]
+    decisions: dict[tuple[str, str], ApproveDecisionLine]
     key_sequence: list[str]
     run_started: RunStartedLine | None
 
@@ -57,7 +60,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
         The folded index: a ``started`` line appends its key to ``key_sequence`` and
         adds it to ``crash_window``; the matching ``result`` moves it into ``results``
         and drops it from ``crash_window``; ``approve_decision`` overwrites the
-        node's entry in ``decisions``; ``run_started`` sets ``run_started``.
+        (node id, payload hash) entry in ``decisions``; ``run_started`` sets ``run_started``.
 
     Example:
         >>> from agentdag.domain.journal import ResultLine, StartedLine
@@ -75,7 +78,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
     """
     results: dict[str, ResultRecord] = {}
     crash_window: set[str] = set()
-    decisions: dict[str, ApproveDecisionLine] = {}
+    decisions: dict[tuple[str, str], ApproveDecisionLine] = {}
     key_sequence: list[str] = []
     run_started: RunStartedLine | None = None
 
@@ -87,7 +90,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
             results[line.key] = line.record
             crash_window.discard(line.key)
         elif line.event == "approve_decision":
-            decisions[line.node_id] = line
+            decisions[line.node_id, line.payload_hash] = line
         elif line.event == "run_started":
             run_started = line
 

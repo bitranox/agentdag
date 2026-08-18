@@ -82,15 +82,21 @@ class RunRefused(KernelError):
 class Suspended(Exception):
     """Control flow, not an error: an approve node has no decision yet, the coordinator exits (design 3.4).
 
+    ``payload_hash`` names WHICH payload the run is waiting on, because a decision is
+    recorded per (node id, payload hash): one node suspending twice under a CHANGED payload
+    asks two different questions, and only the hash tells them apart. ``None`` when the
+    raiser had no payload to bind to.
+
     Example:
         >>> from agentdag.domain.errors import Suspended
-        >>> Suspended("a_push_list").node_id
-        'a_push_list'
+        >>> Suspended("a_push_list", payload_hash="sha256:ab").payload_hash
+        'sha256:ab'
     """
 
-    def __init__(self, node_id: str) -> None:
+    def __init__(self, node_id: str, *, payload_hash: str | None = None) -> None:
         super().__init__(node_id)
         self.node_id = node_id
+        self.payload_hash = payload_hash
 
 
 __all__ = [

@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+HASH_ONE = "sha256:" + "1" * 64
+HASH_TWO = "sha256:" + "2" * 64
+
+
 def state() -> RunState:
     return RunState(
         run_id="r1", workflow="graph-a", args={}, owner="me", status=RunStatus.RUNNING, policy_version="sha256:p"
@@ -51,17 +55,52 @@ def test_node_dir_is_keyed_by_node_id_and_hash8_and_writes_are_atomic_and_owner_
         rd.node_dir("../escape", "71efdc61")
 
 
-def test_state_round_trips_and_decisions_are_write_once(tmp_path: Path) -> None:
+def test_state_round_trips_and_decisions_are_write_once_per_payload(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
     rd.write_state(state())
     assert rd.read_state() == state()
-    assert rd.read_decision("a_push_list") is None
-    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local")
+    assert rd.read_decision("a_push_list", HASH_ONE) is None
+    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
     rd.write_decision(d)
-    assert rd.read_decision("a_push_list") == d
+    assert rd.read_decision("a_push_list", HASH_ONE) == d
     with pytest.raises(FileExistsError):
-        rd.write_decision(d)
-    assert json.loads((rd.decisions_dir / "a_push_list.json").read_text())["decision"] == "hold"
+        rd.write_decision(d)  # write-once for THIS payload
+    assert json.loads((rd.decisions_dir / f"a_push_list.{HASH_ONE[7:15]}.json").read_text())["decision"] == "hold"
+    # A CHANGED payload is a new question, so its answer is a new file beside the old one,
+    # not a refusal: keying write-once on the node id alone is what made a re-approval
+    # impossible without deleting a file by hand.
+    second = d.model_copy(update={"decision": "approve", "payload_hash": HASH_TWO})
+    rd.write_decision(second)
+    assert rd.read_decision("a_push_list", HASH_TWO) == second
+    assert rd.read_decision("a_push_list", HASH_ONE) == d  # the old answer is still on record
+
+
+def test_write_decision_refuses_a_decision_that_names_no_payload(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    with pytest.raises(ValueError, match="payload_hash"):
+        rd.write_decision(Decision(node_id="a_push_list", decision="hold", by="me", token_id="local"))
+
+
+def test_write_decision_refuses_a_payload_hash_that_could_escape_the_decisions_dir(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    traversal = Decision(node_id="a", decision="hold", by="me", token_id="local", payload_hash="sha256:../../x")
+    with pytest.raises(ValueError, match="unsafe payload hash"):
+        rd.write_decision(traversal)
+
+
+def test_list_decisions_returns_every_decision_sorted_and_ignores_reserved_cancel_files(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    first = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
+    second = Decision(node_id="a_push_list", decision="approve", by="me", token_id="local", payload_hash=HASH_TWO)
+    rd.write_decision(second)  # written in the order that does NOT match the sort
+    rd.write_decision(first)
+    (rd.decisions_dir / "a_push_list.cancel.json").write_text('{"node_id": "a_push_list", "reason": "stop"}')
+    (rd.decisions_dir / "_run.cancel.json").write_text('{"reason": "stop everything"}')
+
+    listed = rd.list_decisions()
+
+    # HASH_ONE shortens to 11111111 and HASH_TWO to 22222222, so filename order is first, second.
+    assert listed == [first, second]
 
 
 def test_write_atomic_refuses_absolute_and_traversal_paths(tmp_path: Path) -> None:
@@ -97,11 +136,11 @@ def test_node_dir_refuses_a_backslash_bearing_node_id(tmp_path: Path) -> None:
 
 def test_write_decision_and_read_decision_refuse_a_traversal_node_id(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
-    d = Decision(node_id="../x", decision="hold", by="me", token_id="local")
+    d = Decision(node_id="../x", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
     with pytest.raises(ValueError):
         rd.write_decision(d)
     with pytest.raises(ValueError):
-        rd.read_decision("../x")
+        rd.read_decision("../x", HASH_ONE)
 
 
 def test_write_atomic_creates_every_missing_parent_level_owner_only(tmp_path: Path) -> None:
@@ -125,10 +164,12 @@ def test_write_atomic_leaves_no_tmp_file_behind_when_the_replace_fails(tmp_path:
 
 def test_read_decision_of_an_empty_stub_file_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
-    stub = rd.decisions_dir / "a_push_list.json"
+    stub = rd.decisions_dir / f"a_push_list.{HASH_ONE[7:15]}.json"
     stub.write_text("")
     with pytest.raises(RunRefused, match=re.escape(str(stub))):
-        rd.read_decision("a_push_list")
+        rd.read_decision("a_push_list", HASH_ONE)
+    with pytest.raises(RunRefused, match=re.escape(str(stub))):
+        rd.list_decisions()  # the same refusal through the listing, not a silently skipped file
 
 
 def test_read_state_of_a_corrupt_file_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
@@ -158,6 +199,6 @@ def test_read_text_reads_a_written_file_and_refuses_a_traversal_path(tmp_path: P
 
 def test_write_decision_leaves_no_tmp_file_behind_in_decisions_dir(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
-    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local")
+    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
     rd.write_decision(d)
     assert list(rd.decisions_dir.glob(".tmp-*")) == []

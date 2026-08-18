@@ -9,7 +9,9 @@ dispatches.
 Three exits, and the fourth that is not an exit at all:
 
 * the program returns   -> a ``run_summary`` line, state ``done``, cursor cleared;
-* it raises ``Suspended`` -> state ``suspended``, cursor at the approve node, no summary;
+* it raises ``Suspended`` -> state ``suspended``, cursor at the approve node and
+  ``cursor_payload_hash`` at the payload it is waiting on (a decision is recorded per
+  (node id, payload hash), so the node id alone does not say what to answer), no summary;
 * it raises anything else -> state ``failed``, and the exception propagates;
 * the PROCESS dies (``SystemExit``, ``KeyboardInterrupt``) -> nothing is written, so the
   state on disk stays ``running`` with a ``started`` line that has no ``result``. That IS
@@ -187,7 +189,13 @@ async def _drive(
     try:
         await workflow.program(co, args)
     except Suspended as suspended:
-        _write_state(co, status=RunStatus.SUSPENDED, cursor=suspended.node_id, by=by)
+        _write_state(
+            co,
+            status=RunStatus.SUSPENDED,
+            cursor=suspended.node_id,
+            by=by,
+            cursor_payload_hash=suspended.payload_hash,
+        )
         return RunOutcome(RunStatus.SUSPENDED, suspended.node_id, list(co.dispatcher.dispatched_keys))
     except Exception:
         _write_state(co, status=RunStatus.FAILED, cursor=None, by=by)
@@ -275,7 +283,9 @@ def _reason(resume_reason: str | None) -> _ResumeReason:
     return resume_reason
 
 
-def _write_state(co: Coordinator, *, status: RunStatus, cursor: str | None, by: str) -> None:
+def _write_state(
+    co: Coordinator, *, status: RunStatus, cursor: str | None, by: str, cursor_payload_hash: str | None = None
+) -> None:
     """Write ``state.json`` for this launch, keeping what only the first start decides.
 
     ``args`` and ``owner`` are read back from an existing state file rather than
@@ -285,6 +295,10 @@ def _write_state(co: Coordinator, *, status: RunStatus, cursor: str | None, by: 
     totals, which are rebuilt from zero on every launch by charging every record the
     launch touched, served ones included. Adding them to what the file already held
     would count the same records once per launch.
+
+    ``cursor_payload_hash`` defaults to ``None`` and is passed only on the suspend
+    path, so any other exit CLEARS it: a stale hash would name a payload the run is no
+    longer waiting on, and a decider reading it would answer the wrong question.
     """
     existing = _existing_state(co.run_dir)
     co.run_dir.write_state(
@@ -295,6 +309,7 @@ def _write_state(co: Coordinator, *, status: RunStatus, cursor: str | None, by: 
             owner=existing.owner if existing is not None else by,
             status=status,
             cursor=cursor,
+            cursor_payload_hash=cursor_payload_hash,
             policy_version=co.policy.version,
             tokens_by_row=dict(co.tokens_by_row),
         )

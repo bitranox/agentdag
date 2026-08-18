@@ -12,7 +12,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import CommittingExecutor, launch, policy_path
+from kernel_fakes import CommittingExecutor, decide, launch, policy_path
 from pydantic import BaseModel
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
@@ -28,7 +28,7 @@ from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
 from agentdag.domain.errors import LockHeld, RunRefused, WorkflowNotFound
 from agentdag.domain.journal import ResultLine, RunSummaryLine
-from agentdag.domain.models import Decision, NodeStatus, ResultRecord, RunStatus, Tokens
+from agentdag.domain.models import NodeStatus, ResultRecord, RunStatus, Tokens
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -62,7 +62,7 @@ def result(
 def approve_and_resume(tmp_path: Path, executor: CommittingExecutor) -> FsRunDir:
     """Run graph A to its suspend, record an approval, and resume it to done."""
     _, run_dir = launch(tmp_path, executor)
-    run_dir.write_decision(Decision(node_id="a_push_list", decision="approve", by="tester", token_id="local"))
+    decide(run_dir, "approve")
     launch(tmp_path, executor, resume="decision")
     return run_dir
 

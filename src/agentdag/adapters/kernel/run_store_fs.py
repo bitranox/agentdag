@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
 from ...domain.errors import RunRefused
+from ...domain.keys import hash8
 from ...domain.models import Decision, RunState
 
 __all__ = ["FsRunDir"]
@@ -33,6 +35,8 @@ __all__ = ["FsRunDir"]
 _OWNER_ONLY_DIR = 0o700
 _OWNER_ONLY_FILE = 0o600
 _SUBDIRS = ("decisions", "intents", "artefacts", "wt", "nodes", "manifest", "done")
+_HEX8 = re.compile(r"[0-9a-f]{8}")
+"""The shape a payload hash must shorten to before it may name a decision file."""
 
 
 class FsRunDir:
@@ -199,10 +203,17 @@ class FsRunDir:
         """Write :attr:`state_path` atomically."""
         self.write_atomic("state.json", state.model_dump_json(indent=1))
 
-    def read_decision(self, node_id: str) -> Decision | None:
-        """Read ``decisions/<node_id>.json``, or ``None`` if no decision is recorded yet.
+    def read_decision(self, node_id: str, payload_hash: str) -> Decision | None:
+        """Read this (node id, payload hash)'s decision, or ``None`` if none is recorded yet.
+
+        Args:
+            node_id: The approve node the decision answers.
+            payload_hash: The content hash of the payload it was made for; the
+                other half of a decision's identity, and part of its filename.
 
         Raises:
+            ValueError: ``node_id`` could escape ``decisions/``, or ``payload_hash``
+                does not shorten to eight hex characters.
             RunRefused: the file exists but is empty or fails to parse. A
                 crash-corrupted decision file must never read as "no decision
                 yet" - a reader would silently drop a decision that a
@@ -211,17 +222,19 @@ class FsRunDir:
                 without anyone knowing why (design 3.4's write-once
                 contract).
         """
-        self._validate_node_id(node_id)
-        path = self.decisions_dir / f"{node_id}.json"
+        path = self._decision_path(node_id, payload_hash)
         if not path.is_file():
             return None
-        try:
-            return Decision.model_validate_json(path.read_text(encoding="utf-8"))
-        except ValueError as exc:
-            raise RunRefused(f"decision file {path} is unreadable: {exc}") from exc
+        return self._parse_decision(path)
 
     def write_decision(self, decision: Decision) -> None:
-        """Write ``decisions/<node_id>.json`` once; refuses to overwrite an existing one.
+        """Publish ``decision`` as ``decisions/<node_id>.<hash8(payload_hash)>.json``, once.
+
+        Write-once is per (node id, PAYLOAD hash), not per node id: an approve node
+        whose payload changed is asking a new question, and its answer is a new file
+        beside the old one rather than an overwrite of it (design 3.4's binding, the
+        idempotency key D2 took from DBOS's ``send(..., idempotency_key)``). The old
+        file stays as the record of what was answered about the old payload.
 
         The content is written to a fully-formed, fsynced temp file FIRST,
         then published with :func:`os.link` - a hard link is atomic and
@@ -242,18 +255,87 @@ class FsRunDir:
             a non-atomic write.
 
         Args:
-            decision: The decision to record; keyed by ``decision.node_id``.
+            decision: The decision to record; keyed by ``decision.node_id`` AND
+                ``decision.payload_hash``, both of which name its file.
 
         Raises:
-            FileExistsError: a decision file for this node id already exists.
+            ValueError: ``decision.payload_hash`` is ``None`` - a decision that names
+                no payload has half an identity and cannot be filed; or either half
+                could escape ``decisions/``.
+            FileExistsError: this (node id, payload hash) already has a decision.
         """
-        self._validate_node_id(decision.node_id)
-        final = self.decisions_dir / f"{decision.node_id}.json"
+        if decision.payload_hash is None:
+            raise ValueError(f"decision for {decision.node_id!r} carries no payload_hash; it names no payload")
+        final = self._decision_path(decision.node_id, decision.payload_hash)
         tmp_path = self._write_temp_file(self.decisions_dir, decision.model_dump_json(indent=1))
         try:
             os.link(tmp_path, final)
         finally:
             tmp_path.unlink(missing_ok=True)
+
+    def list_decisions(self) -> list[Decision]:
+        """Return every recorded decision, sorted by filename; reserved cancel files excluded.
+
+        Sorted rather than in directory order, so folding the same ``decisions/``
+        directory twice appends its journal lines in the same order both times -
+        directory order is filesystem-dependent and would make a replay's line order
+        depend on the machine it ran on.
+
+        ``decisions/`` also holds two RESERVED files that are not decisions, both
+        written by M3: ``<node_id>.cancel.json`` (a per-node cancel) and
+        ``_run.cancel.json`` (a whole-run cancel). Both end ``.cancel.json``, so a
+        single suffix check skips either shape without trying to parse it as a
+        :class:`~agentdag.domain.models.Decision`. A decision's own second name
+        component is eight HEX characters, so it can never read as ``cancel``.
+
+        Returns:
+            Every parsed decision, ascending by filename.
+
+        Raises:
+            RunRefused: one of the files exists but is empty or fails to parse.
+        """
+        return [
+            self._parse_decision(path)
+            for path in sorted(self.decisions_dir.glob("*.json"))
+            if not path.name.endswith(".cancel.json")
+        ]
+
+    @staticmethod
+    def _parse_decision(path: Path) -> Decision:
+        """Parse one decision file, naming the path when it cannot be read.
+
+        Raises:
+            RunRefused: the file is empty or does not parse as a decision.
+        """
+        try:
+            return Decision.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise RunRefused(f"decision file {path} is unreadable: {exc}") from exc
+
+    def _decision_path(self, node_id: str, payload_hash: str) -> Path:
+        """Return ``decisions/<node_id>.<hash8(payload_hash)>.json``, both halves validated.
+
+        Raises:
+            ValueError: ``node_id`` contains a path separator or ``..``, or
+                ``payload_hash`` does not shorten to eight hex characters (which a
+                traversal attempt through the hash never does).
+        """
+        self._validate_node_id(node_id)
+        return self.decisions_dir / f"{node_id}.{self._short_hash(payload_hash)}.json"
+
+    @staticmethod
+    def _short_hash(payload_hash: str) -> str:
+        """Shorten ``payload_hash`` to the eight hex characters that name a decision file.
+
+        Raises:
+            ValueError: the short form is not eight hex characters - the hash is not a
+                ``sha256:<hex>`` content hash, and letting an arbitrary string name a
+                file is how a ``..`` reaches the path.
+        """
+        short = hash8(payload_hash)
+        if _HEX8.fullmatch(short) is None:
+            raise ValueError(f"unsafe payload hash: {payload_hash!r}")
+        return short
 
     @staticmethod
     def _validate_node_id(node_id: str) -> None:

@@ -150,7 +150,7 @@ def append_run_summary(co: Coordinator, *, replay_seconds: float | None) -> None
 
 
 def _human_interactions(co: Coordinator) -> int:
-    """Count decisions a HUMAN made across the run's WHOLE journal, not just this launch.
+    """Count DECISIONS a human made across the run's WHOLE journal, not just this launch.
 
     Read from the dispatcher's replay index rather than from a per-launch counter: a
     launch's own ``fold_decisions`` call only journals decisions recorded since the
@@ -158,7 +158,12 @@ def _human_interactions(co: Coordinator) -> int:
     every decision already folded would report zero however many humans this run
     actually asked. The index is rebuilt from the full journal at construction and
     refreshed by every ``fold_decisions`` call, so by the time this reads it, it holds
-    the latest decision for every node id the run has ever asked about.
+    every decision the run has ever recorded.
+
+    That index is keyed by (node id, payload hash), so this counts DECISIONS and not
+    nodes: an approve node whose payload changed asks its decider a second question, and
+    two answers are two interactions - which is what the field means, "how many times a
+    human had to answer something during the run". Keyed by node id alone it read 1.
 
     Args:
         co: The coordinator whose dispatcher's replay index is read.

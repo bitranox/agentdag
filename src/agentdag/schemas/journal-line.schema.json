@@ -218,7 +218,12 @@
         "token_id": {
           "type": "string",
           "minLength": 1,
-          "description": "The bearer token identity that authorised this decision. Duplicate detection happens under the run lock, so a second decision for the same node is refused even from a concurrent caller (design 9, 'approve auth')."
+          "description": "The bearer token identity that authorised this decision. Duplicate detection happens under the run lock, so a second decision for the same (node_id, payload_hash) is refused even from a concurrent caller (design 9, 'approve auth')."
+        },
+        "payload_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash of the approve payload this decision answers - the idempotency key that makes a decision's identity (node_id, payload_hash) rather than node_id alone (design 3.4). A CHANGED payload does not match, so the run writes the new payload and suspends again on it instead of applying an approval nobody gave. Absent only on a line written before this field existed, which the coordinator's replay index keys as (node_id, '')."
         }
       },
       "required": [
@@ -231,7 +236,7 @@
         "token_id"
       ],
       "additionalProperties": false,
-      "description": "Written by the coordinator when it folds in decisions/<node_id>.json on relaunch (design 3.4). The server and the CLI never append to the journal themselves."
+      "description": "Written by the coordinator when it folds in decisions/<node_id>.<hash8(payload_hash)>.json on relaunch (design 3.4). The server and the CLI never append to the journal themselves."
     },
     "budget_refused_line": {
       "type": "object",
@@ -830,7 +835,8 @@
       "reason": "release notes look correct",
       "by": "rnowotny1966@gmail.com",
       "at": "2026-08-17T10:04:11+00:00",
-      "token_id": "tok_9f2c"
+      "token_id": "tok_9f2c",
+      "payload_hash": "sha256:9f2c1d5e4b7a08c3f61e2d90ab4c7f38e5061b2c9d4a7e30f8b1c6d2a5e90347"
     },
     {
       "event": "budget_refused",

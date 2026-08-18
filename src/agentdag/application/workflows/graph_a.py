@@ -80,6 +80,14 @@ _WORK_TOKENS = 400_000
 _MAP_ID = "m_migrate"
 """The map's id; also the manifest file name the reduce writes."""
 
+_STAGING_PREFIX = ".partial-"
+"""The reserved ``wt/`` namespace a clone stages in before its atomic rename.
+
+The ONE place the prefix is spelled: ``_ensure_worktree`` builds a staging path with it,
+``_refuse_reserved_worktree`` refuses a fleet member that would claim it, and
+:meth:`~agentdag.application.kernel.context.Coordinator.scan`'s always-allowed
+``wt/.partial-*/**`` is what makes it invisible to the isolation scan."""
+
 
 class GraphAArgs(BaseModel):
     """What one graph A run is given.
@@ -290,7 +298,7 @@ def _ensure_worktree(co: Coordinator, origin: Path, worktree: Path) -> None:
     """
     if worktree.exists():
         return
-    staging = worktree.with_name(f".partial-{worktree.name}")
+    staging = worktree.with_name(f"{_STAGING_PREFIX}{worktree.name}")
     if staging.exists():
         co.git.remove_tree(staging)  # a previous launch died mid-clone; git writes objects read-only
     co.git.clone(origin, staging)
@@ -353,21 +361,23 @@ def _keys_by_node(co: Coordinator) -> dict[str, str]:
 
 
 def _refuse_unusable_fleet(origins: Sequence[Path], scratch: Path) -> None:
-    """Refuse a fleet with duplicate basenames or a target outside the scratch tree.
+    """Refuse a fleet with duplicate basenames, a reserved name, or a target outside the scratch tree.
 
     Args:
         origins: The proposed fleet, in file order.
         scratch: The scratch directory this run owns.
 
     Raises:
-        SpecRejected: a path is relative, two entries map to the same worktree, or an
-            entry does not lie under ``<scratch>/origin``.
+        SpecRejected: a path is relative, an entry claims the reserved ``.partial-``
+            worktree namespace, two entries map to the same worktree, or an entry does
+            not lie under ``<scratch>/origin``.
     """
     _refuse_relative(scratch, "scratch")
     seen: dict[str, Path] = {}
     for origin in origins:
         _refuse_relative(origin, "fleet member")
         name = _worktree_name(origin)
+        _refuse_reserved_worktree(origin, name)
         first = seen.get(name)
         if first is not None:
             raise SpecRejected(
@@ -376,6 +386,27 @@ def _refuse_unusable_fleet(origins: Sequence[Path], scratch: Path) -> None:
         seen[name] = origin
         if not is_scratch_target(origin, scratch):
             raise SpecRejected(f"{origin} is not under {scratch}/origin; a real repo is never a push target")
+
+
+def _refuse_reserved_worktree(origin: Path, name: str) -> None:
+    """Refuse a fleet member that would work in the staging namespace the clone owns.
+
+    ``wt/.partial-*`` is the coordinator's own: ``_ensure_worktree`` clones into it and
+    renames, and :meth:`~agentdag.application.kernel.context.Coordinator.scan` allows
+    every path under it unconditionally. A fleet member landing there would therefore be
+    invisible to the isolation scan - every write it made would be excused as
+    coordinator bookkeeping - and its tree would be deleted by the next launch's
+    stale-staging cleanup. Refusing the name is the only place this can be caught: both
+    of those behaviours are correct for a staging dir and cannot be narrowed.
+
+    Raises:
+        SpecRejected: ``name`` starts with the reserved ``.partial-`` prefix.
+    """
+    if name.startswith(_STAGING_PREFIX):
+        raise SpecRejected(
+            f"{origin} maps to the worktree {name!r}, which claims the reserved {_STAGING_PREFIX!r} "
+            f"staging namespace; the isolation scan excuses every write under it"
+        )
 
 
 def _refuse_relative(path: Path, what: str) -> None:

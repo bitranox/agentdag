@@ -19,6 +19,7 @@ Contents:
     * :func:`fleet` - mirror N repositories into a scratch tree and build the run's args.
     * :func:`policy_path` - the shipped tier policy table.
     * :func:`launch` - start or resume one graph A run over a real run directory.
+    * :func:`decide` - answer the exact payload a suspended run is waiting on.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.graph_a import GraphAArgs
-from agentdag.domain.models import NodeOutcome, NodeStatus, Tokens
+from agentdag.domain.models import Decision, NodeOutcome, NodeStatus, Tokens
 
 if TYPE_CHECKING:
     from agentdag.application.kernel.ports import ExecutorRequest
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CommittingExecutor",
     "StrayExecutor",
+    "decide",
     "fleet",
     "git",
     "launch",
@@ -219,6 +221,44 @@ def fleet(tmp_path: Path, names: list[str], *, parallel: int) -> tuple[GraphAArg
 def policy_path() -> Path:
     """Return the shipped tier policy table's path."""
     return Path(__file__).parents[1] / "src" / "agentdag" / "policy" / "tier-policy.yaml"
+
+
+def decide(
+    run_dir: FsRunDir,
+    verdict: str,
+    *,
+    by: str = "tester",
+    token_id: str = "local",  # noqa: S107 - a token IDENTITY, not a secret
+) -> str:
+    """Answer the exact payload the suspended run is waiting on, and return its hash.
+
+    A decision is recorded per (node id, payload hash), so a test cannot just name the
+    node: it has to answer the payload the run actually presented. This reads that pair
+    off ``state.json``'s suspend cursor, which is what the CLI does before showing a
+    human ``nodes/<cursor>/<hash8>/payload.json``.
+
+    Args:
+        run_dir: The suspended run.
+        verdict: The option id to record, e.g. ``"approve"`` or ``"hold"``.
+        by: Who decided; any token id other than ``"system"`` counts as a human.
+        token_id: The credential the decision was authorised with.
+
+    Returns:
+        The payload hash the decision was bound to.
+    """
+    state = run_dir.read_state()
+    assert state.cursor is not None, "the run is not suspended: state.json has no cursor"
+    assert state.cursor_payload_hash is not None, "the suspend cursor names no payload"
+    run_dir.write_decision(
+        Decision(
+            node_id=state.cursor,
+            decision=verdict,
+            by=by,
+            token_id=token_id,
+            payload_hash=state.cursor_payload_hash,
+        )
+    )
+    return state.cursor_payload_hash
 
 
 def launch(
