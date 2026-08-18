@@ -30,10 +30,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...application.kernel.ports import LaunchResult, ScopeHandle
+from ...application.kernel.ports import ScopeHandle
+from .scope_common import LOG_NAME, confirm_launch
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from ...application.kernel.ports import LaunchResult
 
 __all__ = ["SystemdScope"]
 
@@ -43,10 +46,6 @@ _CGROUP_POLL_INTERVAL_S = 0.2
 _CGROUP_POLL_TIMEOUT_S = 10.0
 """How long :meth:`SystemdScope.kill` polls the cgroup for empty/gone after ``systemctl stop``
 (design C8's cancel path budget; matched here since M3's real cancel command will reuse this)."""
-
-_LOG_NAME = "launch.log"
-_LOG_TAIL_BYTES = 8192
-"""How much of ``launch.log`` :meth:`SystemdScope.confirm` reads back as a failure's stderr."""
 
 _CONFIRM_POLL_INTERVAL_S = 0.1
 
@@ -98,7 +97,7 @@ class SystemdScope:
             exactly what :meth:`confirm` reads back on a failed launch.
         """
         full_unit = f"{unit}.scope"
-        log_path = cwd / _LOG_NAME
+        log_path = cwd / LOG_NAME
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(log_fd, "ab") as log_fh:
             proc = subprocess.Popen(  # nosec B603  # noqa: S603 - a resolved executable plus the caller's own argv, never a shell string
@@ -119,18 +118,17 @@ class SystemdScope:
         ``timeout_s``" proves the scope started - as does a clean exit within the
         window, for a coordinator whose whole run finished in under ``timeout_s``. An
         early NON-zero exit means the scope never started (a bad unit name, no user
-        manager) and :data:`_LOG_NAME` holds ``systemd-run``'s own diagnostic.
+        manager) and :data:`~agentdag.adapters.kernel.scope_common.LOG_NAME` holds
+        ``systemd-run``'s own diagnostic. The polling itself is
+        :func:`~agentdag.adapters.kernel.scope_common.confirm_launch`, shared with
+        :class:`~agentdag.adapters.kernel.scope_none.NoScope`.
         """
-        proc = self._processes.get(handle.unit)
-        if proc is None:
-            return LaunchResult(alive=False, stderr="no process was started for this handle")
-        deadline = time.monotonic() + timeout_s
-        while proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(_CONFIRM_POLL_INTERVAL_S)
-        returncode = proc.poll()
-        if returncode is None or returncode == 0:
-            return LaunchResult(alive=True, stderr="")
-        return LaunchResult(alive=False, stderr=_read_log_tail(handle.log_path))
+        return confirm_launch(
+            self._processes.get(handle.unit),
+            log_path=handle.log_path,
+            timeout_s=timeout_s,
+            poll_interval_s=_CONFIRM_POLL_INTERVAL_S,
+        )
 
     def is_alive(self, handle: ScopeHandle) -> bool:
         """Return whether ``systemctl --user is-active`` reports the unit ``active``."""
@@ -190,10 +188,3 @@ def _cgroup_empty(cgroup: Path) -> bool:
     if not procs.is_file():
         return True
     return procs.read_text(encoding="utf-8").strip() == ""
-
-
-def _read_log_tail(path: Path) -> str:
-    """Return ``path``'s last :data:`_LOG_TAIL_BYTES`, or ``""`` if it has nothing yet."""
-    if not path.is_file():
-        return ""
-    return path.read_bytes()[-_LOG_TAIL_BYTES:].decode("utf-8", errors="replace")

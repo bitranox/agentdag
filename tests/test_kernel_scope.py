@@ -38,8 +38,25 @@ _IGNORE_SIGTERM_ARGV = [
 ]
 """Ignores SIGTERM so ``NoScope.kill`` must escalate to SIGKILL (a real process cannot
 ignore that one) - the only way to reach its ``Popen.wait`` call at all."""
+_SPAWNS_A_CHILD_ARGV = [
+    sys.executable,
+    "-c",
+    "import subprocess, sys, time; "
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']); "
+    "print(child.pid, flush=True); "
+    "time.sleep(300)",
+]
+"""A coordinator stand-in that spawns one long-lived GRANDCHILD and prints its pid.
+
+The pid reaches the test through ``launch.log``, which is where ``NoScope.start``
+redirects the child's stdout - so the test learns it the same way an operator would,
+without reaching inside the adapter."""
+
 _START_GRACE_S = 2.0
 """How long to wait after ``start`` before asserting the process is actually up."""
+
+_REAP_TIMEOUT_S = 5.0
+"""How long to wait for a killed grandchild to be reaped by its new parent."""
 
 _SYSTEMD_RUN_MISSING = shutil.which("systemd-run") is None
 """Computed at collection time, so the ``skipif`` below can reference it directly."""
@@ -57,6 +74,51 @@ def test_noscope_starts_reports_alive_and_kills_the_process(tmp_path: Path) -> N
     assert scope.kill(handle) is True
     assert scope.is_alive(handle) is False
     assert not _pid_exists(handle.pid)
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no process group for subprocess to signal")
+def test_noscope_kill_reaps_a_grandchild_not_only_the_process_it_started(tmp_path: Path) -> None:
+    """Teardown must reach the coordinator's OWN children, not just the coordinator.
+
+    A real coordinator spawns a gate subprocess, git commands and executors. Signalling
+    only the one ``Popen`` leaves every one of them running after a cancel or a deadline,
+    holding the gate lock and the worktrees of a run that is supposed to be over.
+    """
+    scope = NoScope()
+    handle = scope.start(unit="agentdag-noscope-grandchild", argv=_SPAWNS_A_CHILD_ARGV, env={}, cwd=tmp_path)
+    grandchild = _grandchild_pid(handle.log_path)
+    assert _pid_exists(grandchild)  # control: it really is running before the kill
+
+    assert scope.kill(handle) is True
+
+    assert not _pid_exists(handle.pid)
+    assert _waits_until_gone(grandchild)
+
+
+def _grandchild_pid(log_path: Path) -> int:
+    """Read the pid the started process printed into its launch log, waiting for it to appear."""
+    deadline = time.monotonic() + _START_GRACE_S * 2
+    while time.monotonic() < deadline:
+        text = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+        if text.strip():
+            return int(text.split()[0])
+        time.sleep(0.05)
+    raise AssertionError(f"the started process printed no grandchild pid into {log_path}")
+
+
+def _waits_until_gone(pid: int) -> bool:
+    """Return whether ``pid`` disappears within :data:`_REAP_TIMEOUT_S`.
+
+    Polled rather than checked once: a killed process is briefly a zombie until whatever
+    inherited it after its own parent died gets round to reaping it.
+    """
+    deadline = time.monotonic() + _REAP_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 @pytest.mark.os_agnostic

@@ -103,7 +103,16 @@ class ApproveDecisionLine(_Line):
 
 
 class RunSummaryLine(_Line):
-    """Written once at the end of a run: the drift signals of design 3.5."""
+    """The drift signals of design 3.5, written at the end of every launch that reaches ``done``.
+
+    Once per LAUNCH, not once per run: a relaunch that replays a finished run to ``done``
+    again appends another one (see
+    :func:`~agentdag.application.kernel.summary.append_run_summary` for why writing it
+    only the first time would need state a deterministic replay must not carry). Every
+    field is computed over the run's WHOLE journal as it stands at that moment, so each
+    line is an honest total on its own; a reader wanting the run's final figures takes
+    the LAST such line, never the only one.
+    """
 
     event: Literal["run_summary"] = "run_summary"
     run_id: str
