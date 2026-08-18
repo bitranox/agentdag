@@ -312,6 +312,35 @@ keyfile if that path exists, else a private owner-only copy of the operator's ow
 content - only the executor does, inside the coordinator process, at the point it actually
 dispatches a node.
 
+### What the kernel enforces, and what it does not
+
+The per-node credential and the environment allowlists stop ACCIDENTAL leakage through
+inherited environment variables. They are not isolation. A node is a process running as
+the same operating-system user as the coordinator, with no sandbox and no separate
+account, so its own Bash tool can read files anywhere on the machine that user can read
+and can make outbound network requests. The M1 baseline's "this is not containment"
+caveat above applies to the kernel unchanged in kind.
+
+- **The Bash denylist blocks the exact command shapes the policy lists, and nothing
+  else.** Measured against the shipped policy: `curl -XPOST ...`, `curl -d ...`, a plain
+  GET with the data in the URL, `git -C some/path push` and `python3 -c ...` all pass. It
+  raises the cost of an accident; it does not stop a determined process.
+- **Per-node write-set enforcement is a post-hoc scan, not a live block.** A node writes
+  first and the scan reports afterwards. Under `--parallel` greater than 1 a stray write
+  that lands inside a SIBLING's declared region cannot be attributed to either node, and
+  the scan says so rather than naming one.
+- **`by` and `token_id` on a decision are not an authentication mechanism.** They record
+  who the recording process said it was. Any process running as the same operating-system
+  user can write a decision file, so the run directory's own permissions are the actual
+  control.
+- **Cancel and deadline teardown reaps grandchildren only under the systemd scope.**
+  There, the whole cgroup goes. Under `NoScope` - off Linux, or with no live
+  `systemd --user` manager - POSIX hosts kill the coordinator's process GROUP, which
+  reaches its children, and Windows kills only the one launched process.
+- **A failed CODE node (gate, scan, tally, discover) is final in this version.** Its
+  record is served from the journal on every resume and no command mints a new attempt,
+  so a run that failed on one can only be restarted as a NEW run. M3 adds the retry path.
+
 ---
 
 ## Email Sending

@@ -52,6 +52,26 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - Codex (a second executor arm) and a per-turn token spend cap are not in this version of the
   coordinator kernel either.
 
+### What the kernel does not enforce
+- The per-node credential and the environment allowlists stop ACCIDENTAL leakage through
+  inherited environment variables. Nodes are not isolated by operating-system user or by a
+  sandbox in this version: a node runs as the same user as the coordinator, so its own Bash
+  tool can read files elsewhere on the machine and make outbound network requests.
+- The Bash denylist blocks only the exact command shapes the policy lists. Measured against
+  the shipped policy, `curl -XPOST`, `curl -d`, a GET carrying its data in the URL,
+  `git -C some/path push` and `python3 -c ...` all pass.
+- Per-node write-set enforcement is a post-hoc scan, not a live block, and under `--parallel`
+  greater than 1 a stray write landing inside a SIBLING's declared region is not attributable
+  to one node; the scan reports that rather than naming one.
+- `by` and `token_id` on a decision are not an authentication mechanism: any process running
+  as the same operating-system user can record one.
+- Cancel and deadline teardown reaps grandchildren only under the systemd scope. Under
+  `NoScope` (off Linux, or with no live `systemd --user` manager) the coordinator's process
+  group is killed on POSIX and only the one launched process on Windows.
+- A failed CODE node (gate, scan, tally, discover) is final in this version: its record is
+  served on every resume and no command mints a new attempt, so such a run can only be
+  restarted as a new run. M3 adds the retry path.
+
 ## [0.0.1] - 2026-08-17
 
 Beta name claim on PyPI: the package scaffold only, no coordinator yet.
