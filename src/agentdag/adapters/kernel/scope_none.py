@@ -1,0 +1,95 @@
+"""NoScope: a plain child process, for a host with no systemd user manager (design C8, Task 17).
+
+The fallback :class:`~agentdag.application.kernel.ports.Scope`: no cgroup, no unit, no
+``systemctl``. :func:`~agentdag.composition.kernel.wire_kernel` picks this whenever
+:class:`~agentdag.adapters.kernel.scope_systemd.SystemdScope` cannot be used (not Linux,
+``systemd-run`` missing, or the user manager itself is not up).
+
+``is_alive``/``kill`` only work for a handle THIS instance's own :meth:`NoScope.start`
+returned: the port carries no promise of surviving a process restart, and the CLI never
+needs that here - within one invocation, the same :class:`NoScope` instance is the one
+that started the process and the one asked about it (a persisted registry across process
+boundaries is M3's cancel/deadline work, out of this task's scope).
+
+Contents:
+    * :class:`NoScope` - the port implementation.
+"""
+
+from __future__ import annotations
+
+import subprocess  # nosec B404 - launching the coordinator process IS this adapter
+import time
+from typing import TYPE_CHECKING
+
+from ...application.kernel.ports import ScopeHandle
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
+
+__all__ = ["NoScope"]
+
+_TERM_GRACE_S = 5.0
+"""How long :meth:`NoScope.kill` waits for a SIGTERM'd process before escalating to SIGKILL."""
+
+_POLL_INTERVAL_S = 0.05
+
+
+class NoScope:
+    """Scope port over a plain child process (``subprocess.Popen``): no cgroup, no unit."""
+
+    def __init__(self) -> None:
+        """Start with no tracked processes."""
+        self._processes: dict[str, subprocess.Popen[bytes]] = {}
+
+    def start(self, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path) -> ScopeHandle:
+        """Launch ``argv`` as a plain child process and remember it under ``unit``.
+
+        Args:
+            unit: A name for this process; only used to look it up again in
+                :meth:`is_alive`/:meth:`kill` - no OS-level unit is created.
+            argv: The command to run.
+            env: The child's environment, used AS GIVEN (never merged with this
+                process's own - the caller decides exactly what the child inherits).
+            cwd: The child's working directory.
+
+        Returns:
+            A handle naming ``unit`` and the child's pid.
+        """
+        proc = subprocess.Popen(argv, env=dict(env), cwd=cwd)  # nosec B603  # noqa: S603
+        self._processes[unit] = proc
+        return ScopeHandle(unit=unit, pid=proc.pid)
+
+    def is_alive(self, handle: ScopeHandle) -> bool:
+        """Return whether the process :meth:`start` launched for this handle is still running.
+
+        Returns:
+            ``False`` for a handle this instance never started - there is nothing to
+            poll, so it cannot be alive by this instance's own knowledge.
+        """
+        proc = self._processes.get(handle.unit)
+        if proc is None:
+            return False
+        return proc.poll() is None
+
+    def kill(self, handle: ScopeHandle) -> bool:
+        """SIGTERM the process, escalate to SIGKILL after :data:`_TERM_GRACE_S`.
+
+        Returns:
+            ``True`` once the process is confirmed gone (or was never tracked, or had
+            already exited); ``False`` if it is still alive after the SIGKILL.
+        """
+        proc = self._processes.get(handle.unit)
+        if proc is None:
+            return True
+        if proc.poll() is not None:
+            return True
+        proc.terminate()
+        deadline = time.monotonic() + _TERM_GRACE_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return True
+            time.sleep(_POLL_INTERVAL_S)
+        proc.kill()
+        proc.wait(timeout=_TERM_GRACE_S)
+        return proc.poll() is not None
