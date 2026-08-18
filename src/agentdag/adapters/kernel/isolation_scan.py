@@ -24,10 +24,15 @@ __all__ = ["IsolationScanner"]
 _CHUNK_SIZE = 1024 * 1024
 """Read a watched file in 1 MiB chunks rather than loading it whole (design C8)."""
 
-_CONTROL_FILES = frozenset({"journal.jsonl", "audit.jsonl", "state.json", "lock"})
+_CONTROL_FILES = frozenset({"journal.jsonl", "audit.jsonl", "state.json", "lock", "launch.log"})
 """The run's own control files, directly under the run root (design 3.1) - never a
 node's write to judge. A node writing a SAME-NAMED file deeper in the tree is not
-this exclusion's concern; it is checked by name only at the root level."""
+this exclusion's concern; it is checked by name only at the root level.
+
+``launch.log`` is the coordinator's own bookkeeping too: :meth:`~agentdag.application.kernel.ports.Scope.start`
+redirects the background launcher's stdout/stderr there, and it keeps growing for as
+long as the run is in progress (the executor's own startup lines land in it), so an
+in-progress scan would otherwise see it as a stray write on every single node."""
 
 
 class IsolationScanner:

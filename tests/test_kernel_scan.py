@@ -62,9 +62,35 @@ def test_scan_skips_git_object_churn_and_the_runs_own_control_files(tmp_path: Pa
     (tmp_path / "audit.jsonl").write_text('{"event":"started"}\n')
     (tmp_path / "state.json").write_text("{}")
     (tmp_path / "lock").write_text("holder")
+    (tmp_path / "launch.log").write_text("Using bundled Claude Code CLI\n")
     (tmp_path / "wt").mkdir()
     (tmp_path / "wt" / "f.py").write_text("x")
 
     manifest = IsolationScanner().snapshot(tmp_path)
 
     assert set(manifest) == {"wt/f.py"}
+
+
+@pytest.mark.os_agnostic
+def test_a_background_launch_log_growing_mid_scan_is_not_a_stray_write(tmp_path: Path) -> None:
+    # Task 17's background launcher redirects the coordinator's own stdout/stderr to
+    # launch.log under the run root, and the SDK keeps appending to it for as long as
+    # the run is in progress - so a scan taken WHILE a node runs must not see that
+    # growth as a stray write, the way it did on the M2 run this test was written for.
+    (tmp_path / "launch.log").write_text("Using bundled Claude Code CLI\n")
+    before = IsolationScanner().snapshot(tmp_path)
+
+    with (tmp_path / "launch.log").open("a") as handle:
+        handle.write("more launcher output, mid-run\n")
+    after = IsolationScanner().snapshot(tmp_path)
+
+    assert diff_manifests(before, after) == []
+
+    # Control: a root-level file the scanner does NOT know about still shows up -
+    # this is not a "the root is exempt" loophole, only launch.log is excused.
+    (tmp_path / "other.log").write_text("not a control file")
+    after_with_stray = IsolationScanner().snapshot(tmp_path)
+
+    changed = diff_manifests(before, after_with_stray)
+    assert changed == ["other.log"]
+    assert stray_paths(changed, allowed=()) == ["other.log"]
