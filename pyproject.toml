@@ -14,6 +14,7 @@ dependencies = [
     "orjson>=3.12.0",
     "claude-agent-sdk>=0.2.139",
     "filelock>=3.32.3",
+    "pyyaml>=6.0.3",
 ]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
@@ -78,6 +79,7 @@ dev = [
   "urllib3>=2.7.0",              # CVE-2025-66471, CVE-2025-66418
   "virtualenv>=21.7.4",         # CVE-2025-22702
   "jsonschema>=4.26.0",
+  "types-pyyaml>=6.0.12.20260815",
 ]
 
 [project.scripts]
@@ -97,6 +99,7 @@ include = [
     "src/agentdag/adapters/config/defaultconfig.toml",
     "src/agentdag/adapters/config/defaultconfig.d/*.toml",
     "src/agentdag/schemas/*.json",
+    "src/agentdag/policy/*.yaml",
 ]
 
 [tool.ruff]

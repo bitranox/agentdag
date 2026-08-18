@@ -1,0 +1,281 @@
+# tier-policy.example.yaml
+#
+# Example tier policy as data (design section 2.3): one row per model, plus the
+# kind-default roles and the escalation rule that code applies over this table.
+#
+# `rank` is the operator's own ordering, used only to decide "next higher rank
+# listing the role" on escalation (2.3 rule 2). It carries no meaning beyond
+# relative order within this file - adding a model is adding a row (with
+# whatever rank slots it into the ordering the operator wants); retiring a
+# model is flipping its `available` to false, never deleting the row.
+#
+# allowed_efforts for the two claude-executor rows and fable use the SDK's
+# five-value scale (low, medium, high, xhigh, max). The codex row uses only
+# three (low, medium, high) because Codex has no first-class effort field:
+# the adapter maps whichever of these three is requested onto
+# config.model_reasoning_effort in the codex MCP tool call (design section 6).
+
+models:
+  - alias: haiku
+    executor: claude
+    rank: 10
+    cost_class: low
+    available: true
+    roles:
+      - mechanical
+    allowed_efforts: [low, medium, high, xhigh, max]
+    # context ceiling: a node writes a typed handover and ends needs_continuation past this (3.8);
+    # default about half the row's window until the calibration probe replaces it
+    handover_at_tokens: 100000
+    # money is DERIVED from tokens with these list prices (USD per million tokens);
+    # billing=subscription prices at zero marginal cost and still counts toward quota
+    usd_per_mtoken: {in: 1.0, out: 5.0, cache_read: 0.1}
+    billing: subscription   # this deployment: Claude rows on a subscription token; Codex on an API key (RELAYED)
+
+  - alias: sonnet
+    executor: claude
+    rank: 20
+    cost_class: mid
+    available: true
+    roles:
+      - standard
+    allowed_efforts: [low, medium, high, xhigh, max]
+    # context ceiling: a node writes a typed handover and ends needs_continuation past this (3.8);
+    # default about half the row's window until the calibration probe replaces it
+    handover_at_tokens: 100000
+    # money is DERIVED from tokens with these list prices (USD per million tokens);
+    # billing=subscription prices at zero marginal cost and still counts toward quota
+    usd_per_mtoken: {in: 3.0, out: 15.0, cache_read: 0.3}
+    billing: subscription   # this deployment: Claude rows on a subscription token; Codex on an API key (RELAYED)
+
+  - alias: codex
+    executor: "mcp:codex/codex"
+    rank: 25
+    # cost_class is not pinned by the design for this row; mid is a placeholder
+    # matching its rank sitting between sonnet and opus.
+    cost_class: mid
+    available: true
+    roles:
+      - standard
+      - deep
+    # Only 3 efforts: Codex has no first-class effort field, the adapter maps
+    # this onto config.model_reasoning_effort (design section 6).
+    allowed_efforts: [low, medium, high]
+    # context ceiling: a node writes a typed handover and ends needs_continuation past this (3.8);
+    # default about half the row's window until the calibration probe replaces it
+    handover_at_tokens: 100000
+    # money is DERIVED from tokens with these list prices (USD per million tokens);
+    # billing=subscription prices at zero marginal cost and still counts toward quota
+    usd_per_mtoken: {in: null, out: null, cache_read: null}   # unknown for this row; fill from the provider's price list
+    billing: metered   # this deployment: Claude rows on a subscription token; Codex on an API key (RELAYED)
+
+  - alias: opus
+    executor: claude
+    rank: 30
+    cost_class: high
+    available: true
+    roles:
+      - deep
+    allowed_efforts: [low, medium, high, xhigh, max]
+    # context ceiling: a node writes a typed handover and ends needs_continuation past this (3.8);
+    # default about half the row's window until the calibration probe replaces it
+    handover_at_tokens: 100000
+    # money is DERIVED from tokens with these list prices (USD per million tokens);
+    # billing=subscription prices at zero marginal cost and still counts toward quota
+    usd_per_mtoken: {in: 5.0, out: 25.0, cache_read: 0.5}
+    billing: subscription   # this deployment: Claude rows on a subscription token; Codex on an API key (RELAYED)
+
+  - alias: fable
+    executor: claude
+    rank: 40
+    cost_class: premium
+    # Fable is available per the user, decided 2026-08-17.
+    available: true
+    roles:
+      - top
+    allowed_efforts: [low, medium, high, xhigh, max]
+    # context ceiling: a node writes a typed handover and ends needs_continuation past this (3.8);
+    # default about half the row's window until the calibration probe replaces it
+    handover_at_tokens: 100000
+    # money is DERIVED from tokens with these list prices (USD per million tokens);
+    # billing=subscription prices at zero marginal cost and still counts toward quota
+    usd_per_mtoken: {in: 10.0, out: 50.0, cache_read: 1.0}
+    billing: subscription   # this deployment: Claude rows on a subscription token; Codex on an API key (RELAYED)
+
+# Kind defaults map to a ROLE, never a model (design 2.3 rule 1). `effort:
+# inherit` is the design's own term for "no explicit default here; take the
+# value from the calling context" (2.3 rule 6) - it is NOT one of the
+# allowed_efforts enum values, only a sentinel used in this table, and never a
+# node value (a node that inherits simply omits `effort`).
+#
+# One row per DISPATCHED kind (design 2.1): the coordinator-code patterns
+# (until-pass, until-dry, route, vote) are not kinds and get no record, compact
+# is a field on work, and deadline_s is a scheduler field - none of them appear
+# here. Kinds whose executor is code get tier_role: null; so do map and batch,
+# which resolve no model row at all - the standard default of a map belongs to
+# its BODY nodes, which carry their own tier_role.
+kind_defaults:
+  work:
+    # General default for a work node; mechanical-scan/transcription/
+    # 1-2-file complete-spec work and adversarial-verification/judge-panel/
+    # final-synthesis work are overrides the planner sets per node (rule 1,
+    # rule 3), not a different kind.
+    tier_role: standard
+    effort: inherit
+  gate:
+    tier_role: null  # code, no model (2.3 rule 1)
+    effort: null
+  synth:
+    tier_role: deep  # root-cause judgment (2.3 rule 1)
+    effort: high
+  planner:
+    tier_role: deep  # 2.3 rule 1
+    effort: high
+  approve:
+    tier_role: null  # code + human, no model (section 4 primitives table)
+    effort: null
+  map:
+    tier_role: null  # fan-out performed by the coordinator; the standard default belongs to the BODY nodes (2.3 rule 1)
+    effort: null
+  reduce:
+    tier_role: null  # code, no model (2.3 rule 1)
+    effort: null
+  wait:
+    tier_role: null  # code, no model (2.3 rule 1)
+    effort: null
+  batch:
+    tier_role: null  # fold performed by the coordinator; the folded BODY carries the standard default
+    effort: null
+  stage:
+    tier_role: null  # code, no model (2.3 rule 1)
+    effort: null
+  apply:
+    tier_role: null  # code, no model (2.3 rule 1)
+    effort: null
+
+# Escalation on blocked/needs_context: re-dispatch ONCE one rank up with the
+# same brief plus the failure record; a second failure suspends into approve
+# rather than climbing further (2.3 rule 5). Note that `mechanical` is carried
+# only by haiku here and `top` only by fable, so for those two roles there is NO
+# higher available row: the node suspends into approve immediately rather than
+# retrying in place (2.3 rule 5, C17). Resolution has its own fallback, one role
+# DOWN the order mechanical < standard < deep < top when no available row lists
+# the requested role - which is where graph C's "top if available, else deep"
+# comes from; no row here lists both, and it is a coordinator rule rather than a
+# property of this table (2.3 rule 2, C2).
+escalation:
+  max_hops: 1
+  then: approve
+  no_higher_row: approve
+  on_auth_failure: fail_run   # an auth failure never escalates a tier (3.4)
+
+# The three named thresholds of design 3.5, as policy-table DATA (not code constants), so an
+# operator changes one without a redeploy. Each starts at the default 3.5 names; 3.5 also defines
+# the drift signal every run logs for it and what "off" reads as.
+thresholds:
+  # break-even node size below which a node's own dispatch overhead dominates its work (3.4, 3.5).
+  # The 10-minute default predates this deployment's own measurement: the S0 probe
+  # (probes/s0-dispatch-cost.md) found an ISOLATED SDK child at setting_sources=[] pays only 170
+  # first-turn input tokens, not the ~60k measured on in-session subagents that load the whole
+  # CLAUDE.md and plugin cascade - roughly an order of magnitude lower. That does not by itself
+  # replace this default: the 170-token figure needs a throughput (tokens/minute per row) to turn
+  # into a minutes floor, and no such throughput has been measured, so the ~1.1-minute figure that
+  # arithmetic implies rests on an ASSUMED throughput and is not adopted as data here. The default
+  # stands until a measured per-row throughput exists (design 3.5).
+  min_node_minutes: 10
+  # fan-in ceiling for a reduce/synth tree before a node's citation coverage degrades (3.4, 3.5).
+  reduce_tree_fanin: 12
+  # journal line count that is a SIGNAL, not a trigger, until real runs exist to measure against
+  # (3.4, 3.5); Continue-As-New is not part of this design.
+  journal_max_lines: 5000
+  # how many handovers a node chain may take before it ends failed/continuation_limit (3.8)
+  max_continuations: 3
+
+# Run-level ceilings the coordinator validates and clamps against (design 2.3
+# "Run limits", 2.4, 3.4). Per-node budgets live in the node spec; these bound
+# the whole run and the whole workflow.
+run_limits:
+  # the run's token cap per model row: the dispatch that would cross it raises
+  # BudgetExceeded (3.4)
+  tokens_per_row:
+    haiku: 2000000
+    sonnet: 8000000
+    codex: 4000000
+    opus: 3000000
+    fable: 1000000
+  # the largest deadline_s any node may declare
+  deadline_ceiling_s: 5400
+  # the highest role each kind may resolve to, after any planner override
+  per_kind_ceiling:
+    work: deep
+    synth: top
+    planner: deep
+  # the kinds a PLANNER-emitted spec may carry (2.4); apply and approve are
+  # never planner-emitted - a planner may REQUEST an approve gate, the workflow
+  # decides
+  planner_kinds: [work, gate, synth, map, reduce, wait, batch]
+  # a `top` request below this fraction of the row's remaining run budget is
+  # downgraded and audited (2.3 rule 4 - the design's "5%")
+  top_role_budget_floor: 0.05
+
+# Shared resources (design 3.6): write_set is paths only; a node names what it consumes in
+# requires: [{resource, amount}]. kind: mutex (capacity 1) | capacity (in unit) | rate (per window).
+# capacity is the ceiling this deployment lets the coordinator use; probe (optional) returns what is
+# available NOW and admission uses min(capacity, probed); enforce (optional) names a real mechanism.
+# Admission counters live in a HOST-LEVEL lease store shared by every coordinator on the box, not in
+# one process, so two concurrent runs cannot both admit against the same machine-wide row.
+# A `rate` row counts calls COMPLETED inside the window as well as in-flight ones: a finished call
+# still occupies its slot until the window moves, and counting in-flight amounts alone rate-limits
+# nothing. A probe row states its cadence and a reading TTL; a reading older than the TTL is not
+# used and the row falls back to its registry capacity. There is no eviction: a node admitted at
+# 8 GiB free is not evicted when free drops to 7 (one threshold, so it is not a hysteresis band).
+# probe and enforce are ARGV lists from a fixed allowlist with typed substitution, never shell
+# strings, and this file is root-owned and not writable by the coordinator user (design 3.1, O15).
+# IN SLICE 1 only the bmk-tool-env row exists, with its enforce lock; the rest of this list, the
+# probes and the discovery pass are later (../../plans/build-plan-high.md).
+resources:
+  - name: bmk-tool-env            # the machine-wide bmk tool environment `make test` uses
+    kind: mutex
+    unit: slot
+    capacity: 1
+    # a mutex SHOULD name the real lock the gate command itself takes: admission binds only what
+    # this coordinator dispatches, never a second agent session or the user's own `make test`
+    enforce: ["flock", "/run/lock/agentdag/bmk-tool-env"]
+  - name: pypi-publish            # one publish at a time per package; the workflow names the package as amount 1
+    kind: mutex
+    unit: slot
+    capacity: 1
+    enforce: ["flock", "/run/lock/agentdag/pypi-publish"]
+  - name: gpu0-vram
+    kind: capacity
+    unit: GiB
+    capacity: 20                  # ceiling for the coordinator; the card has 24
+    probe: ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"]   # returns MiB; adapter converts
+    probe_cadence_s: 30
+    probe_ttl_s: 120
+    enforce: ["env", "CUDA_VISIBLE_DEVICES=0"]
+  - name: host-ram
+    kind: capacity
+    unit: GiB
+    capacity: 32
+    probe: ["agentdag-probe", "mem-available-gib"]   # argv from the allowlist, never a shell pipeline
+    probe_cadence_s: 30
+    probe_ttl_s: 120
+    enforce: ["systemd-run", "--scope", "-p", "MemoryMax={amount}G"]   # typed substitution, not string interpolation
+  - name: pypi-api-calls
+    kind: rate
+    unit: calls
+    capacity: 60
+    window: 60s          # counts calls COMPLETED within the window, not just in-flight ones
+  - name: run-store-disk
+    kind: capacity
+    unit: GiB
+    capacity: 50         # per-run ceiling on /var/lib/agentdag; run.start refuses below it (design 3.1)
+    probe: ["agentdag-probe", "disk-free-gib", "/var/lib/agentdag"]
+    probe_cadence_s: 300
+    probe_ttl_s: 900
+  - name: claude-credential-refresh   # refreshing one auth token is a mutex, so parallel nodes do not race it (3.4)
+    kind: mutex
+    unit: slot
+    capacity: 1
+
