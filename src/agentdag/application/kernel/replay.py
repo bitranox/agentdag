@@ -33,8 +33,7 @@ class ReplayIndex:
             candidates for redispatch when the coordinator resumes after a crash.
         decisions: The LATEST approve decision per (node id, payload hash) - a decision's
             full identity, since one approve node asked about two different payloads is two
-            different questions with two independent answers. A line written before
-            ``payload_hash`` existed keys as ``(node_id, "")``.
+            different questions with two independent answers.
         key_sequence: Every ``started`` key, in file order, duplicates included -
             each is a real dispatch attempt, so this is the oracle a replay-purity
             check compares a fresh run's dispatch order against.

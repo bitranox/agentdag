@@ -338,10 +338,10 @@ class Decision(BaseModel):
     CHANGED list (a retry turning a failed repo into a passed one, or a worktree edited by hand
     between the suspend and the resume) simply does not match - the run suspends again on the
     new payload rather than applying an approval nobody gave.
-    :meth:`~agentdag.application.kernel.ports.RunDir.write_decision` REQUIRES it, because it
-    names the file the decision is published as, and it is carried onto the journal's
-    ``approve_decision`` line. ``None`` only for a decision file written before this field
-    existed, which the replay index keys as ``(node_id, "")``.
+    It is REQUIRED - a decision that names no payload has half an identity and cannot be
+    built, let alone filed under :meth:`~agentdag.application.kernel.ports.RunDir.write_decision`
+    (which names the file from it) or carried onto the journal's ``approve_decision`` line.
+    There is no legacy, hash-less shape to fall back to.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -351,4 +351,4 @@ class Decision(BaseModel):
     reason: str = ""
     by: str
     token_id: str
-    payload_hash: str | None = None
+    payload_hash: str = Field(min_length=1)

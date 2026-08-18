@@ -26,6 +26,7 @@ import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from ...application.kernel.ports import DecisionFileRef
 from ...domain.errors import RunRefused
 from ...domain.keys import hash8
 from ...domain.models import Decision, RunState
@@ -220,12 +221,21 @@ class FsRunDir:
                 previous, interrupted :meth:`write_decision` reserved, and a
                 later :meth:`write_decision` would then refuse forever
                 without anyone knowing why (design 3.4's write-once
-                contract).
+                contract). Also raised when the file parses fine but its OWN
+                ``payload_hash`` names something OTHER than the argument - the
+                short hash in the filename is only 8 hex characters, so a
+                content check is what tells a genuine answer from one that
+                merely landed at the same truncated name.
         """
         path = self._decision_path(node_id, payload_hash)
         if not path.is_file():
             return None
-        return self._parse_decision(path)
+        decision = self._parse_decision(path)
+        if decision.payload_hash != payload_hash:
+            raise RunRefused(
+                f"decision file {path} names payload_hash {decision.payload_hash!r}, not the requested {payload_hash!r}"
+            )
+        return decision
 
     def write_decision(self, decision: Decision) -> None:
         """Publish ``decision`` as ``decisions/<node_id>.<hash8(payload_hash)>.json``, once.
@@ -235,6 +245,12 @@ class FsRunDir:
         beside the old one rather than an overwrite of it (design 3.4's binding, the
         idempotency key D2 took from DBOS's ``send(..., idempotency_key)``). The old
         file stays as the record of what was answered about the old payload.
+
+        A decision, once recorded, is FINAL for that pair: this raises
+        ``FileExistsError`` on any SECOND write for the SAME (node id, payload hash) -
+        a ``hold`` included - there is no revise-the-last-verdict path, only a fresh
+        payload's own decision. The world has to change (a different payload) before
+        the question is asked again; the same payload never gets asked twice.
 
         The content is written to a fully-formed, fsynced temp file FIRST,
         then published with :func:`os.link` - a hard link is atomic and
@@ -256,16 +272,16 @@ class FsRunDir:
 
         Args:
             decision: The decision to record; keyed by ``decision.node_id`` AND
-                ``decision.payload_hash``, both of which name its file.
+                ``decision.payload_hash``, both of which name its file. Pydantic
+                already refuses one built with no ``payload_hash`` - it would name no
+                payload and have half an identity - so there is nothing to check here.
 
         Raises:
-            ValueError: ``decision.payload_hash`` is ``None`` - a decision that names
-                no payload has half an identity and cannot be filed; or either half
-                could escape ``decisions/``.
+            ValueError: either half of ``decision`` could escape ``decisions/`` -
+                ``decision.node_id`` contains a path separator or ``..``, or
+                ``decision.payload_hash`` does not shorten to eight hex characters.
             FileExistsError: this (node id, payload hash) already has a decision.
         """
-        if decision.payload_hash is None:
-            raise ValueError(f"decision for {decision.node_id!r} carries no payload_hash; it names no payload")
         final = self._decision_path(decision.node_id, decision.payload_hash)
         tmp_path = self._write_temp_file(self.decisions_dir, decision.model_dump_json(indent=1))
         try:
@@ -273,8 +289,13 @@ class FsRunDir:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def list_decisions(self) -> list[Decision]:
-        """Return every recorded decision, sorted by filename; reserved cancel files excluded.
+    def decision_files(self) -> list[DecisionFileRef]:
+        """Every decision file's (node id, short hash, path), sorted; reserved cancel files excluded.
+
+        Identity only, read from each FILENAME - no file is opened. Lets a caller (the
+        coordinator's ``fold_decisions``) decide which files it has already folded
+        BEFORE paying to parse them, so a file that becomes corrupted AFTER folding
+        never blocks a later launch.
 
         Sorted rather than in directory order, so folding the same ``decisions/``
         directory twice appends its journal lines in the same order both times -
@@ -289,16 +310,46 @@ class FsRunDir:
         component is eight HEX characters, so it can never read as ``cancel``.
 
         Returns:
+            Every decision file's identity, ascending by filename.
+        """
+        return [
+            self._decision_file_ref(path)
+            for path in sorted(self.decisions_dir.glob("*.json"))
+            if not path.name.endswith(".cancel.json")
+        ]
+
+    @staticmethod
+    def _decision_file_ref(path: Path) -> DecisionFileRef:
+        """Split ``<node_id>.<short_hash>.json`` from ``path``'s name alone; no I/O.
+
+        ``rpartition`` takes the LAST ``.``-separated component as the short hash and
+        everything before it as the node id, so a node id that itself contains a
+        literal ``.`` still splits correctly - a decision's short hash is always
+        exactly eight hex characters, which a node id segment never is by construction
+        (:meth:`_short_hash` only ever produces one from :meth:`write_decision`).
+        """
+        stem = path.name.removesuffix(".json")
+        node_id, _, short_hash = stem.rpartition(".")
+        return DecisionFileRef(node_id=node_id, short_hash=short_hash, path=path)
+
+    def read_decision_file(self, ref: DecisionFileRef) -> Decision:
+        """Parse the decision at ``ref.path``, naming the path when it cannot be read.
+
+        Raises:
+            RunRefused: the file is empty or does not parse as a decision.
+        """
+        return self._parse_decision(ref.path)
+
+    def list_decisions(self) -> list[Decision]:
+        """Return every recorded decision, parsed, in :meth:`decision_files`'s order.
+
+        Returns:
             Every parsed decision, ascending by filename.
 
         Raises:
             RunRefused: one of the files exists but is empty or fails to parse.
         """
-        return [
-            self._parse_decision(path)
-            for path in sorted(self.decisions_dir.glob("*.json"))
-            if not path.name.endswith(".cancel.json")
-        ]
+        return [self.read_decision_file(ref) for ref in self.decision_files()]
 
     @staticmethod
     def _parse_decision(path: Path) -> Decision:

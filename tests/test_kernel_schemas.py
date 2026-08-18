@@ -3,42 +3,12 @@
 from __future__ import annotations
 
 import json
-from importlib.resources import files
-from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
-from jsonschema import Draft202012Validator
-from referencing import Registry, Resource
+from schema_helpers import load, validator
 
 from agentdag.domain.journal import dump_journal_line, parse_journal_line
 from agentdag.domain.models import ApprovePayload, NodeSpec, ResultRecord
-
-if TYPE_CHECKING:
-    from referencing.jsonschema import Schema
-
-
-class _SchemaValidator(Protocol):
-    """The one Draft202012Validator method this test needs, typed.
-
-    jsonschema's shipped stub declares ``validate(self, *args, **kwargs) -> None``,
-    which pyright strict reports as partially unknown; this narrow facade defines
-    the real signature instead of suppressing the diagnostic at every call site.
-    """
-
-    def validate(self, instance: Any) -> None: ...
-
-
-def load(name: str) -> dict[str, Any]:
-    return json.loads((files("agentdag.schemas") / f"{name}.schema.json").read_text())
-
-
-def validator(name: str) -> _SchemaValidator:
-    reg: Registry[Schema] = Registry()
-    for other in ("node-spec", "result-record", "journal-line", "approve-payload", "handover", "map-manifest"):
-        s = load(other)
-        reg = reg.with_resource(s["$id"], Resource.from_contents(s))
-        reg = reg.with_resource(f"{other}.schema.json", Resource.from_contents(s))
-    return cast("_SchemaValidator", Draft202012Validator(load(name), registry=reg))
 
 
 @pytest.mark.parametrize("name", ["node-spec", "result-record", "journal-line", "approve-payload"])

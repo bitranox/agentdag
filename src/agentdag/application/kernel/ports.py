@@ -11,6 +11,7 @@ Contents:
     * :func:`stamp` - read a clock and render its reading the same way.
     * :class:`Journal` - the append-only, replayable log of what a run has done.
     * :class:`RunDir` - the run directory's on-disk layout (state, journal, decisions, node work areas).
+    * :class:`DecisionFileRef` - one decision file's identity, read from its filename alone.
     * :class:`RunLock` - the run directory's exclusive lock.
     * :class:`LockToken` - proof of a held lock, returned by :meth:`RunLock.acquire`.
     * :class:`ExecutorRequest` - everything an :class:`Executor` needs to run one node.
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Clock",
+    "DecisionFileRef",
     "Executor",
     "ExecutorRequest",
     "IsolationScanner",
@@ -190,22 +192,62 @@ class RunDir(Protocol):
         ...
 
     def read_decision(self, node_id: str, payload_hash: str) -> Decision | None:
-        """Read this (node id, payload hash)'s decision, or ``None`` if none is recorded yet."""
+        """Read this (node id, payload hash)'s decision, or ``None`` if none is recorded yet.
+
+        Raises:
+            RunRefused: the file exists but is unreadable, or its own content names a
+                DIFFERENT ``payload_hash`` than the one asked for.
+        """
         ...
 
     def write_decision(self, decision: Decision) -> None:
         """Publish ``decision`` write-once per (node id, payload hash); refuses to overwrite one.
 
+        A decision, once recorded, is FINAL for that pair: a second write for the SAME
+        (node id, payload hash) - a ``hold`` included - is refused, not replaced. Only a
+        CHANGED payload gets asked again.
+
         Raises:
-            ValueError: ``decision.payload_hash`` is missing - the hash is half the
-                decision's identity, so a decision that names no payload cannot be filed.
+            ValueError: either half of ``decision`` could escape ``decisions/``.
             FileExistsError: this (node id, payload hash) already has a decision.
+        """
+        ...
+
+    def decision_files(self) -> list[DecisionFileRef]:
+        """Every decision file's (node id, short hash, path), sorted; reserved cancel files excluded.
+
+        Identity only, read from each FILENAME - no file is opened. Lets a caller
+        (the coordinator's ``fold_decisions``) skip a file it already folded before
+        paying to parse it, so a file that becomes corrupted AFTER folding never
+        blocks a later launch.
+        """
+        ...
+
+    def read_decision_file(self, ref: DecisionFileRef) -> Decision:
+        """Parse the decision at ``ref.path``, naming the path when it cannot be read.
+
+        Raises:
+            RunRefused: the file is empty or does not parse as a decision.
         """
         ...
 
     def list_decisions(self) -> list[Decision]:
         """Return every recorded decision in a deterministic order; reserved cancel files excluded."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionFileRef:
+    """One decision file's (node id, short hash) read from its FILENAME alone - no parse, no I/O.
+
+    Returned by :meth:`RunDir.decision_files`, and handed straight back to
+    :meth:`RunDir.read_decision_file` once a caller has decided the file is worth
+    opening.
+    """
+
+    node_id: str
+    short_hash: str
+    path: Path
 
 
 class RunLock(Protocol):

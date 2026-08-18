@@ -223,7 +223,7 @@
         "payload_hash": {
           "type": "string",
           "minLength": 1,
-          "description": "Content hash of the approve payload this decision answers - the idempotency key that makes a decision's identity (node_id, payload_hash) rather than node_id alone (design 3.4). A CHANGED payload does not match, so the run writes the new payload and suspends again on it instead of applying an approval nobody gave. Absent only on a line written before this field existed, which the coordinator's replay index keys as (node_id, '')."
+          "description": "Content hash of the approve payload this decision answers - the idempotency key that makes a decision's identity (node_id, payload_hash) rather than node_id alone (design 3.4). A CHANGED payload does not match, so the run writes the new payload and suspends again on it instead of applying an approval nobody gave. Required: there is no hash-less decision."
         }
       },
       "required": [
@@ -233,7 +233,8 @@
         "reason",
         "by",
         "at",
-        "token_id"
+        "token_id",
+        "payload_hash"
       ],
       "additionalProperties": false,
       "description": "Written by the coordinator when it folds in decisions/<node_id>.<hash8(payload_hash)>.json on relaunch (design 3.4). The server and the CLI never append to the journal themselves."

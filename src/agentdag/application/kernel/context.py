@@ -478,9 +478,14 @@ class Coordinator:
         not match, so the run writes the NEW payload and suspends again on it rather
         than applying an approval for a list nobody was shown. Nothing is refused and
         nothing has to be deleted by hand: the decider answers the new payload, and both
-        answers stay on disk under their own hashes. A decision folded from a file
-        written before the hash existed keys as ``(node_id, "")`` and is used as the
-        fallback, unbound, exactly as it behaved before this field existed.
+        answers stay on disk under their own hashes.
+
+        A decision, once recorded, is FINAL for that (node id, payload hash):
+        :meth:`~agentdag.application.kernel.ports.RunDir.write_decision` refuses a
+        second write for the SAME pair, a ``hold`` included, so there is no
+        revise-the-last-verdict path. A ``hold`` therefore stands until the WORLD
+        changes - a different payload gets a fresh suspend, never a second vote on the
+        one already answered.
 
         Two different ``payload.json`` locations are intentional, one per path below.
         The SUSPEND path writes to ``nodes/<node_id>/<hash8(payload content
@@ -548,21 +553,18 @@ class Coordinator:
         )
 
     def _folded_decision(self, node_id: str, payload_hash: str) -> ApproveDecisionLine | None:
-        """Return the folded decision for this (node, payload), or the unbound legacy one.
+        """Return the decision folded for exactly this (node, payload), or ``None``.
 
         Args:
             node_id: The approve node being asked about.
             payload_hash: The content hash of the payload on offer right now.
 
         Returns:
-            The decision line recorded for exactly this payload; failing that, one
-            folded from a decision file written before ``payload_hash`` existed (keyed
-            ``(node_id, "")``), which is unbound and therefore answers any payload -
-            the pre-binding behaviour, kept so an in-flight run written by an older
-            build still resumes. ``None`` when neither exists.
+            The decision line recorded for this exact pair. ``None`` when no such
+            decision has been folded yet - a CHANGED payload is a new question with no
+            answer of its own, never the old payload's answer carried over.
         """
-        decisions = self.dispatcher.index.decisions
-        return decisions.get((node_id, payload_hash)) or decisions.get((node_id, ""))
+        return self.dispatcher.index.decisions.get((node_id, payload_hash))
 
     def _write_suspend_payload(self, node_id: str, payload_hash: str, payload_text: str) -> None:
         """Publish the payload the decider is being asked about, unless it is already there."""
@@ -614,30 +616,37 @@ class Coordinator:
         return outcome
 
     def fold_decisions(self) -> None:
-        """Journal every decision file the replay index does not hold yet, then refresh the index.
+        """Journal every decision file not already folded, then refresh the index.
 
         Called by ``run.py`` first thing on a relaunch (before dispatching anything), so
         every ``approve`` call in this run sees every decision recorded while the
         coordinator was not running. A decision is identified by (node id, PAYLOAD
         hash), so a node that was asked about two payloads folds two lines: skipping on
         node id alone would silently drop the answer to the newer question and leave
-        ``approve`` reading the older verdict. A pair already in the replay index is
-        skipped - it was folded by an earlier call, in this run or a previous one. How
-        many of the run's decisions were HUMAN ones (a run-summary field) is not
+        ``approve`` reading the older verdict.
+
+        Which file is already folded is decided from its FILENAME alone
+        (:meth:`~agentdag.application.kernel.ports.RunDir.decision_files`, the short
+        hash included), matched against every already-folded line's own hash
+        shortened the same way (:func:`~agentdag.domain.keys.hash8`) - never by parsing
+        the file first. So a decision file that becomes corrupted or unreadable AFTER
+        it was folded never blocks a later launch: it is skipped before anything tries
+        to open it. Which files under ``decisions/`` are decisions at all - and the
+        reserved cancel shapes that are not - is
+        :meth:`~agentdag.application.kernel.ports.RunDir.decision_files`'s job, not this
+        one's; the layout belongs to the port.
+
+        How many of the run's decisions were HUMAN ones (a run-summary field) is not
         tracked here: :attr:`dispatcher`'s index already holds every folded decision
         after this call, which is a per-RUN view (folded from the whole journal), so
         ``summary.py`` counts it from there rather than from a per-launch counter that
         would read zero on any relaunch that finds every decision already folded.
-
-        Which files under ``decisions/`` are decisions at all - and the reserved cancel
-        shapes that are not - is
-        :meth:`~agentdag.application.kernel.ports.RunDir.list_decisions`'s job, not this
-        one's; the layout belongs to the port.
         """
-        for decision in self.run_dir.list_decisions():
-            payload_hash = decision.payload_hash or ""
-            if (decision.node_id, payload_hash) in self.dispatcher.index.decisions:
+        folded = {(node_id, hash8(payload_hash)) for node_id, payload_hash in self.dispatcher.index.decisions}
+        for ref in self.run_dir.decision_files():
+            if (ref.node_id, ref.short_hash) in folded:
                 continue
+            decision = self.run_dir.read_decision_file(ref)
             self.dispatcher.journal.append(
                 ApproveDecisionLine(
                     node_id=decision.node_id,
@@ -645,7 +654,7 @@ class Coordinator:
                     reason=decision.reason,
                     by=decision.by,
                     token_id=decision.token_id,
-                    payload_hash=payload_hash,
+                    payload_hash=decision.payload_hash,
                     at=stamp(self.clock),
                 )
             )

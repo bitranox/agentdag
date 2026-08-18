@@ -60,18 +60,26 @@ def test_journal_appends_one_line_per_call_and_replays_them_typed(tmp_path: Path
 
 
 @pytest.mark.os_agnostic
-def test_replay_index_keeps_the_latest_decision_per_node_and_payload_and_the_result_of_a_repeated_key() -> None:
-    # One node, two payloads: two independent decisions, not an overwrite. A line written before
-    # payload_hash existed keys as (node_id, "") and stays reachable under that pair.
+def test_replay_index_keeps_a_decision_per_node_and_payload_and_the_result_of_a_repeated_key() -> None:
+    # One node, two payloads: two independent decisions, not an overwrite - each is keyed by
+    # its own payload_hash, which every line carries (it is required, not a legacy extra).
     lines = [
-        ApproveDecisionLine(node_id="a_push_list", decision="hold", reason="", by="me", token_id="local", at=AT),
+        ApproveDecisionLine(
+            node_id="a_push_list",
+            decision="hold",
+            reason="",
+            by="me",
+            token_id="local",
+            payload_hash="sha256:aa",
+            at=AT,
+        ),
         ApproveDecisionLine(
             node_id="a_push_list",
             decision="approve",
             reason="",
             by="me",
             token_id="local",
-            payload_hash="sha256:aa",
+            payload_hash="sha256:bb",
             at=AT,
         ),
         StartedLine(key=key(3), node_id="c", attempt=0, at=AT),
@@ -81,8 +89,8 @@ def test_replay_index_keeps_the_latest_decision_per_node_and_payload_and_the_res
 
     idx = build_replay_index(lines)
 
-    assert idx.decisions["a_push_list", ""].decision == "hold"
-    assert idx.decisions["a_push_list", "sha256:aa"].decision == "approve"
+    assert idx.decisions["a_push_list", "sha256:aa"].decision == "hold"
+    assert idx.decisions["a_push_list", "sha256:bb"].decision == "approve"
     assert key(3) in idx.results
     assert idx.crash_window == set()
     # every started is a dispatch attempt; the sequence is the replay-purity oracle

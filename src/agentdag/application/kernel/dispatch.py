@@ -183,7 +183,10 @@ class Dispatcher:
         )
         outcome = _refuse_empty(await _run_body(body, node_dir))
         duration_s = (self.clock.now() - started).total_seconds()
-        record = _complete(outcome, spec=spec, input_hash=call.input_hash, duration_s=duration_s)
+        # ResultRecord.input_hash is the record's OWN journal key (result-record.schema.json's
+        # field description, and its examples), not call.input_hash - that is only ONE
+        # ingredient journal_key() hashed together with brief_hash and prefix to produce it.
+        record = _complete(outcome, spec=spec, input_hash=call.key, duration_s=duration_s)
         self._write(node_dir, "record.json", record.model_dump_json(by_alias=True, indent=1))
         self.journal.append(ResultLine(key=call.key, record=record, at=stamp(self.clock)))
         self.records[spec.node_id] = record
@@ -272,7 +275,12 @@ def _complete(outcome: NodeOutcome, *, spec: NodeSpec, input_hash: str, duration
     Args:
         outcome: What the body returned, after the empty-result refusal.
         spec: The dispatched spec, for the node id and attempt the record carries.
-        input_hash: Content hash of this call's ``input.json``.
+        input_hash: The journal key this call was dispatched under (``call.key``) -
+            what ``result-record.schema.json`` names ``input_hash`` and documents as
+            "the journal key this record was dispatched under", not the plain content
+            hash of ``input.json`` alone (that hash is only one ingredient
+            :func:`~agentdag.domain.keys.journal_key` combines with the brief hash and
+            the dependency prefix to produce the key).
         duration_s: How long the body ran, measured on the injected clock.
 
     Returns:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +26,7 @@ from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.summary import append_run_summary
-from agentdag.domain.errors import SpecRejected, Suspended
+from agentdag.domain.errors import RunRefused, SpecRejected, Suspended
 from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.journal import RunSummaryLine
 from agentdag.domain.keys import content_hash, hash8
@@ -378,22 +379,25 @@ def test_a_second_decision_on_the_same_payload_is_refused_write_once(tmp_path: P
 
 
 @pytest.mark.os_agnostic
-def test_a_decision_folded_without_a_payload_hash_still_answers_any_payload(tmp_path: Path) -> None:
-    # A decision file written before the binding existed carries no hash and folds as ("a", "").
-    # It has to keep working, or an in-flight run started by an older build cannot be resumed.
+def test_fold_decisions_of_a_file_lacking_payload_hash_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
+    # payload_hash is required now - a decision without one has half an identity and cannot
+    # even be built (Decision(...) would refuse it). A hand-placed file that lacks it must
+    # refuse LOUDLY, never be silently skipped or answered as if bound to whatever payload
+    # happens to be on offer - the pre-binding fallback this design used to have is gone.
     co, rd = coordinator(tmp_path)
     with pytest.raises(Suspended):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
-    legacy = Decision(node_id="a", decision="approve", by="me", token_id="local")
-    (rd.decisions_dir / "a.json").write_text(legacy.model_dump_json(indent=1), encoding="utf-8")
+    bad_path = rd.decisions_dir / "a.11111111.json"
+    bad_path.write_text(
+        json.dumps({"node_id": "a", "decision": "approve", "reason": "", "by": "me", "token_id": "local"}),
+        encoding="utf-8",
+    )
+
     co2, _ = coordinator(tmp_path, rd=rd)
-    co2.fold_decisions()
-
-    result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
-
-    assert result.decision == "approve"
-    assert ("a", "") in co2.dispatcher.index.decisions
-    assert result.payload_hash == payload_hash_of(payload())  # bound to what it was actually applied to
+    with pytest.raises(RunRefused, match=re.escape(str(bad_path))):
+        co2.fold_decisions()
+    with pytest.raises(RunRefused, match=re.escape(str(bad_path))):
+        rd.list_decisions()
 
 
 @pytest.mark.os_agnostic
@@ -441,3 +445,26 @@ def test_fold_decisions_ignores_a_reserved_cancel_file(tmp_path: Path) -> None:
 
     assert len(co.dispatcher.journal.lines()) == lines_before
     assert co.dispatcher.index.decisions == {}
+
+
+@pytest.mark.os_agnostic
+def test_fold_decisions_skips_an_already_folded_pair_by_filename_before_parsing_it(tmp_path: Path) -> None:
+    # A file corrupted AFTER it was folded must never block a later launch: fold_decisions
+    # decides "already folded" from the FILENAME (node id, short hash) alone, matched against
+    # the journal's own folded lines - it must never need to open the file to make that call.
+    co, rd = coordinator(tmp_path)
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
+    rd.write_decision(approved("a", payload()))
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()  # folds the real file once
+
+    stub = rd.decisions_dir / f"a.{hash8(payload_hash_of(payload()))}.json"
+    stub.write_text("not json at all", encoding="utf-8")  # corrupted AFTER folding
+
+    co3, _ = coordinator(tmp_path, rd=rd)  # its journal already carries the folded line
+    co3.fold_decisions()  # must NOT raise: the pair is already folded, so the corrupt file
+    # is never opened.
+
+    result = asyncio.run(co3.approve(code("a", Kind.APPROVE), payload=payload()))
+    assert result.decision == "approve"

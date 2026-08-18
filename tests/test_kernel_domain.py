@@ -7,10 +7,11 @@ import json
 import pytest
 
 from agentdag.domain.errors import Suspended
-from agentdag.domain.journal import ResultLine, StartedLine, dump_journal_line, parse_journal_line
+from agentdag.domain.journal import ApproveDecisionLine, ResultLine, StartedLine, dump_journal_line, parse_journal_line
 from agentdag.domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash, record_hash
 from agentdag.domain.models import (
     Budget,
+    Decision,
     ErrorType,
     Isolation,
     Kind,
@@ -170,3 +171,28 @@ def test_node_outcome_defaults_are_the_empty_shapes() -> None:
 
 def test_suspended_names_the_node() -> None:
     assert Suspended("a_push_list").node_id == "a_push_list"
+
+
+def test_decision_requires_a_payload_hash() -> None:
+    # A decision that names no payload has half an identity - there is no legacy,
+    # hash-less shape to fall back to any more. model_validate (not the keyword
+    # constructor) exercises the field MISSING entirely, which a keyword call cannot
+    # express and still type-check under pyright strict.
+    d = Decision(node_id="a", decision="hold", by="me", token_id="local", payload_hash="sha256:0")
+    assert d.payload_hash == "sha256:0"
+    with pytest.raises(ValueError, match="payload_hash"):
+        Decision.model_validate({"node_id": "a", "decision": "hold", "by": "me", "token_id": "local"})
+    with pytest.raises(ValueError, match="payload_hash"):
+        Decision(node_id="a", decision="hold", by="me", token_id="local", payload_hash="")
+
+
+def test_approve_decision_line_requires_a_payload_hash() -> None:
+    at = "2026-08-17T09:12:03+00:00"
+    line = ApproveDecisionLine(
+        node_id="a", decision="hold", reason="", by="me", token_id="local", payload_hash="sha256:0", at=at
+    )
+    assert line.payload_hash == "sha256:0"
+    with pytest.raises(ValueError, match="payload_hash"):
+        ApproveDecisionLine.model_validate(
+            {"node_id": "a", "decision": "hold", "reason": "", "by": "me", "token_id": "local", "at": at}
+        )

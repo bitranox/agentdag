@@ -9,11 +9,13 @@ against records built by hand than against a run's own.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
 import pytest
 from kernel_fakes import CommittingExecutor, decide, launch, policy_path
 from pydantic import BaseModel
+from schema_helpers import validator
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
@@ -27,7 +29,7 @@ from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
 from agentdag.domain.errors import LockHeld, RunRefused, WorkflowNotFound
-from agentdag.domain.journal import ResultLine, RunSummaryLine
+from agentdag.domain.journal import ResultLine, RunSummaryLine, dump_journal_line, parse_journal_line
 from agentdag.domain.models import NodeStatus, ResultRecord, RunStatus, Tokens
 
 if TYPE_CHECKING:
@@ -96,6 +98,20 @@ def test_a_done_run_ends_with_a_summary_line_carrying_the_interactions_and_the_t
     assert summary.replay_seconds is not None  # this launch replayed a journal
     assert summary.records_per_node == 1.0
     assert summary.citation_coverage == []
+
+
+@pytest.mark.os_agnostic
+def test_every_journal_line_of_a_real_run_validates_against_the_journal_line_schema(tmp_path: Path) -> None:
+    # test_kernel_schemas.py proves the schema's OWN hand-picked examples validate; this
+    # proves a REAL run's actual output does too - run_started, started, result,
+    # approve_decision, resume and run_summary lines, exactly as the kernel wrote them.
+    run_dir = approve_and_resume(tmp_path, CommittingExecutor())
+
+    v = validator("journal-line")
+    raw_lines = run_dir.journal_path.read_text(encoding="utf-8").splitlines()
+    assert raw_lines  # a run that logged nothing would pass this vacuously
+    for raw in raw_lines:
+        v.validate(json.loads(dump_journal_line(parse_journal_line(raw))))
 
 
 @pytest.mark.os_agnostic

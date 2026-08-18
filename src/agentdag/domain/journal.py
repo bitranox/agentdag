@@ -88,9 +88,9 @@ class ApproveDecisionLine(_Line):
 
     ``payload_hash`` is the other half of the decision's identity: decisions are recorded
     per (``node_id``, ``payload_hash``), so an approval binds to the exact payload a human
-    was shown and never carries over to a changed one. Every line this kernel appends
-    carries it; the empty-string default exists only so a line written before the field
-    existed still parses, and the replay index keys such a line as ``(node_id, "")``.
+    was shown and never carries over to a changed one. It is REQUIRED - there is no
+    hash-less decision any more (:class:`~agentdag.domain.models.Decision` refuses to be
+    built without one), so every line this kernel folds carries a real hash.
     """
 
     event: Literal["approve_decision"] = "approve_decision"
@@ -99,7 +99,7 @@ class ApproveDecisionLine(_Line):
     reason: str
     by: str
     token_id: str
-    payload_hash: str = ""
+    payload_hash: str = Field(min_length=1)
 
 
 class RunSummaryLine(_Line):

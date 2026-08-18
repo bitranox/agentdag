@@ -75,10 +75,18 @@ def test_state_round_trips_and_decisions_are_write_once_per_payload(tmp_path: Pa
     assert rd.read_decision("a_push_list", HASH_ONE) == d  # the old answer is still on record
 
 
-def test_write_decision_refuses_a_decision_that_names_no_payload(tmp_path: Path) -> None:
+def test_read_decision_refuses_a_file_whose_content_names_a_different_payload(tmp_path: Path) -> None:
+    # The short hash in a decision's filename is only 8 hex characters, so a filename match
+    # alone is not proof the file answers the payload asked about - the content has to agree.
     rd = FsRunDir.create(tmp_path, "r1")
-    with pytest.raises(ValueError, match="payload_hash"):
-        rd.write_decision(Decision(node_id="a_push_list", decision="hold", by="me", token_id="local"))
+    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
+    rd.write_decision(d)
+    stub = rd.decisions_dir / f"a_push_list.{HASH_ONE[7:15]}.json"
+    corrupted = d.model_copy(update={"payload_hash": HASH_TWO})
+    stub.write_text(corrupted.model_dump_json(indent=1), encoding="utf-8")
+
+    with pytest.raises(RunRefused, match=re.escape(str(stub))):
+        rd.read_decision("a_push_list", HASH_ONE)
 
 
 def test_write_decision_refuses_a_payload_hash_that_could_escape_the_decisions_dir(tmp_path: Path) -> None:
@@ -101,6 +109,28 @@ def test_list_decisions_returns_every_decision_sorted_and_ignores_reserved_cance
 
     # HASH_ONE shortens to 11111111 and HASH_TWO to 22222222, so filename order is first, second.
     assert listed == [first, second]
+
+
+def test_decision_files_reads_identity_from_the_filename_without_opening_it(tmp_path: Path) -> None:
+    # decision_files() must not need to PARSE a file to report its identity - that is the
+    # whole point: a caller (fold_decisions) can skip an already-folded pair before paying to
+    # open it, so a file corrupted AFTER being folded still reports its identity here even
+    # though list_decisions()/read_decision_file() would refuse to parse its content.
+    rd = FsRunDir.create(tmp_path, "r1")
+    d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
+    rd.write_decision(d)
+    stub = rd.decisions_dir / f"a_push_list.{HASH_ONE[7:15]}.json"
+    stub.write_text("not json at all")  # corrupted AFTER write_decision published it
+    (rd.decisions_dir / "a_push_list.cancel.json").write_text('{"node_id": "a_push_list", "reason": "stop"}')
+
+    refs = rd.decision_files()
+
+    assert len(refs) == 1  # the reserved cancel file is excluded, same as list_decisions()
+    assert refs[0].node_id == "a_push_list"
+    assert refs[0].short_hash == HASH_ONE[7:15]
+    assert refs[0].path == stub
+    with pytest.raises(RunRefused):
+        rd.read_decision_file(refs[0])  # the identity above did not require parsing it
 
 
 def test_write_atomic_refuses_absolute_and_traversal_paths(tmp_path: Path) -> None:
@@ -170,6 +200,19 @@ def test_read_decision_of_an_empty_stub_file_raises_run_refused_naming_the_path(
         rd.read_decision("a_push_list", HASH_ONE)
     with pytest.raises(RunRefused, match=re.escape(str(stub))):
         rd.list_decisions()  # the same refusal through the listing, not a silently skipped file
+
+
+def test_list_decisions_of_a_file_lacking_payload_hash_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
+    # payload_hash is required now; a hand-placed file that lacks it is not a valid legacy
+    # shape to fall back to any more - it must refuse loudly, naming the file.
+    rd = FsRunDir.create(tmp_path, "r1")
+    bad = rd.decisions_dir / "a_push_list.11111111.json"
+    bad.write_text(json.dumps({"node_id": "a_push_list", "decision": "hold", "by": "me", "token_id": "local"}))
+
+    with pytest.raises(RunRefused, match=re.escape(str(bad))):
+        rd.list_decisions()
+    with pytest.raises(RunRefused, match=re.escape(str(bad))):
+        rd.read_decision("a_push_list", HASH_ONE)
 
 
 def test_read_state_of_a_corrupt_file_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
