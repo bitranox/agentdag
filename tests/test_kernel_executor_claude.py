@@ -42,9 +42,18 @@ def decision(result: dict[str, Any]) -> str | None:
     return specific.get("permissionDecision")
 
 
+async def _await_hook(hook: HookCallback, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Await one hook call as a coroutine.
+
+    A hook is typed as returning an ``Awaitable``; ``asyncio.run`` accepts a bare awaitable
+    only from Python 3.14 on, so the call is wrapped for the older interpreters CI runs.
+    """
+    return dict(await hook({"tool_name": tool_name, "tool_input": tool_input}, None, None))
+
+
 def fire(hook: HookCallback, tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """Run one hook call the way the SDK would, and return its permission decision."""
-    return decision(asyncio.run(hook({"tool_name": tool_name, "tool_input": tool_input}, None, None)))
+    return decision(asyncio.run(_await_hook(hook, tool_name, tool_input)))
 
 
 def _request(tmp_path: Path, **overrides: Any) -> ExecutorRequest:

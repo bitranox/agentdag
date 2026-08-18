@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -246,8 +247,11 @@ def test_gate_reports_a_held_lock_by_path_instead_of_hanging(tmp_path: Path) -> 
 
     with FileLock(str(tmp_path / "l")):
         gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"), timeout=0.2)
-        with pytest.raises(RuntimeError, match=str(tmp_path / "l")):
+        with pytest.raises(RuntimeError, match=re.escape(str(tmp_path / "l"))):
             gate.run(tmp_path, tmp_path / "g.log")
+
+
+_OS_INJECTED_ENV: frozenset[str] = frozenset({"__CF_USER_TEXT_ENCODING"}) if sys.platform == "darwin" else frozenset()
 
 
 def test_gate_env_is_exactly_the_allowlist_intersection(tmp_path: Path) -> None:
@@ -262,7 +266,12 @@ def test_gate_env_is_exactly_the_allowlist_intersection(tmp_path: Path) -> None:
     assert gate.run(tmp_path, tmp_path / "g.log") == 0
 
     child_env = json.loads(dump.read_text(encoding="utf-8"))
-    assert child_env == gate_env(os.environ)
+    expected = gate_env(os.environ)
+    # Whatever the child has beyond the allowlist is what the OS runtime itself stamps on
+    # every process at exec (macOS adds __CF_USER_TEXT_ENCODING), never something the
+    # coordinator passed; the allowlisted values arrive unchanged.
+    assert set(child_env) - set(expected) <= _OS_INJECTED_ENV
+    assert {key: child_env[key] for key in expected} == expected
     # The two the coordinator itself carries (its systemd-run client needs them) and the one
     # that would make bmk resolve its tooling from the wrong environment are all absent.
     for banned in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "VIRTUAL_ENV"):
