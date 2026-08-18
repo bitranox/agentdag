@@ -1,7 +1,10 @@
 """Graph A on the kernel: discover, map(work, gate, scan), tally, stage, approve, apply.
 
 The node ids, kinds, isolation, write sets, requirements, deadlines and budgets are the
-ones in ``workflow/design/graphs/A-fleet-migration.md``'s node table. This module is the
+ones in ``workflow/design/graphs/A-fleet-migration.md``'s node table, for every DISPATCHED
+node. The table's ``m_migrate`` row is the exception: a map is performed by the coordinator
+and dispatches no node of its own, so it has no spec here and its row's ``deadline_s`` and
+map-wide budget are not enforced by anything yet. This module is the
 graph AS CODE: a deterministic program that reaches the world only through the
 coordinator's primitives, branches only on typed fields of journaled records, and reads
 time only through the coordinator's clock - so re-executing it from the top after a
@@ -37,6 +40,7 @@ from ...domain.errors import KernelError, SpecRejected
 from ...domain.graph_a import (
     PushIntent,
     Tally,
+    WorkResult,
     is_scratch_target,
     parse_repos_text,
     reduce_tally,
@@ -137,13 +141,13 @@ async def program(co: Coordinator, args: GraphAArgs) -> None:
     discovered = await co.reduce(
         _discover_spec(), fold=lambda: _discovered(origins), input_obj={"repos_hash": content_hash(repos_text)}
     )
-    if not discovered.key_facts["n"]:
+    if not _typed_count(discovered, "n"):
         return  # g_discover halts: nothing to migrate
     summary, deps, branches = await _migrate(co, args, origins)
     tally = await co.reduce(
         _tally_spec(deps), fold=lambda: _tallied(co, summary, branches), input_obj=_tally_input(summary)
     )
-    if not tally.key_facts["passed_count"]:
+    if not _typed_count(tally, "passed_count"):
         return  # route: nothing pushable, so nobody is asked
     intents = stage(summary)
     await co.stage(_stage_spec(), intents=intents, kind="push")
@@ -174,7 +178,7 @@ async def _migrate(
         return await _branch(co, index, origin, brief=brief, model=args.model, outcomes=outcomes)
 
     records = await co.map(_MAP_ID, list(origins), body)
-    rows = [_row_of(outcomes.get(index), origin) for index, origin in enumerate(origins)]
+    rows = [_row_of(outcomes.get(index), origin, records[index]) for index, origin in enumerate(origins)]
     keys = _keys_by_node(co)
     branches = [
         _branch_ref(index, _node_of(outcomes.get(index), index), keys, records[index]) for index in range(len(origins))
@@ -213,11 +217,10 @@ async def _branch(
     Returns:
         This branch's LAST record - the scan's, or the work node's when it failed.
     """
-    name = origin.name.removesuffix(".git")
+    name = _worktree_name(origin)
     worktree = co.run_dir.worktree(name)
     before = co.snapshot()
-    if not worktree.exists():
-        co.git.clone(origin, worktree)
+    _ensure_worktree(co, origin, worktree)
     work = await co.work(_work_spec(index, name, model), brief=brief, cwd=worktree)
     if work.status is not NodeStatus.DONE:
         row = Tally(repo=origin, status="work-failed", head_sha=co.git.head_sha(worktree), test_rc=None)
@@ -232,16 +235,83 @@ async def _branch(
     return scan
 
 
-def _row_of(outcome: _BranchOutcome | None, origin: Path) -> Tally:
+def _row_of(outcome: _BranchOutcome | None, origin: Path, record: ResultRecord) -> Tally:
     """Return a branch's tally row, or the work-failed row a branch that never got one gets.
 
-    A branch reaches ``None`` here only by raising OUTSIDE any dispatch (a clone that
-    blew up), which :meth:`~agentdag.application.kernel.context.Coordinator.map` turned
-    into a synthetic failed record that is never journaled.
+    A branch reaches ``None`` here only by raising OUTSIDE any dispatch - a clone that
+    blew up, or a misconfiguration :meth:`~agentdag.application.kernel.context.Coordinator.work`
+    refuses BEFORE dispatching (an unwired executor, a model no row lists). The synthetic
+    record :meth:`~agentdag.application.kernel.context.Coordinator.map` built for it is
+    never journaled, so its message survives only if it is copied onto the row here;
+    without that the whole fleet reports a bare ``work-failed`` and the run ends ``done``
+    with the reason nowhere on disk.
     """
     if outcome is not None:
         return outcome.tally
-    return Tally(repo=origin, status="work-failed", head_sha="-", test_rc=None)
+    reason = record.error.message if record.error is not None else "the branch raised before it dispatched anything"
+    return Tally(repo=origin, status="work-failed", head_sha="-", test_rc=None, work=WorkResult(ok=False, error=reason))
+
+
+def _ensure_worktree(co: Coordinator, origin: Path, worktree: Path) -> None:
+    """Clone ``origin`` into ``worktree`` once, so a half-finished clone is never reused.
+
+    The clone runs OUTSIDE any dispatch, so it has no ``started`` line and no crash
+    window: nothing tells a later launch whether an existing ``wt/<name>`` is a finished
+    clone or one a crash cut in half, and ``exists()`` answers the same for both. A
+    half-finished clone is permanent damage - :meth:`GitCli.clone` sets the committer
+    identity in its LAST two steps, so a clone interrupted before them leaves a tree
+    whose every ``git commit`` fails, the work node records ``failed`` forever, and the
+    only remedy is deleting the directory by hand.
+
+    Cloning into a staging path and renaming makes existence mean "the clone completed":
+    a rename is atomic, so there is no observable state in between. The staging path sits
+    inside the isolation root but is never visible to a scan, because nothing between its
+    creation and the rename awaits, so no sibling branch can take a manifest across it.
+
+    Args:
+        co: The coordinator, for the git port.
+        origin: The bare scratch clone to copy.
+        worktree: Where the branch works; left untouched when it is already there.
+    """
+    if worktree.exists():
+        return
+    staging = worktree.with_name(f".partial-{worktree.name}")
+    if staging.exists():
+        co.git.remove_mirror(staging)  # a previous launch died mid-clone; git writes objects read-only
+    co.git.clone(origin, staging)
+    staging.rename(worktree)
+
+
+def _typed_count(record: ResultRecord, field: str) -> int:
+    """Read one typed count off a record, refusing a record that did not succeed.
+
+    A failed node carries EMPTY ``key_facts``, so reading the field straight off it
+    raises a bare ``KeyError`` naming nothing. The worse half is that the failed record
+    is journaled and SERVED on every later launch, so a resume dies exactly the same way
+    however the underlying problem is fixed - naming the node, its status and its own
+    error is what tells an operator that this needs a new attempt rather than another
+    resume.
+
+    Args:
+        record: The record to read.
+        field: The ``key_facts`` entry to read, which must be in ``typed_fields``.
+
+    Returns:
+        The count.
+
+    Raises:
+        KernelError: the record is not ``done``, or carries no such field.
+    """
+    if record.status is not NodeStatus.DONE:
+        reason = record.error.message if record.error is not None else "no error recorded"
+        raise KernelError(
+            f"node {record.node_id!r} ended {record.status.value} ({reason}), so its {field!r} does not exist; "
+            "a resume serves this same record, so this needs a new attempt, not another launch"
+        )
+    value = record.key_facts.get(field)
+    if not isinstance(value, int):
+        raise KernelError(f"node {record.node_id!r} reported no integer {field!r}: {value!r}")
+    return value
 
 
 def _node_of(outcome: _BranchOutcome | None, index: int) -> str:
@@ -275,17 +345,51 @@ def _refuse_unusable_fleet(origins: Sequence[Path], scratch: Path) -> None:
         scratch: The scratch directory this run owns.
 
     Raises:
-        SpecRejected: two entries share a basename, or an entry does not lie under
-            ``<scratch>/origin``.
+        SpecRejected: a path is relative, two entries map to the same worktree, or an
+            entry does not lie under ``<scratch>/origin``.
     """
+    _refuse_relative(scratch, "scratch")
     seen: dict[str, Path] = {}
     for origin in origins:
-        first = seen.get(origin.name)
+        _refuse_relative(origin, "fleet member")
+        name = _worktree_name(origin)
+        first = seen.get(name)
         if first is not None:
-            raise SpecRejected(f"{first} and {origin} share the basename {origin.name!r}; fleet basenames must differ")
-        seen[origin.name] = origin
+            raise SpecRejected(
+                f"{first} and {origin} both map to the worktree {name!r}; fleet members must not collide"
+            )
+        seen[name] = origin
         if not is_scratch_target(origin, scratch):
             raise SpecRejected(f"{origin} is not under {scratch}/origin; a real repo is never a push target")
+
+
+def _refuse_relative(path: Path, what: str) -> None:
+    """Refuse a relative path: it resolves against the process CWD, which no journal records.
+
+    A relative fleet member or scratch root makes the run mean something different from a
+    different working directory - at best a refusal on resume, at worst a DIFFERENT
+    repository with the same relative name. The CWD is not part of the run state, so the
+    only safe answer is to require what a resume can reproduce.
+
+    Raises:
+        SpecRejected: ``path`` is not absolute.
+    """
+    if not path.is_absolute():
+        raise SpecRejected(f"{what} {path} is relative; a run must name paths a resume can reproduce")
+
+
+def _worktree_name(origin: Path) -> str:
+    """Return the worktree directory a fleet member migrates in.
+
+    The ONE place the mapping lives, because two members mapping to one worktree is a
+    silent data-loss bug: the second branch would skip its clone, run in the first's
+    tree and tally the first's commits as its own.
+
+    Example:
+        >>> _worktree_name(Path("/s/origin/a.git")), _worktree_name(Path("/s/origin/a"))
+        ('a', 'a')
+    """
+    return origin.name.removesuffix(".git")
 
 
 def _discovered(origins: Sequence[Path]) -> NodeOutcome:
@@ -388,7 +492,7 @@ def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
     branch = co.git.default_branch(intent.repo)
     if co.git.ref_sha(intent.repo, branch) == intent.head_sha:
         return "already-present"
-    co.git.push(co.run_dir.worktree(intent.repo.name.removesuffix(".git")), intent.repo, branch)
+    co.git.push(co.run_dir.worktree(_worktree_name(intent.repo)), intent.repo, branch)
     return "pushed"
 
 
@@ -427,13 +531,19 @@ def _test_spec(index: int, name: str) -> NodeSpec:
 
 
 def _scan_spec(index: int) -> NodeSpec:
-    """One branch's isolation scan; it declares no write set of its own."""
+    """One branch's isolation scan; it declares no write set of its own.
+
+    It depends on the GATE as well as the work node, because the window it judges runs
+    from the branch's own snapshot to after the gate has run: a gate that wrote outside
+    the worktree is inside this scan's evidence, so a re-dispatched gate has to make this
+    a different call rather than let the old ``done`` record be served over it.
+    """
     return NodeSpec(
         node_id=f"g_scan@{index}",
         kind=Kind.GATE,
         executor="code",
         isolation=Isolation.DIR,
-        deps=[f"w_migrate@{index}"],
+        deps=[f"w_migrate@{index}", f"g_test@{index}"],
         deadline_s=300,
     )
 

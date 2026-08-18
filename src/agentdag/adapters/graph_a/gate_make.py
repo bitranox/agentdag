@@ -76,5 +76,9 @@ class MakeTestGate:
         except Timeout as exc:
             raise RuntimeError(f"gate lock {self._lock} held for more than {self._timeout}s") from exc
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(proc.stdout + proc.stderr)
+        # encoding is explicit both ways: the output was DECODED as utf-8 above, so writing it
+        # back through the machine's locale codec can raise UnicodeEncodeError (cp1252 on a
+        # Windows runner) inside the gate body, which the kernel would record as a red gate -
+        # a content failure that never happened.
+        log.write_text(proc.stdout + proc.stderr, encoding="utf-8")
         return proc.returncode

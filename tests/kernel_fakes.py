@@ -103,16 +103,25 @@ def make_repo(root: Path, name: str) -> Path:
 class CommittingExecutor:
     """The work node's stand-in: edits a file in its working directory and commits it.
 
+    The body is idempotent, which the crash window requires of any real node: a
+    re-dispatch after a crash that landed the commit finds a clean tree and commits
+    nothing a second time. Committing unconditionally would instead abort on git's
+    "nothing to commit" exit code and turn a node that SUCCEEDED into a failed one.
+
     Attributes:
-        crash_on: A node id whose dispatch raises ``SystemExit`` instead of running -
-            the coordinator PROCESS dying between the ``started`` line and the
-            ``result`` line, which is exactly the crash window a resume re-dispatches.
+        crash_on: A node id whose dispatch raises ``SystemExit`` BEFORE doing anything -
+            the coordinator PROCESS dying between the ``started`` line and any side
+            effect.
+        crash_after: A node id whose dispatch raises ``SystemExit`` AFTER its commit -
+            the harder half of the crash window, where the side effect landed and only
+            the ``result`` line is missing.
         calls: The node id of every dispatch this executor was handed, in order.
     """
 
-    def __init__(self, crash_on: str | None = None) -> None:
-        """Bind the optional crash node; ``calls`` starts empty."""
+    def __init__(self, crash_on: str | None = None, crash_after: str | None = None) -> None:
+        """Bind the optional crash nodes; ``calls`` starts empty."""
         self.crash_on = crash_on
+        self.crash_after = crash_after
         self.calls: list[str] = []
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
@@ -125,15 +134,22 @@ class CommittingExecutor:
             A done outcome carrying one artefact ref and typed ``turns``.
 
         Raises:
-            SystemExit: this dispatch's node id is :attr:`crash_on`.
+            SystemExit: this dispatch's node id is :attr:`crash_on` or :attr:`crash_after`.
         """
         node_id = request.node_dir.parent.name
         self.calls.append(node_id)
         if node_id == self.crash_on:
             raise SystemExit(9)
+        # A real executor awaits its model; without a suspension point here every map
+        # branch would run to completion before the next one started, so `parallel > 1`
+        # would be serial and nothing that depends on branches overlapping is exercised.
+        await asyncio.sleep(0)
         (request.cwd / "CHANGELOG.md").write_text(request.brief + "\n", encoding="utf-8")
-        git("add", "-A", cwd=request.cwd)
-        git("commit", "-q", "-m", "change", cwd=request.cwd)
+        if git("status", "--porcelain", cwd=request.cwd):
+            git("add", "-A", cwd=request.cwd)
+            git("commit", "-q", "-m", "change", cwd=request.cwd)
+        if node_id == self.crash_after:
+            raise SystemExit(9)
         return NodeOutcome(
             status=NodeStatus.DONE,
             key_facts={"turns": 1},

@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from ...domain.errors import RunRefused, Suspended
 from ...domain.journal import ResumeLine, RunStartedLine
+from ...domain.keys import hash8
 from ...domain.models import RunState, RunStatus
 from .context import Coordinator
 from .dispatch import Dispatcher
@@ -38,9 +39,9 @@ from .summary import run_summary_line
 from .workflow_check import assert_deterministic
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-    from pathlib import Path
+    from collections.abc import Mapping, Sequence
 
+    from ...domain.journal import ResultLine
     from ...domain.models import LockHolder
     from ..graph_a_ports import GatePort, GitPort
     from ..workflows import WorkflowDef
@@ -60,8 +61,10 @@ class RunOutcome:
         status: The run's status as this launch left it on disk.
         suspended_node: The approve node the run is waiting on, or ``None``.
         dispatched_keys: Every key this launch put through the dispatcher, served keys
-            included and in order - the replay-purity oracle: a launch that serves
-            everything must produce exactly the journal's own ``started`` keys.
+            included - the replay-purity oracle: a launch that serves everything must
+            produce exactly the journal's own ``started`` keys, as a MULTISET. The order
+            is guaranteed only at ``parallel == 1``; above it the map's branches
+            interleave, so two launches may emit the same keys in a different order.
     """
 
     status: RunStatus
@@ -119,12 +122,14 @@ async def run_coordinator(
     Raises:
         LockHeld: another live coordinator holds ``run_dir``.
         NondeterministicCallError: ``workflow``'s module reaches for the clock or randomness.
-        RunRefused: ``resume_reason`` is not one of the four known reasons.
+        RunRefused: ``args`` is not the workflow's own args model, or ``resume_reason``
+            is not one of the four known reasons.
         Exception: whatever the program raised, after the run is marked ``failed``.
     """
     token = lock.acquire(run_dir.root, holder)
     try:
         assert_deterministic(workflow.module)
+        _refuse_mismatched_args(workflow, args)
         resumed = _bookend(
             journal=journal,
             clock=clock,
@@ -184,6 +189,22 @@ async def _drive(
     _summarise(co, replay_seconds=replay_seconds)
     _write_state(co, status=RunStatus.DONE, cursor=None, by=by)
     return RunOutcome(RunStatus.DONE, None, list(co.dispatcher.dispatched_keys))
+
+
+def _refuse_mismatched_args(workflow: WorkflowDef, args: BaseModel) -> None:
+    """Refuse arguments that are not this workflow's own, BEFORE anything is written.
+
+    ``WorkflowDef.program`` is typed over ``Any``, so a mismatch type-checks; without
+    this the run takes the lock, journals a ``run_started`` line holding the wrong
+    argument shape and writes ``state.json`` as ``running``, and only then dies inside
+    the program on an attribute that does not exist - leaving a run directory that
+    describes a run nobody can resume.
+
+    Raises:
+        RunRefused: ``args`` is not an instance of ``workflow.args_model``.
+    """
+    if not isinstance(args, workflow.args_model):
+        raise RunRefused(f"workflow {workflow.name!r} takes {workflow.args_model.__name__}, not {type(args).__name__}")
 
 
 def _bookend(
@@ -296,32 +317,41 @@ def _summarise(co: Coordinator, *, replay_seconds: float | None) -> None:
     """
     journal = co.dispatcher.journal
     lines = journal.lines()
+    results = [line for line in lines if line.event == "result"]
     journal.append(
         run_summary_line(
             run_id=co.run_id,
             policy_version=co.policy.version,
-            records=[line.record for line in lines if line.event == "result"],
+            results=results,
             journal_bytes=co.run_dir.journal_path.stat().st_size,
             journal_lines=len(lines),
             replay_seconds=replay_seconds,
             human_interactions=co.interactions,
             tokens_by_row=co.tokens_by_row,
             at=stamp(co.clock),
-            brief_lengths=_brief_lengths(co.run_dir.root),
+            brief_lengths=_brief_lengths(co.run_dir, results),
         )
     )
 
 
-def _brief_lengths(root: Path) -> dict[str, int]:
-    """Map node id -> the length in characters of the LONGEST brief written for it.
+def _brief_lengths(run_dir: RunDir, results: Sequence[ResultLine]) -> dict[str, int]:
+    """Map each result's journal KEY to the length of the brief that dispatch ran under.
 
-    A node dispatched more than once has one ``brief.md`` per key. The longest is taken
-    because the length is only ever subtracted from a measured first turn to estimate
-    dispatch overhead, so the largest brief is the reading that never OVERSTATES the
-    overhead this signal exists to watch.
+    Joined by key rather than by node id, because a node dispatched twice has one
+    ``brief.md`` per key: attributing either brief to both records would move the
+    overhead figure exactly when a node was re-dispatched, which is the drift the signal
+    exists to watch. A key names its own directory (``nodes/<node_id>/<hash8(key)>/``),
+    so the join is exact.
+
+    This composes the run directory's layout from ``run_dir.root`` instead of asking the
+    port, because :class:`~agentdag.application.kernel.ports.RunDir` exposes no read-only
+    accessor for a node directory (``node_dir`` CREATES one, which a measurement must not
+    do). A missing brief contributes nothing rather than raising: the summary must never
+    be the thing that fails a finished run.
     """
     lengths: dict[str, int] = {}
-    for brief in (root / "nodes").glob("*/*/brief.md"):
-        node_id = brief.parent.parent.name
-        lengths[node_id] = max(lengths.get(node_id, 0), len(brief.read_text(encoding="utf-8")))
+    for line in results:
+        brief = run_dir.root / "nodes" / line.record.node_id / hash8(line.key) / "brief.md"
+        if brief.is_file():
+            lengths[line.key] = len(brief.read_text(encoding="utf-8"))
     return lengths

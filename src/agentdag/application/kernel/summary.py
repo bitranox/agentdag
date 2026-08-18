@@ -21,6 +21,7 @@ from ...domain.journal import RunSummaryLine
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from ...domain.journal import ResultLine
     from ...domain.models import ResultRecord
 
 __all__ = ["run_summary_line"]
@@ -41,7 +42,7 @@ def run_summary_line(
     *,
     run_id: str,
     policy_version: str,
-    records: Sequence[ResultRecord],
+    results: Sequence[ResultLine],
     journal_bytes: int,
     journal_lines: int,
     replay_seconds: float | None,
@@ -55,7 +56,9 @@ def run_summary_line(
     Args:
         run_id: The run this summary closes.
         policy_version: The content hash of the tier policy table the run ran under.
-        records: Every result record the run's journal holds, in file order.
+        results: Every ``result`` line the run's journal holds, in file order. The LINES,
+            not the bare records, because a line carries the dispatch key the brief
+            length below is joined on.
         journal_bytes: The journal file's size, measured BEFORE this line is appended.
         journal_lines: How many lines the journal held, likewise before this one.
         replay_seconds: How long folding the replay index took on a relaunch, or
@@ -63,8 +66,10 @@ def run_summary_line(
         human_interactions: How many human decisions the coordinator folded in.
         tokens_by_row: Tokens charged per model row, as the coordinator counted them.
         at: This line's timestamp, already rendered by the caller's one clock reading.
-        brief_lengths: Node id -> the length in characters of the brief that node ran
-            under, for the overhead estimate below.
+        brief_lengths: Journal key -> the length in characters of the brief THAT dispatch
+            ran under, for the overhead estimate below. Keyed by dispatch, not by node,
+            so a node dispatched twice under different briefs is measured twice, once
+            against each.
 
     Returns:
         The summary line, ready to append. ``citation_coverage`` is empty: it is a
@@ -73,7 +78,7 @@ def run_summary_line(
 
     Example:
         >>> line = run_summary_line(
-        ...     run_id="r1", policy_version="sha256:0", records=[], journal_bytes=10,
+        ...     run_id="r1", policy_version="sha256:0", results=[], journal_bytes=10,
         ...     journal_lines=2, replay_seconds=None, human_interactions=0,
         ...     tokens_by_row={}, at="2026-08-17T09:12:03+00:00", brief_lengths={},
         ... )
@@ -83,11 +88,11 @@ def run_summary_line(
     return RunSummaryLine(
         run_id=run_id,
         policy_version=policy_version,
-        overhead_fraction=_overhead_fraction(records, brief_lengths),
+        overhead_fraction=_overhead_fraction(results, brief_lengths),
         citation_coverage=[],
         journal_bytes=journal_bytes,
         replay_seconds=replay_seconds,
-        records_per_node=_records_per_node(records),
+        records_per_node=_records_per_node(results),
         tokens_by_row=dict(tokens_by_row),
         journal_lines=journal_lines,
         human_interactions=human_interactions,
@@ -95,28 +100,28 @@ def run_summary_line(
     )
 
 
-def _records_per_node(records: Sequence[ResultRecord]) -> float:
+def _records_per_node(results: Sequence[ResultLine]) -> float:
     """Return how many records the run wrote per distinct node id.
 
     A figure above 1.0 means nodes were dispatched more than once - a retry, an
     escalation, or a crash-window re-dispatch - which is the drift design 3.5 watches.
 
     Args:
-        records: Every result record the journal holds.
+        results: Every ``result`` line the journal holds.
 
     Returns:
-        ``len(records) / len(distinct node ids)``, or ``0.0`` when there are none.
+        ``len(results) / len(distinct node ids)``, or ``0.0`` when there are none.
 
     Example:
         >>> _records_per_node([])
         0.0
     """
-    if not records:
+    if not results:
         return 0.0
-    return len(records) / len({record.node_id for record in records})
+    return len(results) / len({line.record.node_id for line in results})
 
 
-def _overhead_fraction(records: Sequence[ResultRecord], brief_lengths: Mapping[str, int]) -> dict[str, float]:
+def _overhead_fraction(results: Sequence[ResultLine], brief_lengths: Mapping[str, int]) -> dict[str, float]:
     """Return the median and p90 share of a node's input tokens that was NOT its brief.
 
     A record qualifies only when it carries a measured first turn
@@ -125,10 +130,10 @@ def _overhead_fraction(records: Sequence[ResultRecord], brief_lengths: Mapping[s
     rather than an omission, because the field is not optional in the line's schema.
 
     Args:
-        records: Every result record the journal holds.
-        brief_lengths: Node id -> its brief's length in characters; a node missing here
-            contributes an estimated brief of zero tokens, which reports its FULL first
-            turn as overhead.
+        results: Every ``result`` line the journal holds.
+        brief_lengths: Journal key -> that dispatch's brief length in characters; a key
+            missing here contributes an estimated brief of zero tokens, which reports its
+            FULL first turn as overhead.
 
     Returns:
         ``{"median": ..., "p90": ...}``.
@@ -139,7 +144,7 @@ def _overhead_fraction(records: Sequence[ResultRecord], brief_lengths: Mapping[s
     """
     fractions = sorted(
         fraction
-        for fraction in (_overhead_of(record, brief_lengths.get(record.node_id, 0)) for record in records)
+        for fraction in (_overhead_of(line.record, brief_lengths.get(line.key, 0)) for line in results)
         if fraction is not None
     )
     if not fractions:
@@ -160,7 +165,11 @@ def _overhead_of(record: ResultRecord, brief_length: int) -> float | None:
     """
     first_turn = record.key_facts.get("first_turn_input_tokens")
     tokens = record.tokens
-    if not isinstance(first_turn, int) or tokens is None or not tokens.in_:
+    # bool is an int subclass, and Tokens.in_ has no lower bound, so both are excluded
+    # explicitly rather than left to arithmetic that would silently produce a number.
+    if not isinstance(first_turn, int) or isinstance(first_turn, bool):
+        return None
+    if tokens is None or tokens.in_ is None or tokens.in_ <= 0:
         return None
     return max(0.0, first_turn - brief_length / _CHARS_PER_TOKEN) / tokens.in_
 

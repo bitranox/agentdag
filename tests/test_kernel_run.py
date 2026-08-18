@@ -8,30 +8,42 @@ against records built by hand than against a run's own.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import CommittingExecutor, launch
+from kernel_fakes import CommittingExecutor, launch, policy_path
+from pydantic import BaseModel
 
+from agentdag.adapters.graph_a.gate_make import MakeTestGate
+from agentdag.adapters.graph_a.git_cli import GitCli
+from agentdag.adapters.kernel.clock_utc import UtcClock
+from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.policy_yaml import load_policy
+from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
 from agentdag.domain.errors import LockHeld, RunRefused, WorkflowNotFound
-from agentdag.domain.journal import RunSummaryLine
+from agentdag.domain.journal import ResultLine, RunSummaryLine
 from agentdag.domain.models import Decision, NodeStatus, ResultRecord, RunStatus, Tokens
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from agentdag.adapters.kernel.run_store_fs import FsRunDir
+
+AT = "2026-08-17T09:12:03+00:00"
 
 
-def record(node_id: str, *, first_turn: int | None = None, in_tokens: int | None = None) -> ResultRecord:
-    """Build a done record carrying the two fields the overhead estimate reads."""
+def result(
+    node_id: str, *, key: str | None = None, first_turn: int | None = None, in_tokens: int | None = None
+) -> ResultLine:
+    """Build a done result LINE: the key the brief length is joined on, plus the record."""
     key_facts: dict[str, object] = {} if first_turn is None else {"first_turn_input_tokens": first_turn}
     tokens = None if in_tokens is None else Tokens(**{"in": in_tokens, "out": 0, "cache_read": 0, "reasoning": None})
-    return ResultRecord(
+    record = ResultRecord(
         node_id=node_id,
         attempt=0,
         status=NodeStatus.DONE,
@@ -44,6 +56,7 @@ def record(node_id: str, *, first_turn: int | None = None, in_tokens: int | None
         typed_fields=list(key_facts),
         tokens=tokens,
     )
+    return ResultLine(key=key if key is not None else f"key-{node_id}", record=record, at=AT)
 
 
 def approve_and_resume(tmp_path: Path, executor: CommittingExecutor) -> FsRunDir:
@@ -133,13 +146,13 @@ def test_run_summary_line_reports_zeros_when_no_record_carries_a_first_turn() ->
     line = run_summary_line(
         run_id="r1",
         policy_version="sha256:0",
-        records=[record("a"), record("b", first_turn=10)],
+        results=[result("a", in_tokens=400), result("b", in_tokens=400)],
         journal_bytes=1,
         journal_lines=1,
         replay_seconds=None,
         human_interactions=0,
         tokens_by_row={},
-        at="2026-08-17T09:12:03+00:00",
+        at=AT,
         brief_lengths={},
     )
 
@@ -148,22 +161,42 @@ def test_run_summary_line_reports_zeros_when_no_record_carries_a_first_turn() ->
 
 
 @pytest.mark.os_agnostic
+def test_run_summary_line_ignores_a_first_turn_with_no_input_tokens_to_divide_by() -> None:
+    # Separate from the test above on purpose: a first turn with no token count and no first turn
+    # at all are two different exclusions, and one test covering both passes for either reason.
+    line = run_summary_line(
+        run_id="r1",
+        policy_version="sha256:0",
+        results=[result("a", first_turn=10), result("b", first_turn=10, in_tokens=0)],
+        journal_bytes=1,
+        journal_lines=1,
+        replay_seconds=None,
+        human_interactions=0,
+        tokens_by_row={},
+        at=AT,
+        brief_lengths={},
+    )
+
+    assert line.overhead_fraction == {"median": 0.0, "p90": 0.0}
+
+
+@pytest.mark.os_agnostic
 def test_run_summary_line_estimates_the_brief_s_share_out_of_the_first_turn() -> None:
     line = run_summary_line(
         run_id="r1",
         policy_version="sha256:0",
-        records=[
-            record("a", first_turn=200, in_tokens=400),  # no brief: all 200 is overhead -> 0.5
-            record("b", first_turn=400, in_tokens=400),  # 400 chars ~ 100 tokens of brief -> 0.75
-            record("c", first_turn=999, in_tokens=0),  # no input tokens to divide by: excluded
+        results=[
+            result("a", first_turn=200, in_tokens=400),  # no brief: all 200 is overhead -> 0.5
+            result("b", first_turn=400, in_tokens=400),  # 400 chars ~ 100 tokens of brief -> 0.75
+            result("c", first_turn=999, in_tokens=0),  # no input tokens to divide by: excluded
         ],
         journal_bytes=1,
         journal_lines=1,
         replay_seconds=0.25,
         human_interactions=2,
         tokens_by_row={"sonnet": 5},
-        at="2026-08-17T09:12:03+00:00",
-        brief_lengths={"b": 400},
+        at=AT,
+        brief_lengths={"key-b": 400},
     )
 
     assert line.overhead_fraction == {"median": 0.625, "p90": 0.75}
@@ -175,14 +208,77 @@ def test_run_summary_line_counts_a_redispatched_node_as_drift() -> None:
     line = run_summary_line(
         run_id="r1",
         policy_version="sha256:0",
-        records=[record("a"), record("a"), record("b")],
+        results=[result("a", key="k1"), result("a", key="k2"), result("b")],
         journal_bytes=1,
         journal_lines=1,
         replay_seconds=None,
         human_interactions=0,
         tokens_by_row={},
-        at="2026-08-17T09:12:03+00:00",
+        at=AT,
         brief_lengths={},
     )
 
     assert line.records_per_node == 1.5
+
+
+@pytest.mark.os_agnostic
+def test_run_summary_line_measures_each_dispatch_against_its_own_brief() -> None:
+    # The same node, dispatched twice under different briefs. Attributing one brief to both
+    # records - which keying by node id would do - reports 0.1 twice and hides the 0.55.
+    line = run_summary_line(
+        run_id="r1",
+        policy_version="sha256:0",
+        results=[
+            result("w", key="long", first_turn=1200, in_tokens=2000),
+            result("w", key="short", first_turn=1200, in_tokens=2000),
+        ],
+        journal_bytes=1,
+        journal_lines=1,
+        replay_seconds=None,
+        human_interactions=0,
+        tokens_by_row={},
+        at=AT,
+        brief_lengths={"long": 4000, "short": 400},
+    )
+
+    assert line.overhead_fraction == {"median": 0.325, "p90": 0.55}
+
+
+@pytest.mark.os_agnostic
+def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_path: Path) -> None:
+    class OtherArgs(BaseModel):
+        """Some other workflow's arguments."""
+
+        whatever: int = 1
+
+    base = tmp_path / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = FsRunDir.create(base, "r1")
+
+    with pytest.raises(RunRefused, match="GraphAArgs"):
+        asyncio.run(
+            run_coordinator(
+                run_dir=run_dir,
+                journal=JsonlJournal(run_dir.journal_path, run_dir.audit_path),
+                clock=UtcClock(),
+                lock=FileRunLock(),
+                holder=current_holder(),
+                workflow=get_workflow("graph-a"),
+                args=OtherArgs(),
+                executors={"claude": CommittingExecutor()},
+                gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+                git=GitCli(),
+                scanner=IsolationScanner(),
+                policy=load_policy(policy_path()),
+                parallel=1,
+                by="tester",
+                token_id="local",
+                resume_reason=None,
+            )
+        )
+
+    # Refused before the lock left anything behind, before the journal was opened, and before
+    # state.json claimed a run was running.
+    assert not run_dir.journal_path.exists()
+    assert not run_dir.state_path.exists()
+    assert not (run_dir.root / "lock").exists()
