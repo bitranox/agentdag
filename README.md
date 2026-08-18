@@ -258,6 +258,61 @@ Each node runs with `CLAUDE_CONFIG_DIR` pointing at its own directory under the 
 
 ---
 
+## Coordinator (agentdag run)
+
+`agentdag run` is the general coordinator kernel: a journal, a resumable run directory, a
+tier policy and a Claude executor with an allowlisted per-node credential. It runs the SAME
+`graph-a` workflow the baseline above runs, plus a `hold`-by-default human approve step and
+a crash window that re-dispatches only what a journal shows never finished. `agentdag graph-a
+...` stays in the repo unchanged as the M1 BASELINE - the control this kernel is measured
+against until M5 compares the two.
+
+Codex (a second executor arm) and a per-turn token spend cap are NOT in this version.
+
+One-time setup: the run directory needs to exist and be writable before the first `run start`.
+
+```bash
+sudo install -d -m 0700 -o "$USER" -g "$USER" /var/lib/agentdag/runs
+```
+
+Five verbs, over one run directory per run id:
+
+```bash
+# start a run; --foreground drives the coordinator in-process (the testable path);
+# without it, the coordinator is launched detached (a systemd --user scope on Linux,
+# a plain child process elsewhere) and the command returns immediately
+agentdag run start graph-a \
+  --arg repos_file=/tmp/agentdag-scratch/REPOS.txt --arg brief_file=brief.md \
+  --arg scratch=/tmp/agentdag-scratch --runs /var/lib/agentdag/runs
+
+# print state.json's fields and the journal's last event
+agentdag run status <run-id>
+
+# print one line per result the journal holds, or --json for the same as JSON
+agentdag run records <run-id>
+
+# relaunch a run that suspended, crashed, or otherwise is not yet `done`
+agentdag run resume <run-id> --reason manual
+
+# record a decision for a suspended approve node, then relaunch (unless --no-relaunch)
+agentdag run approve <run-id> a_push_list --decision approve
+```
+
+A run directory (`<runs>/<run-id>/`) holds `journal.jsonl` (the append-only, replayable
+log - append-only, one JSON line per event), `audit.jsonl` (a copy, written first), `state.json`
+(status, cursor, token totals), `lock` (the exclusive run lock), and per-node subdirectories:
+`decisions/`, `intents/`, `artefacts/`, `wt/` (worktrees), `nodes/` (each dispatch's brief,
+input and record), `manifest/` (map/reduce manifests) and `done/` (apply markers).
+
+The Claude executor authenticates each node from one of two sources, chosen once per CLI
+invocation and printed at `run start`: the config's `[credentials] claude_oauth_token_file`
+keyfile if that path exists, else a private owner-only copy of the operator's own
+`~/.claude/.credentials.json`. Either way, the CLI itself never reads the credential's
+content - only the executor does, inside the coordinator process, at the point it actually
+dispatches a node.
+
+---
+
 ## Email Sending
 
 The application includes email sending capabilities via [btx-lib-mail](https://pypi.org/project/btx-lib-mail/), supporting both simple notifications and rich HTML emails with attachments.
