@@ -21,6 +21,8 @@ Contents:
     * :class:`IsolationScanner` - takes a content manifest of the run's isolation root.
     * :class:`Scope` - starts, probes and kills the OS-level unit a node runs under.
     * :class:`ScopeHandle` - identifies a unit a :class:`Scope` started.
+    * :class:`KernelWiring` - everything one CLI invocation needs to run or resume a
+      coordinator, built once by the composition root's ``wire_kernel`` (Task 17).
 """
 
 from __future__ import annotations
@@ -30,12 +32,13 @@ from datetime import timezone
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from datetime import datetime
     from pathlib import Path
 
     from ...domain.journal import JournalLine
     from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RunState
+    from ..graph_a_ports import GatePort, GitPort
 
 __all__ = [
     "Clock",
@@ -44,6 +47,7 @@ __all__ = [
     "ExecutorRequest",
     "IsolationScanner",
     "Journal",
+    "KernelWiring",
     "LockToken",
     "Policy",
     "ResolvedRow",
@@ -368,3 +372,32 @@ class ScopeHandle:
 
     unit: str
     pid: int
+
+
+@dataclass(frozen=True, slots=True)
+class KernelWiring:
+    """Everything one CLI invocation needs to run or resume a coordinator (Task 17).
+
+    Built once per invocation by the composition root's ``wire_kernel``, then handed
+    straight into :func:`~agentdag.application.kernel.run.run_coordinator`'s keyword
+    arguments - except :attr:`journal_factory`, which the CLI calls once the run
+    directory's ``journal_path``/``audit_path`` are known, to build that run's own
+    :class:`Journal`.
+
+    The record lives in this module rather than the composition layer so an adapter
+    (the CLI) can name the type it is handed without importing the composition root,
+    which the layer contract forbids - the same reasoning
+    :class:`~agentdag.application.graph_a_ports.GraphAWiring` documents for graph A.
+    """
+
+    journal_factory: Callable[[Path, Path], Journal]
+    lock: RunLock
+    clock: Clock
+    executors: Mapping[str, Executor]
+    gate_port: GatePort
+    git: GitPort
+    scanner: IsolationScanner
+    policy: Policy
+    scope: Scope
+    runs_dir: Path
+    parallel: int

@@ -24,6 +24,9 @@ from ..adapters.logging.setup import init_logging
 # Graph A wiring
 from .graph_a import wire as wire_graph_a
 
+# Kernel wiring
+from .kernel import wire_kernel
+
 # Static conformance assertions — pyright verifies that each adapter function
 # structurally satisfies its corresponding Protocol at type-check time.
 if TYPE_CHECKING:
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
         SendEmail,
         SendNotification,
         WireGraphA,
+        WireKernel,
     )
 
     _assert_get_config: GetConfig = get_config
@@ -49,6 +53,7 @@ if TYPE_CHECKING:
     _assert_load_email_config_from_dict: LoadEmailConfigFromDict = load_email_config_from_dict
     _assert_init_logging: InitLogging = init_logging
     _assert_wire_graph_a: WireGraphA = wire_graph_a
+    _assert_wire_kernel: WireKernel = wire_kernel
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +69,7 @@ class AppServices:
     load_email_config_from_dict: LoadEmailConfigFromDict
     init_logging: InitLogging
     wire_graph_a: WireGraphA
+    wire_kernel: WireKernel
 
 
 def build_production() -> AppServices:
@@ -78,6 +84,7 @@ def build_production() -> AppServices:
         load_email_config_from_dict=load_email_config_from_dict,
         init_logging=init_logging,
         wire_graph_a=wire_graph_a,
+        wire_kernel=wire_kernel,
     )
 
 
@@ -113,9 +120,11 @@ def build_testing(*, spy: EmailSpy | None = None) -> AppServices:
         send_notification=email_spy.send_notification,
         load_email_config_from_dict=load_email_config_from_dict_in_memory,
         init_logging=init_logging_in_memory,
-        # Graph A has no in-memory wiring: building the record allocates nothing, and a
-        # test that wants fakes injects them at run_graph's own port parameters.
+        # Graph A and the kernel have no in-memory wiring: building either record
+        # allocates nothing, and a test that wants fakes injects them at run_graph's
+        # or run_coordinator's own port parameters.
         wire_graph_a=wire_graph_a,
+        wire_kernel=wire_kernel,
     )
 
 
@@ -137,4 +146,6 @@ __all__ = [
     "send_notification",
     # Graph A
     "wire_graph_a",
+    # Kernel
+    "wire_kernel",
 ]

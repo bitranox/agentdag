@@ -161,6 +161,10 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # does not inherit this exemption for free.
 "src/agentdag/adapters/kernel/executor_claude.py" = ["PLR0913"]
 "src/agentdag/adapters/memory/*.py" = ["PLR0913"]
+# Kernel composition (task 17): wire_kernel's six keyword-only params are
+# KernelWiring's own fields, resolved once per CLI invocation - splitting them into a
+# bundle would just rename the same list every caller already builds inline.
+"src/agentdag/composition/kernel.py" = ["PLR0913"]
 # Kernel errors (task 9): LockHeld, WorkflowNotFound, SpecRejected, RunRefused and Suspended are
 # the coordinator design's own binding names - every later kernel task (journal, dispatch,
 # primitives, executor, CLI) imports them verbatim, so an Error-suffix rename would break every

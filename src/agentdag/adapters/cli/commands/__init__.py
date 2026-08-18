@@ -8,6 +8,7 @@ Contents:
     * Config commands from :mod:`.config`
     * Email commands from :mod:`.email` (subpackage)
     * Graph A commands from :mod:`.graph_a`
+    * Kernel run commands from :mod:`.run`
     * Logging commands from :mod:`.logging`
 """
 
@@ -18,6 +19,7 @@ from .email import cli_send_email, cli_send_notification
 from .graph_a import cli_graph_a
 from .info import cli_fail, cli_hello, cli_info
 from .logging import cli_logdemo
+from .run import cli_run
 
 __all__ = [
     "cli_config",
@@ -28,6 +30,7 @@ __all__ = [
     "cli_hello",
     "cli_info",
     "cli_logdemo",
+    "cli_run",
     "cli_send_email",
     "cli_send_notification",
 ]

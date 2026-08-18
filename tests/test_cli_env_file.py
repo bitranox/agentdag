@@ -53,6 +53,7 @@ def inject_config_with_dotenv_capture(
             load_email_config_from_dict=prod.load_email_config_from_dict,
             init_logging=prod.init_logging,
             wire_graph_a=prod.wire_graph_a,
+            wire_kernel=prod.wire_kernel,
         )
         return lambda: test_services
 

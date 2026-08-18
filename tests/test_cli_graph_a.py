@@ -115,6 +115,7 @@ def services_wiring(
         load_email_config_from_dict=prod.load_email_config_from_dict,
         init_logging=prod.init_logging,
         wire_graph_a=_wire,
+        wire_kernel=prod.wire_kernel,
     )
     return lambda: services
 
