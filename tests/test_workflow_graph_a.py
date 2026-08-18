@@ -209,6 +209,11 @@ def test_replay_of_a_finished_run_dispatches_nothing_and_reproduces_the_key_sequ
     assert run_dir.read_state().cursor is None
     assert sorted(outcome.dispatched_keys) == sorted(started_keys(lines_before))
     assert len(outcome.dispatched_keys) == len(started_keys(lines_before))
+    # human_interactions must be read per RUN (from the folded decisions), not per launch: this
+    # third launch's own fold_decisions folds nothing NEW - the hold decision was already folded
+    # by launch 2 - so a per-launch counter would report 0 here despite one real human decision.
+    last_summary = [line for line in lines_after if isinstance(line, RunSummaryLine)][-1]
+    assert last_summary.human_interactions == 1
 
 
 @pytest.mark.os_agnostic
@@ -289,6 +294,62 @@ def test_a_crash_after_the_body_committed_keeps_the_commit_and_the_branch_still_
     assert git("rev-parse", "HEAD", cwd=run_dir.worktree("b")) == committed  # committed once, not twice
     tally = json.loads((run_dir.root / "artefacts" / "tally.json").read_text(encoding="utf-8"))
     assert [row["status"] for row in tally["rows"]] == ["passed", "passed"]
+
+
+@pytest.mark.os_agnostic
+def test_a_stale_partial_clone_staging_dir_is_cleaned_before_the_branchs_own_snapshot(tmp_path: Path) -> None:
+    # A crash mid-clone in an earlier launch leaves `wt/.partial-<name>` behind. _ensure_worktree
+    # must clear it BEFORE co.snapshot() runs for that branch, or the deletion lands inside the
+    # branch's own scan window and g_scan reports it as a stray removal - permanently failing the
+    # very branch the cleanup exists to rescue.
+    args, origins = fleet(tmp_path, ["a", "b"], parallel=1)
+    base = tmp_path / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = FsRunDir.create(base, "r1")
+    stale = run_dir.worktree(".partial-b")
+    stale.mkdir(parents=True)
+    (stale / "leftover").write_text("dead clone", encoding="utf-8")
+
+    executor = CommittingExecutor()
+    outcome = asyncio.run(
+        run_coordinator(
+            run_dir=run_dir,
+            journal=JsonlJournal(run_dir.journal_path, run_dir.audit_path),
+            clock=UtcClock(),
+            lock=FileRunLock(),
+            holder=current_holder(),
+            workflow=get_workflow("graph-a"),
+            args=args,
+            executors={"claude": executor},
+            gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+            git=GitCli(),
+            scanner=IsolationScanner(),
+            policy=load_policy(policy_path()),
+            parallel=1,
+            by="tester",
+            token_id="local",
+            resume_reason=None,
+        )
+    )
+
+    assert not stale.exists()
+    assert outcome.status == RunStatus.SUSPENDED  # a normal suspend at the approve, like any clean run
+    tally = json.loads((run_dir.root / "artefacts" / "tally.json").read_text(encoding="utf-8"))
+    rows = {row["repo"]: row["status"] for row in tally["rows"]}
+    assert rows[str(origins[1])] == "passed"  # the branch the stale staging dir belonged to
+
+
+@pytest.mark.os_agnostic
+def test_git_cli_remove_tree_deletes_a_working_clone_read_only_objects_included(tmp_path: Path) -> None:
+    _, origins = fleet(tmp_path, ["a"], parallel=1)
+    dest = tmp_path / "staging-clone"
+    GitCli().clone(origins[0], dest)
+    assert dest.is_dir()
+    assert (dest / ".git").is_dir()
+
+    GitCli().remove_tree(dest)
+
+    assert not dest.exists()
 
 
 @pytest.mark.os_agnostic

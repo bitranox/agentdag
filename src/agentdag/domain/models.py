@@ -322,7 +322,18 @@ class ApprovePayload(BaseModel):
 
 
 class Decision(BaseModel):
-    """A decision recorded against an approve node, mirroring the approve_decision journal line."""
+    """A decision recorded against an approve node, mirroring the approve_decision journal line.
+
+    ``payload_hash`` is the content hash of the payload this decision was made FOR (design
+    3.4's binding): a human approving a push list must have that exact approval bound to that
+    exact list, never silently carried over to a changed one (a retry turning a failed repo
+    into a passed one, or a worktree edited by hand between the suspend and the resume).
+    ``None`` for a decision that predates this field, or one an unattended default writes with
+    no human-reviewed payload to bind to; :meth:`~agentdag.application.kernel.context.Coordinator.approve`
+    accepts either unconditionally. This field is NOT carried onto the journal's
+    ``approve_decision`` line - that schema is fixed (``additionalProperties: false``) - so the
+    binding lives on the decision FILE only, read back at approve time.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -331,3 +342,4 @@ class Decision(BaseModel):
     reason: str = ""
     by: str
     token_id: str
+    payload_hash: str | None = None

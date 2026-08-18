@@ -204,6 +204,26 @@ def test_run_summary_line_estimates_the_brief_s_share_out_of_the_first_turn() ->
 
 
 @pytest.mark.os_agnostic
+def test_run_summary_line_clamps_overhead_at_one_when_the_first_turn_exceeds_the_input_tokens() -> None:
+    # Defensive: first_turn_input_tokens should never exceed tokens.in, but nothing upstream
+    # enforces that, and an unclamped ratio would report more than "all of it was overhead".
+    line = run_summary_line(
+        run_id="r1",
+        policy_version="sha256:0",
+        results=[result("a", first_turn=500, in_tokens=100)],
+        journal_bytes=1,
+        journal_lines=1,
+        replay_seconds=None,
+        human_interactions=0,
+        tokens_by_row={},
+        at=AT,
+        brief_lengths={},
+    )
+
+    assert line.overhead_fraction == {"median": 1.0, "p90": 1.0}
+
+
+@pytest.mark.os_agnostic
 def test_run_summary_line_counts_a_redispatched_node_as_drift() -> None:
     line = run_summary_line(
         run_id="r1",

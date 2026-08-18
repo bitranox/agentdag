@@ -163,9 +163,37 @@ class FsRunDir:
             raise
         return target
 
+    def read_text(self, rel: str) -> str:
+        """Read ``rel`` under :attr:`root` as UTF-8 text; creates nothing.
+
+        Args:
+            rel: A POSIX-style path relative to :attr:`root`.
+
+        Returns:
+            The file's content.
+
+        Raises:
+            ValueError: ``rel`` is absolute or escapes :attr:`root` via ``..``.
+            FileNotFoundError: no such file exists.
+        """
+        return self._resolve_rel(rel).read_text(encoding="utf-8")
+
     def read_state(self) -> RunState:
-        """Read and parse :attr:`state_path`."""
-        return RunState.model_validate_json(self.state_path.read_text(encoding="utf-8"))
+        """Read and parse :attr:`state_path`.
+
+        Raises:
+            RunRefused: the file exists but fails to parse - a crash-corrupted state
+                file must never surface as a bare pydantic error deep inside a resume;
+                naming the path here is what :meth:`read_decision` already does for
+                the same failure shape. A MISSING file still raises the plain
+                ``FileNotFoundError`` reading it produces - every caller already knows
+                whether ``state_path`` is supposed to exist.
+        """
+        text = self.state_path.read_text(encoding="utf-8")
+        try:
+            return RunState.model_validate_json(text)
+        except ValueError as exc:
+            raise RunRefused(f"state file {self.state_path} is unreadable: {exc}") from exc
 
     def write_state(self, state: RunState) -> None:
         """Write :attr:`state_path` atomically."""

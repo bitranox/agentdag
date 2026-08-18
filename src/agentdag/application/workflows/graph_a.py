@@ -219,8 +219,8 @@ async def _branch(
     """
     name = _worktree_name(origin)
     worktree = co.run_dir.worktree(name)
-    before = co.snapshot()
     _ensure_worktree(co, origin, worktree)
+    before = co.snapshot()  # AFTER any stale-staging cleanup: see _ensure_worktree's docstring
     work = await co.work(_work_spec(index, name, model), brief=brief, cwd=worktree)
     if work.status is not NodeStatus.DONE:
         row = Tally(repo=origin, status="work-failed", head_sha=co.git.head_sha(worktree), test_rc=None)
@@ -268,6 +268,21 @@ def _ensure_worktree(co: Coordinator, origin: Path, worktree: Path) -> None:
     inside the isolation root but is never visible to a scan, because nothing between its
     creation and the rename awaits, so no sibling branch can take a manifest across it.
 
+    This whole call - the stale-staging removal AND the clone - must run BEFORE the
+    branch's own :meth:`~agentdag.application.kernel.context.Coordinator.snapshot`, not
+    after: a stray ``.partial-<name>`` left by an earlier crash is removed here, and a
+    removal that happened INSIDE the branch's own scan window (between its ``before``
+    and ``after`` manifests) reads as a stray deletion, permanently failing the very
+    branch this cleanup exists to rescue. Calling this first means the branch's own
+    ``before`` snapshot is taken only once ``wt/<name>`` already exists and
+    ``wt/.partial-<name>`` already does not, so this branch's scan never sees either
+    change. The one case this ordering cannot close: under ``parallel > 1``, ANOTHER
+    branch's :meth:`~agentdag.application.kernel.context.Coordinator.snapshot` can still
+    land while this call is between removing a stale staging dir and renaming a fresh
+    one - a sibling's scan window, not this branch's own. ``wt/.partial-*/**`` is listed
+    among :meth:`~agentdag.application.kernel.context.Coordinator.scan`'s always-allowed
+    prefixes precisely so that residual window is never a finding either.
+
     Args:
         co: The coordinator, for the git port.
         origin: The bare scratch clone to copy.
@@ -277,7 +292,7 @@ def _ensure_worktree(co: Coordinator, origin: Path, worktree: Path) -> None:
         return
     staging = worktree.with_name(f".partial-{worktree.name}")
     if staging.exists():
-        co.git.remove_mirror(staging)  # a previous launch died mid-clone; git writes objects read-only
+        co.git.remove_tree(staging)  # a previous launch died mid-clone; git writes objects read-only
     co.git.clone(origin, staging)
     staging.rename(worktree)
 

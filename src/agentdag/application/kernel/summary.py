@@ -1,13 +1,17 @@
-"""The run summary line: design 3.5's drift signals, computed as a pure function.
+"""The run summary line: design 3.5's drift signals (design 3.5).
 
-A run's last journal line is what a later reader compares two runs by, so it is built
-here from values already measured elsewhere (the records, the journal's size, the
-coordinator's own counters) rather than by reading anything itself. Nothing in this
-module touches the filesystem or the clock: :mod:`agentdag.application.kernel.run`
-gathers the inputs and this function shapes them.
+:func:`run_summary_line` is the pure half: it builds a
+:class:`~agentdag.domain.journal.RunSummaryLine` from values already measured
+elsewhere (the records, the journal's size, the coordinator's own counters), and
+touches neither the filesystem nor the clock. :func:`append_run_summary` is the
+measurement half moved here from ``run.py``: it reads the journal and the run
+directory, shapes what it read through the pure function, and appends the result -
+these ARE filesystem and clock reads, because gathering a run's own measurements is
+what a run summary is, not a violation of the pure function's contract.
 
 Contents:
     * :func:`run_summary_line` - build the :class:`~agentdag.domain.journal.RunSummaryLine`.
+    * :func:`append_run_summary` - gather one launch's measurements and append the line.
 """
 
 from __future__ import annotations
@@ -17,14 +21,18 @@ import statistics
 from typing import TYPE_CHECKING
 
 from ...domain.journal import RunSummaryLine
+from ...domain.keys import hash8
+from .ports import stamp
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ...domain.journal import ResultLine
+    from ...domain.journal import ApproveDecisionLine, ResultLine
     from ...domain.models import ResultRecord
+    from .context import Coordinator
+    from .ports import RunDir
 
-__all__ = ["run_summary_line"]
+__all__ = ["append_run_summary", "run_summary_line"]
 
 _CHARS_PER_TOKEN = 4
 """How many characters of a brief are ESTIMATED to make one input token.
@@ -100,6 +108,104 @@ def run_summary_line(
     )
 
 
+def append_run_summary(co: Coordinator, *, replay_seconds: float | None) -> None:
+    """Gather this launch's measurements and append the run's summary line.
+
+    Moved here from ``run.py`` (a measurement concern, not a launch-lifecycle one):
+    everything read here - the journal, the coordinator's counters, a node's own
+    ``brief.md`` - is what makes ``run_summary_line`` a full line rather than a bare
+    shaping function with nowhere to get its inputs from.
+
+    Called once per launch that reaches ``done`` (``run.py``'s ``_drive``), which
+    means a launch that REPLAYS a finished run to ``done`` again appends ANOTHER
+    summary line, not zero: the alternative - writing one only on the launch that
+    first reached ``done`` - would need the coordinator to know it is repeating
+    itself, which is exactly the kind of state a deterministic replay must not carry.
+    Every field here is computed over the run's WHOLE journal as it stands at this
+    launch, not just what this launch itself dispatched, so a later summary line is
+    still an honest total even though it is not the run's only one.
+
+    Args:
+        co: The coordinator whose journal, run directory and counters are read.
+        replay_seconds: How long folding the replay index took on a relaunch, or
+            ``None`` on a run's first start.
+    """
+    journal = co.dispatcher.journal
+    lines = journal.lines()
+    results = [line for line in lines if line.event == "result"]
+    journal.append(
+        run_summary_line(
+            run_id=co.run_id,
+            policy_version=co.policy.version,
+            results=results,
+            journal_bytes=co.run_dir.journal_path.stat().st_size,
+            journal_lines=len(lines),
+            replay_seconds=replay_seconds,
+            human_interactions=_human_interactions(co),
+            tokens_by_row=co.tokens_by_row,
+            at=stamp(co.clock),
+            brief_lengths=_brief_lengths(co.run_dir, results),
+        )
+    )
+
+
+def _human_interactions(co: Coordinator) -> int:
+    """Count decisions a HUMAN made across the run's WHOLE journal, not just this launch.
+
+    Read from the dispatcher's replay index rather than from a per-launch counter: a
+    launch's own ``fold_decisions`` call only journals decisions recorded since the
+    PREVIOUS launch (a decision already folded is skipped), so a resume that finds
+    every decision already folded would report zero however many humans this run
+    actually asked. The index is rebuilt from the full journal at construction and
+    refreshed by every ``fold_decisions`` call, so by the time this reads it, it holds
+    the latest decision for every node id the run has ever asked about.
+
+    Args:
+        co: The coordinator whose dispatcher's replay index is read.
+
+    Returns:
+        How many of those decisions were not the ``"system"`` sentinel token id.
+    """
+    return sum(1 for decision in co.dispatcher.index.decisions.values() if _by_a_human(decision))
+
+
+def _by_a_human(decision: ApproveDecisionLine) -> bool:
+    """Return whether a folded decision was made by a person, not the system default."""
+    return decision.token_id != "system"  # nosec B105  # noqa: S105 - a token_id VALUE, not a secret
+
+
+def _brief_lengths(run_dir: RunDir, results: Sequence[ResultLine]) -> dict[str, int]:
+    """Map each result's journal KEY to the length of the brief that dispatch ran under.
+
+    Joined by key rather than by node id, because a node dispatched twice has one
+    ``brief.md`` per key: attributing either brief to both records would move the
+    overhead figure exactly when a node was re-dispatched, which is the drift the
+    signal exists to watch. A key names its own directory (``nodes/<node_id>/<hash8(key)>/``),
+    so the join is exact.
+
+    Reads through :meth:`~agentdag.application.kernel.ports.RunDir.read_text` rather
+    than composing the path from ``run_dir.root`` itself, so this module never assumes
+    the on-disk layout only the adapter owns. A missing brief contributes nothing
+    rather than raising: the summary must never be the thing that fails a finished run.
+
+    Args:
+        run_dir: The run directory a node's brief is read from.
+        results: Every ``result`` line the journal holds.
+
+    Returns:
+        Journal key -> the length in characters of the brief that dispatch ran under.
+    """
+    lengths: dict[str, int] = {}
+    for line in results:
+        rel = f"nodes/{line.record.node_id}/{hash8(line.key)}/brief.md"
+        try:
+            text = run_dir.read_text(rel)
+        except FileNotFoundError:
+            continue
+        lengths[line.key] = len(text)
+    return lengths
+
+
 def _records_per_node(results: Sequence[ResultLine]) -> float:
     """Return how many records the run wrote per distinct node id.
 
@@ -155,13 +261,27 @@ def _overhead_fraction(results: Sequence[ResultLine], brief_lengths: Mapping[str
 def _overhead_of(record: ResultRecord, brief_length: int) -> float | None:
     """Return one record's overhead fraction, or ``None`` when it cannot be computed.
 
+    Two ways this deliberately departs from a literal reading of design 3.5, both
+    consequences of what a record actually carries rather than choices made here:
+
+    * The denominator is ``tokens.in`` - the WHOLE first turn's input tokens, cache
+      reads included - because that is the only per-record token figure the schema
+      has; there is no separate "prompt only" count to divide by instead.
+    * Only CLAUDE rows ever qualify, by construction rather than by a filter here: a
+      code node (``reduce``, ``gate``, ``scan``, ``stage``, ``apply``, ``approve``)
+      never reports ``first_turn_input_tokens`` in its ``key_facts``, so every one of
+      them returns ``None`` below and the aggregate in :func:`_overhead_fraction`
+      is silently a claude-only figure, not a whole-run one.
+
     Args:
         record: The record to judge.
         brief_length: The length in characters of the brief its node ran under.
 
     Returns:
-        ``max(0, first_turn_input_tokens - brief_length / 4) / tokens.in``, or ``None``
-        when the record carries no first-turn figure or no positive input-token count.
+        ``max(0, first_turn_input_tokens - brief_length / 4) / tokens.in``, clamped
+        to ``1.0`` so a brief-length UNDER-estimate can never report more than "all of
+        it was overhead"; or ``None`` when the record carries no first-turn figure or
+        no positive input-token count.
     """
     first_turn = record.key_facts.get("first_turn_input_tokens")
     tokens = record.tokens
@@ -171,7 +291,7 @@ def _overhead_of(record: ResultRecord, brief_length: int) -> float | None:
         return None
     if tokens is None or tokens.in_ is None or tokens.in_ <= 0:
         return None
-    return max(0.0, first_turn - brief_length / _CHARS_PER_TOKEN) / tokens.in_
+    return min(1.0, max(0.0, first_turn - brief_length / _CHARS_PER_TOKEN) / tokens.in_)
 
 
 def _nearest_rank(sorted_values: Sequence[float], quantile: float) -> float:

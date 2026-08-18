@@ -107,6 +107,16 @@ class GitCli:
         """
         shutil.rmtree(dest, onexc=clear_readonly_and_retry)
 
+    def remove_tree(self, path: Path) -> None:
+        """Delete a working tree at ``path``, read-only object files included.
+
+        A plain :meth:`clone`'s ``.git/objects/**`` is written read-only exactly like a
+        mirror's, so a half-finished staging clone (``wt/.partial-<name>``) needs the
+        same read-only-tolerant removal as :meth:`remove_mirror`, just under a name
+        that does not claim the thing being removed is a mirror.
+        """
+        shutil.rmtree(path, onexc=clear_readonly_and_retry)
+
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest`` with a committer identity.
 

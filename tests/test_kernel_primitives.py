@@ -25,6 +25,7 @@ from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.domain.errors import SpecRejected, Suspended
 from agentdag.domain.graph_a import PushIntent
+from agentdag.domain.keys import content_hash
 from agentdag.domain.models import (
     ApproveOption,
     ApprovePayload,
@@ -284,11 +285,11 @@ def test_approve_suspends_without_a_decision_and_returns_it_when_one_is_journale
     result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
 
     assert result.decision == "approve"
-    assert co2.interactions == 1
+    assert co2.dispatcher.index.decisions["a"].by == "me"
 
-    co2.fold_decisions()  # a second call, no new decision file: interactions must not double-count
+    co2.fold_decisions()  # a second call, no new decision file: the folded decision must not duplicate
 
-    assert co2.interactions == 1
+    assert len(co2.dispatcher.index.decisions) == 1
 
 
 @pytest.mark.os_agnostic
@@ -297,6 +298,39 @@ def test_approve_refuses_a_default_with_an_external_effect(tmp_path: Path) -> No
 
     with pytest.raises(SpecRejected):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(default="approve")))
+
+
+@pytest.mark.os_agnostic
+def test_approve_accepts_a_decision_whose_payload_hash_matches_the_payload_on_offer(tmp_path: Path) -> None:
+    co, rd = coordinator(tmp_path)
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
+    matching_hash = content_hash(payload().model_dump_json(indent=1))
+    rd.write_decision(Decision(node_id="a", decision="approve", by="me", token_id="local", payload_hash=matching_hash))
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()
+
+    result = asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
+
+    assert result.decision == "approve"
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_a_decision_made_for_a_different_payload(tmp_path: Path) -> None:
+    # M3's retry turning a failed repo into a passed one, or a worktree edited by hand between
+    # the suspend and the resume, changes the push list; a stale approval must never carry over.
+    co, rd = coordinator(tmp_path)
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
+    stale_hash = "sha256:" + "0" * 64
+    rd.write_decision(Decision(node_id="a", decision="approve", by="me", token_id="local", payload_hash=stale_hash))
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()
+
+    with pytest.raises(SpecRejected, match="different payload"):
+        asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload()))
+
+    assert not list(rd.root.glob("nodes/a/*/record.json"))  # refused before anything was dispatched
 
 
 @pytest.mark.os_agnostic
@@ -311,5 +345,4 @@ def test_fold_decisions_ignores_a_reserved_cancel_file(tmp_path: Path) -> None:
     co.fold_decisions()  # must not raise, and must not journal or count either file
 
     assert len(co.dispatcher.journal.lines()) == lines_before
-    assert co.interactions == 0
     assert "a" not in co.dispatcher.index.decisions

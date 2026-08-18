@@ -169,6 +169,18 @@ class RunDir(Protocol):
         """Write ``text`` to ``rel`` (relative to ``root``) atomically, owner-only."""
         ...
 
+    def read_text(self, rel: str) -> str:
+        """Read ``rel`` (relative to ``root``) as UTF-8 text; creates nothing.
+
+        A read-only counterpart to :meth:`write_atomic`, for a caller (a run-summary
+        measurement, never a dispatch body) that must read a node's own artefact
+        without composing the path from ``root`` itself, which only the port owns.
+
+        Raises:
+            FileNotFoundError: no such file exists.
+        """
+        ...
+
     def read_state(self) -> RunState:
         """Read and parse ``state_path``."""
         ...

@@ -131,6 +131,31 @@ def test_read_decision_of_an_empty_stub_file_raises_run_refused_naming_the_path(
         rd.read_decision("a_push_list")
 
 
+def test_read_state_of_a_corrupt_file_raises_run_refused_naming_the_path(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    rd.write_state(state())
+    rd.state_path.write_text("not json")
+    with pytest.raises(RunRefused, match=re.escape(str(rd.state_path))):
+        rd.read_state()
+
+
+def test_read_state_of_a_missing_file_still_raises_file_not_found(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    with pytest.raises(FileNotFoundError):
+        rd.read_state()
+
+
+def test_read_text_reads_a_written_file_and_refuses_a_traversal_path(tmp_path: Path) -> None:
+    rd = FsRunDir.create(tmp_path, "r1")
+    rd.write_atomic("nodes/w/abcd1234/brief.md", "the brief")
+
+    assert rd.read_text("nodes/w/abcd1234/brief.md") == "the brief"
+    with pytest.raises(FileNotFoundError):
+        rd.read_text("nodes/w/abcd1234/missing.md")
+    with pytest.raises(ValueError):
+        rd.read_text("../escape.md")
+
+
 def test_write_decision_leaves_no_tmp_file_behind_in_decisions_dir(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
     d = Decision(node_id="a_push_list", decision="hold", by="me", token_id="local")

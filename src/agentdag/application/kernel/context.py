@@ -8,7 +8,7 @@ exactly one place.
 
 Contents:
     * :class:`Coordinator` - the primitives a workflow program calls, and the run-scoped
-      state (interactions, tokens per model row) a run summary is written from.
+      state (tokens per model row) a run summary is written from.
 """
 
 from __future__ import annotations
@@ -83,7 +83,6 @@ class Coordinator:
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: Resolves a spec to a model row, and carries the executor limits.
         parallel: How many map branches may run at once.
-        interactions: How many HUMAN decisions this run folded in - a run-summary field.
         tokens_by_row: Tokens charged per model row so far, summed from every record.
         declared_write_sets: Every dispatched spec's node id -> its ``write_set``, as
             given at dispatch time (design C8) - what :meth:`scan` judges a write
@@ -116,7 +115,7 @@ class Coordinator:
         policy: Policy,
         parallel: int,
     ) -> None:
-        """Bind one run's wiring; ``interactions`` and ``tokens_by_row`` start empty."""
+        """Bind one run's wiring; ``tokens_by_row`` starts empty."""
         self.run_id = run_id
         self.workflow = workflow
         self.args = args
@@ -129,7 +128,6 @@ class Coordinator:
         self.scanner = scanner
         self.policy = policy
         self.parallel = parallel
-        self.interactions = 0
         self.tokens_by_row: dict[str, int] = {}
         self.declared_write_sets: dict[str, tuple[str, ...]] = {}
 
@@ -285,6 +283,14 @@ class Coordinator:
         outside the run root entirely, so it is never even in the manifest) is caught
         either way, concurrency included.
 
+        ``wt/.partial-*/**`` is allowed for the same reason as ``nodes/**``: it is the
+        coordinator's OWN bookkeeping (graph A's staging clone, cleaned up and renamed
+        by ``_ensure_worktree`` before its branch's own snapshot), not a node's write.
+        Ordering closes the common case - a branch never sees its own staging dir
+        appear or disappear - but under ``parallel > 1`` a SIBLING's snapshot can still
+        land while this branch's staging dir briefly exists or is being removed; this
+        exclusion is what keeps that residual window from reading as a stray write.
+
         Args:
             spec: The scan node's spec.
             watched: What this scan is watching, for the brief and the log; free text.
@@ -309,6 +315,7 @@ class Coordinator:
             "intents/**",
             "artefacts/**",
             "done/**",
+            "wt/.partial-*/**",  # a staging clone mid-rename: coordinator bookkeeping, not a node write
         ]
         input_obj = {"watched": watched, "write_set": list(write_set)}
 
@@ -485,7 +492,9 @@ class Coordinator:
         Raises:
             SpecRejected: ``payload.default`` does not name an option whose
                 ``effect == "none"`` - a default the coordinator could apply unattended
-                must never itself leave the process (design 2.4).
+                must never itself leave the process (design 2.4); or the folded
+                decision's ``payload_hash`` names a DIFFERENT payload than the one
+                being presented now (design 3.4's binding - see :meth:`_refuse_stale_decision`).
             Suspended: no decision is recorded yet for ``spec.node_id``.
         """
         _validate_default(payload)
@@ -497,6 +506,7 @@ class Coordinator:
             rel_suspend_payload = f"{suspend_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
             self.run_dir.write_atomic(rel_suspend_payload, payload_text)
             raise Suspended(spec.node_id)
+        self._refuse_stale_decision(spec.node_id, payload_text)
 
         async def body(node_dir: Path) -> NodeOutcome:
             rel_payload = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/payload.json"
@@ -517,6 +527,35 @@ class Coordinator:
         return Decision(
             node_id=line.node_id, decision=line.decision, reason=line.reason, by=line.by, token_id=line.token_id
         )
+
+    def _refuse_stale_decision(self, node_id: str, payload_text: str) -> None:
+        """Refuse a folded decision that was made for a DIFFERENT payload than this one (design 3.4).
+
+        The journal's ``approve_decision`` line carries no payload hash - its schema is
+        fixed (``additionalProperties: false``) - so the binding lives only on the
+        decision FILE, read back here rather than off :attr:`~Dispatcher.index`. A
+        decision with no hash (one written before this field existed, or by an
+        unattended default with no human-reviewed payload to bind to) is accepted as
+        before: only a decision that NAMES a payload and disagrees with the one on
+        offer now is refused, so a changed push list (a retry turning a failed repo
+        into a passed one, or a worktree edited by hand between the suspend and the
+        resume) can never be applied under an approval the human never actually saw.
+
+        Args:
+            node_id: The approve node whose folded decision is being checked.
+            payload_text: The CURRENT payload's canonical JSON text, as :meth:`approve`
+                is about to present it.
+
+        Raises:
+            SpecRejected: the decision file's ``payload_hash`` does not match
+                ``payload_text``'s own content hash.
+        """
+        decision_file = self.run_dir.read_decision(node_id)
+        if decision_file is None or decision_file.payload_hash is None:
+            return
+        current_hash = content_hash(payload_text)
+        if decision_file.payload_hash != current_hash:
+            raise SpecRejected(f"decision for {node_id!r} was made for a different payload; approve again")
 
     async def apply(
         self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: Callable[[HasDedupKey], str]
@@ -565,7 +604,13 @@ class Coordinator:
         Called by ``run.py`` first thing on a relaunch (before dispatching anything), so
         every ``approve`` call in this run sees every decision recorded while the
         coordinator was not running. A decision already in the replay index is skipped -
-        it was already folded by an earlier call, in this run or a previous one.
+        it was already folded by an earlier call, in this run or a previous one. How
+        many of the run's decisions were HUMAN ones (a run-summary field) is not
+        tracked here: :attr:`dispatcher`'s index already holds the latest decision per
+        node id after this call, which is a per-RUN view (folded from the whole
+        journal), so ``run.py`` counts it from there rather than from a per-launch
+        counter that would read zero on any relaunch that finds every decision already
+        folded.
 
         ``decisions/`` also holds two RESERVED files that are not decisions, both
         written by M3: ``<node_id>.cancel.json`` (a per-node cancel) and
@@ -592,8 +637,6 @@ class Coordinator:
                     at=stamp(self.clock),
                 )
             )
-            if decision.token_id != "system":  # nosec B105  # noqa: S105 - a token_id VALUE, not a secret
-                self.interactions += 1
         self.dispatcher.reload_decisions()
 
     async def _dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:

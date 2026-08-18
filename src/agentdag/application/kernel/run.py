@@ -16,6 +16,14 @@ Three exits, and the fourth that is not an exit at all:
   the crash window, and it is what the next launch re-dispatches. The lock is still
   released, because releasing it is the only thing that has to happen either way.
 
+At ``parallel > 1`` the crash window is not necessarily ONE key: more than one map
+branch can be mid-flight at once, so a crash can leave several ``started``-without-
+``result`` keys at the same time - e.g. one branch's work node and a sibling's gate,
+each on its own worktree. The next launch re-dispatches every one of them, in whatever
+order the map schedules them. That is what concurrent branches sharing one crash looks
+like, not a defect: each key still re-dispatches exactly the node whose result never
+landed, however many there are.
+
 Contents:
     * :class:`RunOutcome` - what one launch reports back to its caller.
     * :func:`run_coordinator` - run one launch to one of the three exits.
@@ -30,18 +38,16 @@ from pydantic import BaseModel
 
 from ...domain.errors import RunRefused, Suspended
 from ...domain.journal import ResumeLine, RunStartedLine
-from ...domain.keys import hash8
 from ...domain.models import RunState, RunStatus
 from .context import Coordinator
 from .dispatch import Dispatcher
 from .ports import stamp
-from .summary import run_summary_line
+from .summary import append_run_summary
 from .workflow_check import assert_deterministic
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
-    from ...domain.journal import ResultLine
     from ...domain.models import LockHolder
     from ..graph_a_ports import GatePort, GitPort
     from ..workflows import WorkflowDef
@@ -186,7 +192,7 @@ async def _drive(
     except Exception:
         _write_state(co, status=RunStatus.FAILED, cursor=None, by=by)
         raise
-    _summarise(co, replay_seconds=replay_seconds)
+    append_run_summary(co, replay_seconds=replay_seconds)
     _write_state(co, status=RunStatus.DONE, cursor=None, by=by)
     return RunOutcome(RunStatus.DONE, None, list(co.dispatcher.dispatched_keys))
 
@@ -306,52 +312,3 @@ def _args_of(co: Coordinator) -> dict[str, Any]:
     """Render the coordinator's arguments as the JSON-ready mapping the state file holds."""
     args = co.args
     return args.model_dump(mode="json") if isinstance(args, BaseModel) else dict(args)
-
-
-def _summarise(co: Coordinator, *, replay_seconds: float | None) -> None:
-    """Append the run's summary line, measured over the journal as it stands BEFORE it.
-
-    The line's own size cannot be counted in the figures it reports, so
-    ``journal_bytes`` and ``journal_lines`` describe the journal this summary closes,
-    not the file that ends up on disk.
-    """
-    journal = co.dispatcher.journal
-    lines = journal.lines()
-    results = [line for line in lines if line.event == "result"]
-    journal.append(
-        run_summary_line(
-            run_id=co.run_id,
-            policy_version=co.policy.version,
-            results=results,
-            journal_bytes=co.run_dir.journal_path.stat().st_size,
-            journal_lines=len(lines),
-            replay_seconds=replay_seconds,
-            human_interactions=co.interactions,
-            tokens_by_row=co.tokens_by_row,
-            at=stamp(co.clock),
-            brief_lengths=_brief_lengths(co.run_dir, results),
-        )
-    )
-
-
-def _brief_lengths(run_dir: RunDir, results: Sequence[ResultLine]) -> dict[str, int]:
-    """Map each result's journal KEY to the length of the brief that dispatch ran under.
-
-    Joined by key rather than by node id, because a node dispatched twice has one
-    ``brief.md`` per key: attributing either brief to both records would move the
-    overhead figure exactly when a node was re-dispatched, which is the drift the signal
-    exists to watch. A key names its own directory (``nodes/<node_id>/<hash8(key)>/``),
-    so the join is exact.
-
-    This composes the run directory's layout from ``run_dir.root`` instead of asking the
-    port, because :class:`~agentdag.application.kernel.ports.RunDir` exposes no read-only
-    accessor for a node directory (``node_dir`` CREATES one, which a measurement must not
-    do). A missing brief contributes nothing rather than raising: the summary must never
-    be the thing that fails a finished run.
-    """
-    lengths: dict[str, int] = {}
-    for line in results:
-        brief = run_dir.root / "nodes" / line.record.node_id / hash8(line.key) / "brief.md"
-        if brief.is_file():
-            lengths[line.key] = len(brief.read_text(encoding="utf-8"))
-    return lengths

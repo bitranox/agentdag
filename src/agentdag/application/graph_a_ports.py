@@ -38,6 +38,15 @@ class GitPort(Protocol):
         """Delete a mirror at ``dest``, read-only object files included."""
         ...
 
+    def remove_tree(self, path: Path) -> None:
+        """Delete a working tree at ``path``, read-only object files included.
+
+        Distinct from :meth:`remove_mirror` only in what it is called on: a plain
+        clone's ``.git/objects/**`` is written read-only exactly like a mirror's, so
+        the same read-only-tolerant removal applies to a staging worktree.
+        """
+        ...
+
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest``."""
         ...
