@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...application.kernel.ports import ScopeHandle
+from ...application.kernel.ports import LaunchResult, ScopeHandle
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -43,6 +43,12 @@ _CGROUP_POLL_INTERVAL_S = 0.2
 _CGROUP_POLL_TIMEOUT_S = 10.0
 """How long :meth:`SystemdScope.kill` polls the cgroup for empty/gone after ``systemctl stop``
 (design C8's cancel path budget; matched here since M3's real cancel command will reuse this)."""
+
+_LOG_NAME = "launch.log"
+_LOG_TAIL_BYTES = 8192
+"""How much of ``launch.log`` :meth:`SystemdScope.confirm` reads back as a failure's stderr."""
+
+_CONFIRM_POLL_INTERVAL_S = 0.1
 
 
 def _resolved(tool: str) -> str:
@@ -58,6 +64,10 @@ def _resolved(tool: str) -> str:
 
 class SystemdScope:
     """Scope port over ``systemd-run --user --scope``: a real cgroup per run, Linux only."""
+
+    def __init__(self) -> None:
+        """Start with no tracked processes; :meth:`confirm` polls the SAME instance's own."""
+        self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def start(self, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path) -> ScopeHandle:
         """Start ``argv`` in a new transient user scope named ``unit`` (systemd appends ``.scope``).
@@ -75,19 +85,52 @@ class SystemdScope:
             cwd: The child's working directory.
 
         Returns:
-            A handle naming the full ``<unit>.scope`` unit and the ``systemd-run``
+            A handle naming the full ``<unit>.scope`` unit, the ``systemd-run``
             process's own pid (immediately available; the scoped command's own pid is
             not, since ``systemd-run`` has not necessarily exec'd it yet when this
             returns - the handle is looked up by unit name, not by this pid, in
-            :meth:`is_alive`/:meth:`kill`).
+            :meth:`is_alive`/:meth:`kill`), and where its stdout/stderr were
+            redirected (``cwd / "launch.log"``, append, owner-only). Since
+            ``systemd-run --scope`` stays attached and relays the scoped command's
+            exit code (see the module docstring), redirecting its OWN stdout/stderr
+            captures both its launch diagnostics (when the scope itself fails to
+            start) and the scoped command's own output, in the SAME log - which is
+            exactly what :meth:`confirm` reads back on a failed launch.
         """
         full_unit = f"{unit}.scope"
-        proc = subprocess.Popen(  # nosec B603  # noqa: S603 - a resolved executable plus the caller's own argv, never a shell string
-            [_resolved("systemd-run"), "--user", "--scope", f"--unit={full_unit}", "--collect", *argv],
-            env=dict(env),
-            cwd=cwd,
-        )
-        return ScopeHandle(unit=full_unit, pid=proc.pid)
+        log_path = cwd / _LOG_NAME
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(log_fd, "ab") as log_fh:
+            proc = subprocess.Popen(  # nosec B603  # noqa: S603 - a resolved executable plus the caller's own argv, never a shell string
+                [_resolved("systemd-run"), "--user", "--scope", f"--unit={full_unit}", "--collect", *argv],
+                env=dict(env),
+                cwd=cwd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+        self._processes[full_unit] = proc
+        return ScopeHandle(unit=full_unit, pid=proc.pid, log_path=log_path)
+
+    def confirm(self, handle: ScopeHandle, *, timeout_s: float) -> LaunchResult:
+        """Poll the ``systemd-run`` process :meth:`start` launched, up to ``timeout_s``.
+
+        ``systemd-run --scope`` (without ``--no-block``) stays attached for as long as
+        the scoped command runs (see the module docstring), so "still running after
+        ``timeout_s``" proves the scope started - as does a clean exit within the
+        window, for a coordinator whose whole run finished in under ``timeout_s``. An
+        early NON-zero exit means the scope never started (a bad unit name, no user
+        manager) and :data:`_LOG_NAME` holds ``systemd-run``'s own diagnostic.
+        """
+        proc = self._processes.get(handle.unit)
+        if proc is None:
+            return LaunchResult(alive=False, stderr="no process was started for this handle")
+        deadline = time.monotonic() + timeout_s
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(_CONFIRM_POLL_INTERVAL_S)
+        returncode = proc.poll()
+        if returncode is None or returncode == 0:
+            return LaunchResult(alive=True, stderr="")
+        return LaunchResult(alive=False, stderr=_read_log_tail(handle.log_path))
 
     def is_alive(self, handle: ScopeHandle) -> bool:
         """Return whether ``systemctl --user is-active`` reports the unit ``active``."""
@@ -147,3 +190,10 @@ def _cgroup_empty(cgroup: Path) -> bool:
     if not procs.is_file():
         return True
     return procs.read_text(encoding="utf-8").strip() == ""
+
+
+def _read_log_tail(path: Path) -> str:
+    """Return ``path``'s last :data:`_LOG_TAIL_BYTES`, or ``""`` if it has nothing yet."""
+    if not path.is_file():
+        return ""
+    return path.read_bytes()[-_LOG_TAIL_BYTES:].decode("utf-8", errors="replace")

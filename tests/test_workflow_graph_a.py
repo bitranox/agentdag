@@ -69,12 +69,15 @@ def records_of(lines: list[JournalLine], prefix: str) -> list[ResultRecord]:
     return [line.record for line in lines if isinstance(line, ResultLine) and line.record.node_id.startswith(prefix)]
 
 
-def launch_over(tmp_path: Path, run_dir: FsRunDir, args: GraphAArgs, executor: CommittingExecutor) -> RunOutcome:
+def launch_over(
+    tmp_path: Path, run_dir: FsRunDir, args: GraphAArgs, executor: CommittingExecutor, *, parallel: int = 2
+) -> RunOutcome:
     """Launch one graph A run over a run directory the TEST built, with the real adapters.
 
     ``kernel_fakes.launch`` builds the run directory and the fleet itself, which a test that
     has to seed the run directory first (a stale staging dir) or hand-write the repos file
-    (a refused fleet member) cannot use.
+    (a refused fleet member) cannot use. ``parallel`` is the COORDINATOR's own knob, used AS
+    GIVEN - ``GraphAArgs`` carries no such field.
     """
     return asyncio.run(
         run_coordinator(
@@ -90,7 +93,7 @@ def launch_over(tmp_path: Path, run_dir: FsRunDir, args: GraphAArgs, executor: C
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
-            parallel=args.parallel,
+            parallel=parallel,
             by="tester",
             token_id="local",
             resume_reason=None,
@@ -196,7 +199,7 @@ def test_a_crash_between_started_and_result_resumes_by_redispatching_exactly_tha
     assert run_dir.read_state().status == RunStatus.RUNNING
 
     second = CommittingExecutor()
-    outcome, _ = launch(tmp_path, second, resume="crash")
+    outcome, _ = launch(tmp_path, second, resume="crash", parallel=1)  # same value as the fresh launch above
 
     assert second.calls == ["w_migrate@1"]  # exactly the crashed node, once
     assert outcome.status == RunStatus.SUSPENDED
@@ -316,7 +319,7 @@ def test_a_crash_after_the_body_committed_keeps_the_commit_and_the_branch_still_
     assert len(build_replay_index(journal_of(run_dir)).crash_window) == 1
 
     second = CommittingExecutor()
-    outcome, _ = launch(tmp_path, second, resume="crash")
+    outcome, _ = launch(tmp_path, second, resume="crash", parallel=1)  # same value as the fresh launch above
 
     assert second.calls == ["w_migrate@1"]
     assert outcome.status == RunStatus.SUSPENDED
@@ -331,7 +334,7 @@ def test_a_stale_partial_clone_staging_dir_is_cleaned_before_the_branchs_own_sna
     # must clear it BEFORE co.snapshot() runs for that branch, or the deletion lands inside the
     # branch's own scan window and g_scan reports it as a stray removal - permanently failing the
     # very branch the cleanup exists to rescue.
-    args, origins = fleet(tmp_path, ["a", "b"], parallel=1)
+    args, origins = fleet(tmp_path, ["a", "b"])
     base = tmp_path / "runs"
     base.mkdir(parents=True, exist_ok=True)
     run_dir = FsRunDir.create(base, "r1")
@@ -339,7 +342,7 @@ def test_a_stale_partial_clone_staging_dir_is_cleaned_before_the_branchs_own_sna
     stale.mkdir(parents=True)
     (stale / "leftover").write_text("dead clone", encoding="utf-8")
 
-    outcome = launch_over(tmp_path, run_dir, args, CommittingExecutor())
+    outcome = launch_over(tmp_path, run_dir, args, CommittingExecutor(), parallel=1)
 
     assert not stale.exists()
     assert outcome.status == RunStatus.SUSPENDED  # a normal suspend at the approve, like any clean run
@@ -359,7 +362,7 @@ def test_a_fleet_member_claiming_the_partial_staging_namespace_is_refused(tmp_pa
     # `wt/.partial-*` is the coordinator's own: the scan excuses every write under it and the next
     # launch's stale-staging cleanup deletes it. A fleet member landing there would be unwatched
     # AND destroyed, so the name is refused up front, before anything is dispatched.
-    args, _ = fleet(tmp_path, ["a"], parallel=1)
+    args, _ = fleet(tmp_path, ["a"])
     origin = args.scratch / "origin" / ".partial-x.git"
     GitCli().mirror(tmp_path / "a", origin)
     args.repos_file.write_text(f"{origin}\n", encoding="utf-8")
@@ -368,7 +371,7 @@ def test_a_fleet_member_claiming_the_partial_staging_namespace_is_refused(tmp_pa
     run_dir = FsRunDir.create(base, "r1")
 
     with pytest.raises(SpecRejected, match=re.escape(".partial-")):
-        launch_over(tmp_path, run_dir, args, CommittingExecutor())
+        launch_over(tmp_path, run_dir, args, CommittingExecutor(), parallel=1)
 
     # Refused in the program body, before any dispatch: the fleet guard runs ahead of g_discover.
     assert started_keys(journal_of(run_dir)) == []
@@ -377,7 +380,7 @@ def test_a_fleet_member_claiming_the_partial_staging_namespace_is_refused(tmp_pa
 
 @pytest.mark.os_agnostic
 def test_git_cli_remove_tree_deletes_a_working_clone_read_only_objects_included(tmp_path: Path) -> None:
-    _, origins = fleet(tmp_path, ["a"], parallel=1)
+    _, origins = fleet(tmp_path, ["a"])
     dest = tmp_path / "staging-clone"
     GitCli().clone(origins[0], dest)
     assert dest.is_dir()
@@ -392,7 +395,7 @@ def test_git_cli_remove_tree_deletes_a_working_clone_read_only_objects_included(
 def test_two_fleet_members_that_would_share_one_worktree_are_refused_before_any_dispatch(tmp_path: Path) -> None:
     # "a.git" and "a" have different basenames but the same worktree, and the second branch would
     # skip its clone, run in the first's tree and tally the first's commits as its own.
-    args, origins = fleet(tmp_path, ["a"], parallel=1)
+    args, origins = fleet(tmp_path, ["a"])
     twin = origins[0].with_suffix("")
     twin.mkdir()
     args.repos_file.write_text(f"{origins[0]}\n{twin}\n", encoding="utf-8")

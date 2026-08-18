@@ -187,14 +187,18 @@ class StrayExecutor(CommittingExecutor):
         return await super().run(request)
 
 
-def fleet(tmp_path: Path, names: list[str], *, parallel: int) -> tuple[GraphAArgs, list[Path]]:
+def fleet(tmp_path: Path, names: list[str]) -> tuple[GraphAArgs, list[Path]]:
     """Build ``names`` as real repositories, mirror them into a scratch tree, write the args.
+
+    Takes no ``parallel``: how many map branches may be in flight is the
+    COORDINATOR's own scheduling knob (``run_coordinator(parallel=...)``), not part of
+    ``GraphAArgs`` - a caller that cares passes it straight to :func:`launch` (or its
+    own ``run_coordinator`` call), never through the fleet's args.
 
     Args:
         tmp_path: The test's temporary directory; holds the real repositories, the
             scratch tree, the repos list and the brief.
         names: One fleet member name per repository.
-        parallel: How many map branches the run may have in flight.
 
     Returns:
         The run's arguments, and the bare scratch mirrors in ``names`` order.
@@ -209,12 +213,7 @@ def fleet(tmp_path: Path, names: list[str], *, parallel: int) -> tuple[GraphAArg
         origins.append(origin)
     (tmp_path / "REPOS.txt").write_text("".join(f"{origin}\n" for origin in origins), encoding="utf-8")
     (tmp_path / "BRIEF.md").write_text("add a line", encoding="utf-8")
-    args = GraphAArgs(
-        repos_file=tmp_path / "REPOS.txt",
-        brief_file=tmp_path / "BRIEF.md",
-        scratch=scratch,
-        parallel=parallel,
-    )
+    args = GraphAArgs(repos_file=tmp_path / "REPOS.txt", brief_file=tmp_path / "BRIEF.md", scratch=scratch)
     return args, origins
 
 
@@ -278,8 +277,13 @@ def launch(
         run_id: The run's id, and its directory name under ``runs/``.
         resume: The resume reason, or ``None`` to start a fresh run - a fresh run
             builds the fleet, a resume reads its arguments back from the run state.
-        parallel: How many map branches a FRESH run may have in flight; a resume
-            takes the value its state already carries.
+        parallel: How many map branches this launch may have in flight - the
+            COORDINATOR's own knob (``run_coordinator(parallel=...)``), used AS GIVEN
+            for both a fresh run and a resume alike, never read off ``GraphAArgs`` (it
+            carries no such field). A caller whose test depends on the SAME value
+            across a crash-and-resume pair (parallel=1, so a crash window is exactly
+            one key - see the two crash tests below) must pass it explicitly on BOTH
+            calls; nothing persists it in between.
         names: The fleet a FRESH run migrates; defaults to two members. An empty list
             is a fleet of none, which is what makes ``g_discover`` halt the run.
 
@@ -292,7 +296,7 @@ def launch(
     args = (
         GraphAArgs.model_validate(run_dir.read_state().args)
         if resume
-        else fleet(tmp_path, ["a", "b"] if names is None else names, parallel=parallel)[0]
+        else fleet(tmp_path, ["a", "b"] if names is None else names)[0]
     )
     outcome = asyncio.run(
         run_coordinator(
@@ -308,7 +312,7 @@ def launch(
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
-            parallel=args.parallel,
+            parallel=parallel,
             by="tester",
             token_id="local",
             resume_reason=resume,

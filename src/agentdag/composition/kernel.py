@@ -7,6 +7,8 @@ from its protocol, this module stops type-checking - the same reasoning
 
 Contents:
     * :func:`wire_kernel` - build the production wiring for one CLI invocation.
+    * :func:`manager_state_is_live` - the pure scope-selection decision, public so
+      ``tests/test_kernel_scope.py`` can pin its table directly.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ if TYPE_CHECKING:
     from ..adapters.kernel.executor_claude import CredentialSource
     from ..application.kernel.ports import Scope
 
-__all__ = ["wire_kernel"]
+__all__ = ["manager_state_is_live", "wire_kernel"]
 
 _GATE_LOCK = Path(tempfile.gettempdir()) / "agentdag-bmk-tool-env.lock"
 """Host-wide lock serialising the gate: the same shared bmk tool environment
@@ -44,14 +46,16 @@ _GATE_LOCK = Path(tempfile.gettempdir()) / "agentdag-bmk-tool-env.lock"
 resource, so the kernel's own gate nodes wait behind the SAME lock file rather than a
 second one that could race it."""
 
-_SYSTEM_RUNNING_STATES = frozenset({0, 1})
-"""``systemctl --user is-system-running`` exit codes that mean the manager itself answers:
-0 (``running``) or 1 (``degraded`` - one failed unit, not a dead manager)."""
+_LIVE_MANAGER_STATES = frozenset({"running", "degraded"})
+"""``systemctl --user is-system-running``'s own STDOUT values that mean a live manager:
+``running`` (exit 0) or ``degraded`` (exit 1 - one failed unit, not a dead manager). The
+exit code alone is not the signal: an EMPTY stdout can occur at either code (no user
+session at all), and that is what actually means no scope can be created here - see
+:func:`manager_state_is_live`."""
 
 
 def wire_kernel(
     *,
-    runs: Path,
     policy_path: Path,
     credential: CredentialSource,
     parallel: int,
@@ -61,8 +65,6 @@ def wire_kernel(
     """Build the production kernel wiring for one CLI invocation of ``agentdag run``.
 
     Args:
-        runs: The directory holding every run; carried through unchanged as
-            :attr:`~agentdag.application.kernel.ports.KernelWiring.runs_dir`.
         policy_path: The tier policy YAML to load.
         credential: Where the Claude executor's per-node login comes from - resolved by
             the CLI (:class:`~agentdag.adapters.kernel.executor_claude.OAuthTokenFile` or
@@ -86,7 +88,6 @@ def wire_kernel(
         scanner=IsolationScanner(),
         policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),
         scope=_choose_scope(),
-        runs_dir=runs,
         parallel=parallel,
     )
 
@@ -108,9 +109,7 @@ def _choose_scope() -> Scope:
 def _user_manager_is_up() -> bool:
     """Return whether ``systemctl --user is-system-running`` reports the manager alive.
 
-    Its exit code is 0 for ``running`` and 1 for ``degraded`` (one failed unit, not a dead
-    manager); anything else - not running at all, or the command missing entirely - means
-    no user scope can be created here.
+    The command missing entirely means no: there is nothing to run the probe with.
     """
     systemctl = shutil.which("systemctl")
     if systemctl is None:
@@ -122,4 +121,30 @@ def _user_manager_is_up() -> bool:
         errors="replace",
         check=False,
     )
-    return result.returncode in _SYSTEM_RUNNING_STATES
+    return manager_state_is_live(result.stdout)
+
+
+def manager_state_is_live(stdout: str) -> bool:
+    """Decide from ``systemctl --user is-system-running``'s own STDOUT whether a scope can start.
+
+    Keyed on stdout, not the exit code: the command exits 0 for ``running`` and 1 for
+    ``degraded`` (one failed unit, not a dead manager) - both real, live answers - but an
+    EMPTY stdout (no user session at all) can occur at EITHER exit code, and that is what
+    actually means no scope can be created here. A pure function so the decision table is
+    directly testable without spawning ``systemctl`` (see ``tests/test_kernel_scope.py``).
+
+    Args:
+        stdout: ``is-system-running``'s own stdout, exactly as captured (not yet stripped).
+
+    Returns:
+        Whether ``stdout`` names a live manager state.
+
+    Example:
+        >>> manager_state_is_live("running\\n")
+        True
+        >>> manager_state_is_live("degraded\\n")
+        True
+        >>> manager_state_is_live("")
+        False
+    """
+    return stdout.strip() in _LIVE_MANAGER_STATES

@@ -21,6 +21,8 @@ Contents:
     * :class:`IsolationScanner` - takes a content manifest of the run's isolation root.
     * :class:`Scope` - starts, probes and kills the OS-level unit a node runs under.
     * :class:`ScopeHandle` - identifies a unit a :class:`Scope` started.
+    * :class:`LaunchResult` - whether a background launch proved itself within
+      :meth:`Scope.confirm`'s timeout, and any stderr it captured.
     * :class:`KernelWiring` - everything one CLI invocation needs to run or resume a
       coordinator, built once by the composition root's ``wire_kernel`` (Task 17).
 """
@@ -48,6 +50,7 @@ __all__ = [
     "IsolationScanner",
     "Journal",
     "KernelWiring",
+    "LaunchResult",
     "LockToken",
     "Policy",
     "ResolvedRow",
@@ -350,7 +353,30 @@ class Scope(Protocol):
     """Starts, probes and kills the OS-level unit a node's executor runs under."""
 
     def start(self, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path) -> ScopeHandle:
-        """Start ``argv`` under a new scope named ``unit`` and return its handle."""
+        """Start ``argv`` under a new scope named ``unit`` and return its handle.
+
+        The launcher's own stdout/stderr are redirected to a ``launch.log`` file
+        under ``cwd`` (append, owner-only), named on the returned handle as
+        :attr:`ScopeHandle.log_path` - a coordinator traceback in a background
+        launch would otherwise vanish with no terminal to print it to.
+        """
+        ...
+
+    def confirm(self, handle: ScopeHandle, *, timeout_s: float) -> LaunchResult:
+        """Wait up to ``timeout_s`` for the launch :meth:`start` began to prove itself.
+
+        A caller MUST call this straight after :meth:`start`, before reporting the
+        launch a success: ``start`` itself only Popens the launcher and returns, so
+        without this a launcher that failed immediately (a bad unit name, a missing
+        ``systemd-run``) would be reported ``started`` and exit 0 regardless.
+
+        Returns:
+            A result that is ``alive`` when the process is still running once
+            ``timeout_s`` elapses, OR it exited cleanly (return code 0) within the
+            window - both count as a proved launch. When it exited non-zero within
+            the window, ``alive`` is ``False`` and ``stderr`` carries what
+            :meth:`start` captured to ``launch.log``.
+        """
         ...
 
     def is_alive(self, handle: ScopeHandle) -> bool:
@@ -372,6 +398,19 @@ class ScopeHandle:
 
     unit: str
     pid: int
+    log_path: Path
+    """Where the launcher's stdout/stderr were redirected (design Task 17 fix round 1)."""
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchResult:
+    """Whether a background launch proved itself within :meth:`Scope.confirm`'s timeout."""
+
+    alive: bool
+    """``True`` once the launch is proved: still running, or exited with code 0."""
+
+    stderr: str
+    """What :meth:`Scope.start` captured to ``launch.log``, when ``alive`` is ``False``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +427,13 @@ class KernelWiring:
     (the CLI) can name the type it is handed without importing the composition root,
     which the layer contract forbids - the same reasoning
     :class:`~agentdag.application.graph_a_ports.GraphAWiring` documents for graph A.
+
+    Carries no ``runs_dir``: the CLI resolves that itself (``--runs`` or config
+    ``kernel.runs_dir``) BEFORE calling ``wire_kernel``, needs it to open the run
+    directory before any wiring exists, and passes it straight to
+    :func:`~agentdag.application.kernel.run.run_coordinator` via ``run_dir`` - a
+    second copy here would be redundant and could read differently from the one
+    actually used.
     """
 
     journal_factory: Callable[[Path, Path], Journal]
@@ -399,5 +445,4 @@ class KernelWiring:
     scanner: IsolationScanner
     policy: Policy
     scope: Scope
-    runs_dir: Path
     parallel: int

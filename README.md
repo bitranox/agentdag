@@ -299,7 +299,7 @@ agentdag run approve <run-id> a_push_list --decision approve
 ```
 
 A run directory (`<runs>/<run-id>/`) holds `journal.jsonl` (the append-only, replayable
-log - append-only, one JSON line per event), `audit.jsonl` (a copy, written first), `state.json`
+log - one JSON line per event), `audit.jsonl` (a copy, written first), `state.json`
 (status, cursor, token totals), `lock` (the exclusive run lock), and per-node subdirectories:
 `decisions/`, `intents/`, `artefacts/`, `wt/` (worktrees), `nodes/` (each dispatch's brief,
 input and record), `manifest/` (map/reduce manifests) and `done/` (apply markers).

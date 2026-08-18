@@ -113,12 +113,17 @@ class WireGraphA(Protocol):
 
 
 class WireKernel(Protocol):
-    """Build the kernel wiring for one CLI invocation of ``agentdag run`` (Task 17)."""
+    """Build the kernel wiring for one CLI invocation of ``agentdag run`` (Task 17).
+
+    Takes no ``runs``: the CLI resolves the runs directory itself and never reads it
+    back off :class:`~agentdag.application.kernel.ports.KernelWiring`, which carries
+    no such field either (a second copy of the same path would be redundant and could
+    read differently from the one the CLI actually used).
+    """
 
     def __call__(
         self,
         *,
-        runs: Path,
         policy_path: Path,
         credential: CredentialSource,
         parallel: int,

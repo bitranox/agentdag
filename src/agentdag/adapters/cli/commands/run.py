@@ -31,6 +31,16 @@ executor, inside the coordinator process, at the point it actually dispatches a 
 background launch's child process starts with :data:`_ENV_ALLOWLIST` alone, not this
 process's own environment, so the operator's secrets never reach it as inherited env vars.
 
+``--parallel``/``--policy`` (``run start``'s own options, or config ``kernel.parallel``)
+and ``kernel.max_turns``/``kernel.deny_bash`` are COORDINATOR-level: they apply
+uniformly to whichever workflow a run drives, resolved once by :func:`_build_wiring` and
+never read from a workflow's own typed args (a workflow's ``args_model``, e.g. graph A's
+``GraphAArgs``, carries only what the WORKFLOW itself needs - ``repos_file``,
+``brief_file``, ``scratch``, ``model`` - not a scheduling knob the coordinator already
+owns). A background relaunch's ``_coordinate`` re-derives them from config UNLESS
+``run start`` forwards its own ``--parallel``/``--policy`` into ``_coordinate``'s argv,
+which it does exactly when they were given (see :func:`_launch_background`).
+
 Contents:
     * :func:`cli_run` - the ``run`` group.
     * :func:`cli_run_start`, :func:`cli_run_status`, :func:`cli_run_records`,
@@ -51,6 +61,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import rich_click as click
+import tomllib
 from pydantic import ValidationError
 
 from agentdag.adapters.kernel.executor_claude import CredentialCopy, OAuthTokenFile
@@ -72,13 +83,13 @@ from ..exit_codes import ExitCode
 from ..typed_click import argument, option
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from lib_layered_config import Config
     from pydantic import BaseModel
 
     from agentdag.adapters.kernel.executor_claude import CredentialSource
-    from agentdag.application.kernel.ports import DecisionFileRef, KernelWiring
+    from agentdag.application.kernel.ports import KernelWiring, Scope
     from agentdag.application.kernel.run import RunOutcome
     from agentdag.application.workflows import WorkflowDef
 
@@ -92,11 +103,10 @@ __all__ = [
     "cli_run_status",
 ]
 
-_DEFAULT_RUNS_DIR = "/var/lib/agentdag/runs"
-_DEFAULT_PARALLEL = 2
-_DEFAULT_MAX_TURNS = 25
-_DEFAULT_DENY_BASH = ("git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post")
 _RESUME_REASONS = ("decision", "crash", "restart", "manual")
+
+_LAUNCH_CONFIRM_TIMEOUT_S = 2.0
+"""How long :func:`_launch_background` waits for a background launch to prove itself."""
 
 _ENV_ALLOWLIST = (
     "PATH",
@@ -127,6 +137,12 @@ _ENV_ALLOWLIST = (
 """The env a background coordinator process starts with - never the operator's own
 environment: a launch by an interactive shell must not hand a spawned run its secrets.
 
+``HOME`` is the OPERATOR's home directory here ON PURPOSE, not a scrubbed placeholder:
+the COORDINATOR process itself (never a dispatched Claude node) reads it to resolve
+:func:`_resolve_credential`'s copy-source path (``~/.claude/.credentials.json``) and its
+own config search path (``~/.config/agentdag``). A dispatched node's own env does NOT
+inherit this ``HOME`` - see the next paragraph.
+
 ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS`` are here for :class:`SystemdScope
 <agentdag.adapters.kernel.scope_systemd.SystemdScope>` itself, not the coordinator's own
 needs: ``scope.start()`` launches ``systemd-run`` with THIS env (:func:`_clean_env`), and
@@ -134,7 +150,14 @@ needs: ``scope.start()`` launches ``systemd-run`` with THIS env (:func:`_clean_e
 user scope bus via local transport" - measured live on ``lxc-pydev`` while building this
 module: an empty env makes it fail even though ``systemd-run`` is on PATH and the user
 manager is up). Neither var is a secret - a socket path and a runtime directory path,
-not a credential."""
+not a credential. Both reach the ``systemd-run`` PARENT and, once it hands off to the
+scoped command, the COORDINATOR process itself - but never a dispatched Claude node's
+OWN env, which :mod:`agentdag.adapters.kernel.executor_claude` builds from its own,
+entirely separate ``_ALLOWLIST_KEYS`` (neither var, nor this module's ``HOME``, is in
+it). A ``make test`` GATE node's subprocess is the one exception: it runs through
+:class:`~agentdag.adapters.graph_a.gate_make.MakeTestGate`, which passes no ``env=``
+override to ``subprocess.run`` and so inherits the coordinator's WHOLE process
+environment - this allowlist, including both vars, reaches it too."""
 
 _RUNS_OPTION = option(
     "--runs",
@@ -149,6 +172,25 @@ _FOREGROUND_OPTION = option(
     default=False,
     help="Run the coordinator in-process instead of a background scope.",
 )
+_PARALLEL_OPTION = option(
+    "--parallel",
+    "parallel_option",
+    type=click.IntRange(min=1),
+    default=None,
+    help="How many map branches may run at once (default: config kernel.parallel).",
+)
+_POLICY_OPTION = option(
+    "--policy",
+    "policy_option",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="An alternate tier policy YAML (default: the shipped table).",
+)
+"""Shared with ``_coordinate`` (:func:`cli_run_coordinate`), which is exactly HOW a
+background relaunch keeps these two coordinator-level knobs: :func:`cli_run_start`
+forwards its own values into ``_coordinate``'s argv when they were given
+(:func:`_launch_background`'s caller), rather than the relaunch silently re-deriving
+config-only defaults that could differ from what the operator actually asked for."""
 
 
 @click.group("run", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -160,14 +202,8 @@ def cli_run() -> None:
 @argument("workflow_name", metavar="WORKFLOW")
 @option("--arg", "args_kv", multiple=True, default=(), metavar="KEY=VALUE", help="One workflow argument, repeatable.")
 @_RUNS_OPTION
-@option("--parallel", type=click.IntRange(min=1), default=None, help="How many map branches may run at once.")
-@option(
-    "--policy",
-    "policy_option",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
-    help="An alternate tier policy YAML (default: the shipped table).",
-)
+@_PARALLEL_OPTION
+@_POLICY_OPTION
 @_FOREGROUND_OPTION
 @click.pass_context
 def cli_run_start(
@@ -176,7 +212,7 @@ def cli_run_start(
     workflow_name: str,
     args_kv: tuple[str, ...],
     runs_option: Path | None,
-    parallel: int | None,
+    parallel_option: int | None,
     policy_option: Path | None,
     foreground: bool,
 ) -> None:
@@ -186,9 +222,7 @@ def cli_run_start(
     args = _validated_args(workflow, _parsed_arg_pairs(args_kv))
     runs_dir = _resolve_runs_dir(config, runs_option)
     _require_writable_runs_dir(runs_dir)
-    wiring, credential_desc = _build_wiring(
-        ctx, runs_dir=runs_dir, policy_override=policy_option, parallel_override=parallel
-    )
+    wiring, credential_desc = _build_wiring(ctx, policy_override=policy_option, parallel_override=parallel_option)
     safe_console.echo(f"credential: {credential_desc}")
     run_id = _mint_run_id()
     run_dir = FsRunDir.create(runs_dir, run_id)
@@ -203,17 +237,26 @@ def cli_run_start(
         )
     )
     if foreground:
-        _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_dir, resume_reason=None))
+        outcome = _run_foreground(
+            ctx,
+            run_id=run_id,
+            runs_dir=runs_dir,
+            resume_reason=None,
+            policy_override=policy_option,
+            parallel_override=parallel_option,
+        )
+        _print_outcome(run_id, outcome)
         return
     scope_desc = "systemd user scope" if isinstance(wiring.scope, SystemdScope) else "plain subprocess"
     safe_console.echo(f"scope: {scope_desc}")
-    handle = wiring.scope.start(
-        unit=_scope_unit(run_id),
-        argv=[sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir)],
-        env=_clean_env(),
-        cwd=run_dir.root,
+    argv = [sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir)]
+    if parallel_option is not None:
+        argv += ["--parallel", str(parallel_option)]
+    if policy_option is not None:
+        argv += ["--policy", str(policy_option)]
+    _launch_background(
+        wiring.scope, unit=_scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
     )
-    safe_console.echo(f"run {run_id} started (unit {handle.unit})")
 
 
 @click.command("status", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -321,10 +364,34 @@ def cli_run_approve(
 @argument("run_id")
 @option("--runs", "runs_option", type=click.Path(file_okay=False, path_type=Path), required=True)
 @option("--reason", "reason_option", type=click.Choice(_RESUME_REASONS), default=None)
+@_PARALLEL_OPTION
+@_POLICY_OPTION
 @click.pass_context
-def cli_run_coordinate(ctx: click.Context, *, run_id: str, runs_option: Path, reason_option: str | None) -> None:
-    """Hidden: drive an EXISTING run's coordinator in-process. Not for direct use."""
-    _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_option, resume_reason=reason_option))
+def cli_run_coordinate(
+    ctx: click.Context,
+    *,
+    run_id: str,
+    runs_option: Path,
+    reason_option: str | None,
+    parallel_option: int | None,
+    policy_option: Path | None,
+) -> None:
+    """Hidden: drive an EXISTING run's coordinator in-process. Not for direct use.
+
+    ``--parallel``/``--policy`` are what ``run start``'s own background launch forwards
+    here when it was given them (see :data:`_PARALLEL_OPTION`/:data:`_POLICY_OPTION`'s
+    shared docstring); absent, both fall back to config, exactly as every other
+    relaunch path (``resume``, ``approve``) already does.
+    """
+    outcome = _run_foreground(
+        ctx,
+        run_id=run_id,
+        runs_dir=runs_option,
+        resume_reason=reason_option,
+        policy_override=policy_option,
+        parallel_override=parallel_option,
+    )
+    _print_outcome(run_id, outcome)
 
 
 # --------------------------------------------------------------------------------------
@@ -369,7 +436,7 @@ def _resolve_runs_dir(config: Config, override: Path | None) -> Path:
     """Return ``override``, or ``[kernel] runs_dir`` from config."""
     if override is not None:
         return override
-    return Path(str(config.get("kernel.runs_dir", default=_DEFAULT_RUNS_DIR)))
+    return Path(str(config.get("kernel.runs_dir", default=_packaged_kernel_defaults()["runs_dir"])))
 
 
 def _require_writable_runs_dir(path: Path) -> None:
@@ -386,6 +453,24 @@ def _mint_run_id() -> str:
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{os.urandom(3).hex()}"
+
+
+def _validate_run_id(run_id: str) -> None:
+    """Refuse a RUN_ID that could escape ``runs_dir`` or corrupt a scope unit name.
+
+    The SAME character rule :meth:`~agentdag.adapters.kernel.run_store_fs.FsRunDir.
+    _validate_node_id` applies to a node id: no path separator, no ``..`` - so a value
+    taken straight from argv can never be joined onto ``runs_dir`` (``FsRunDir.open``
+    does not itself check this) or folded into ``_scope_unit`` and reach outside
+    either. Argv is untrusted input at this CLI's boundary; this runs BEFORE any path
+    join or unit-name build, never after.
+
+    Raises:
+        SystemExit: via :func:`_fail` - ``run_id`` is empty, or contains ``/``, ``\\``
+            or ``..``.
+    """
+    if not run_id or "/" in run_id or "\\" in run_id or ".." in run_id:
+        _fail(f"{run_id!r} is not a valid run id")
 
 
 def _resolve_credential(config: Config) -> tuple[CredentialSource, str]:
@@ -406,13 +491,28 @@ def _shipped_policy_path() -> Path:
     return Path(str(files("agentdag.policy") / "tier-policy.yaml"))
 
 
-def _config_int(config: Config, key: str, default: int) -> int:
-    """Read an integer config value, defaulting when absent."""
-    return int(config.get(key, default=default))
+def _packaged_kernel_defaults() -> dict[str, object]:
+    """Read the packaged ``60-kernel.toml``'s own ``[kernel]`` table.
+
+    The single source every config-less fallback below reads FROM, rather than a
+    second, hand-typed Python literal that could silently drift from the shipped
+    config: ``config.get(key, default=...)`` needs SOME value to fall back to when
+    ``get_config()`` genuinely carries nothing for that key, and this is where it
+    comes from - never a number re-declared independently in this module.
+    """
+    path = Path(str(files("agentdag.adapters.config") / "defaultconfig.d" / "60-kernel.toml"))
+    with path.open("rb") as handle:
+        table = tomllib.load(handle)
+    return table["kernel"]
+
+
+def _config_int(config: Config, key: str, default_key: str) -> int:
+    """Read an integer config value, defaulting to the packaged config's own ``default_key``."""
+    return int(config.get(key, default=_packaged_kernel_defaults()[default_key]))
 
 
 def _config_deny_bash(config: Config) -> tuple[str, ...]:
-    """Read ``[kernel] deny_bash``, defaulting to the shipped denylist.
+    """Read ``[kernel] deny_bash``, defaulting to the packaged denylist.
 
     A TOML array (the common case) comes back as a real list; an env-var override
     (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr,gh release``, per
@@ -421,28 +521,27 @@ def _config_deny_bash(config: Config) -> tuple[str, ...]:
     ``lib_layered_config`` does not split it, so this does, matching the documented
     format rather than treating the whole string as a single denylist pattern.
     """
-    raw = config.get("kernel.deny_bash", default=list(_DEFAULT_DENY_BASH))
+    raw = config.get("kernel.deny_bash", default=_packaged_kernel_defaults()["deny_bash"])
     if isinstance(raw, str):
         return tuple(item.strip() for item in raw.split(",") if item.strip())
     return tuple(str(item) for item in raw)
 
 
 def _build_wiring(
-    ctx: click.Context, *, runs_dir: Path, policy_override: Path | None, parallel_override: int | None
+    ctx: click.Context, *, policy_override: Path | None, parallel_override: int | None
 ) -> tuple[KernelWiring, str]:
     """Resolve config/CLI overrides into a fresh :class:`KernelWiring`, and the chosen credential's description."""
     config = get_cli_context(ctx).config
     services = get_cli_context(ctx).services
     credential, credential_desc = _resolve_credential(config)
     policy_path = policy_override if policy_override is not None else _shipped_policy_path()
-    default_parallel = _config_int(config, "kernel.parallel", _DEFAULT_PARALLEL)
+    default_parallel = _config_int(config, "kernel.parallel", "parallel")
     parallel = parallel_override if parallel_override is not None else default_parallel
     wiring = services.wire_kernel(
-        runs=runs_dir,
         policy_path=policy_path,
         credential=credential,
         parallel=parallel,
-        max_turns=_config_int(config, "kernel.max_turns", _DEFAULT_MAX_TURNS),
+        max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
         deny_bash=_config_deny_bash(config),
     )
     return wiring, credential_desc
@@ -469,14 +568,56 @@ def _scope_unit(run_id: str) -> str:
 
 
 def _open_run_dir(runs_dir: Path, run_id: str) -> FsRunDir:
-    """Open an existing run directory, or exit naming it."""
+    """Open an existing run directory, or exit naming it.
+
+    Validates ``run_id`` FIRST (:func:`_validate_run_id`): every command that opens a
+    run by an id taken from argv (``status``, ``records``, ``resume``, ``approve``, and
+    - through :func:`_run_foreground`, which reuses this rather than calling
+    ``FsRunDir.open`` a second way - the hidden ``_coordinate``) funnels through here,
+    so this is the ONE place that check has to happen.
+    """
+    _validate_run_id(run_id)
     try:
         return FsRunDir.open(runs_dir, run_id)
     except FileNotFoundError as exc:
         _fail(str(exc))
 
 
-def _run_foreground(ctx: click.Context, *, run_id: str, runs_dir: Path, resume_reason: str | None) -> RunOutcome:
+def _launch_background(
+    scope: Scope, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path, run_id: str
+) -> None:
+    """Start ``argv`` under ``scope``, confirm it launched, then report - or fail loudly.
+
+    :meth:`~agentdag.application.kernel.ports.Scope.start` only Popens the launcher and
+    returns; without calling :meth:`~agentdag.application.kernel.ports.Scope.confirm`
+    straight after, a launcher that failed immediately (a bad unit name, a missing
+    ``systemd-run``) would still be reported ``started`` and exit 0. This is the ONE
+    place ``run start`` and a background relaunch (:func:`_relaunch`) launch a scope, so
+    it is the ONE place that confirmation has to happen.
+
+    Raises:
+        SystemExit: :attr:`~agentdag.adapters.cli.exit_codes.ExitCode.GENERAL_ERROR` -
+            the launch did not prove itself within :data:`_LAUNCH_CONFIRM_TIMEOUT_S`;
+            the message carries whatever :attr:`~agentdag.application.kernel.ports.
+            LaunchResult.stderr` captured.
+    """
+    handle = scope.start(unit=unit, argv=argv, env=env, cwd=cwd)
+    result = scope.confirm(handle, timeout_s=_LAUNCH_CONFIRM_TIMEOUT_S)
+    if not result.alive:
+        safe_console.echo(f"run {run_id} failed to start (unit {handle.unit}): {result.stderr}")
+        raise SystemExit(ExitCode.GENERAL_ERROR)
+    safe_console.echo(f"run {run_id} started (unit {handle.unit}, log {handle.log_path})")
+
+
+def _run_foreground(
+    ctx: click.Context,
+    *,
+    run_id: str,
+    runs_dir: Path,
+    resume_reason: str | None,
+    policy_override: Path | None = None,
+    parallel_override: int | None = None,
+) -> RunOutcome:
     """Read RUN_ID's workflow and args off its own state, then drive the coordinator to an exit.
 
     Always reads ``workflow``/``args`` from ``state.json`` rather than taking them as
@@ -485,12 +626,19 @@ def _run_foreground(ctx: click.Context, *, run_id: str, runs_dir: Path, resume_r
     fresh ``start`` pre-writes it before deciding foreground vs. background - so a
     background relaunch (a fresh OS process with none of this session's parsed objects)
     bootstraps from the same place every other caller does.
+
+    ``policy_override``/``parallel_override`` default to ``None`` (config only) for
+    ``resume``/``approve``, which carry no such CLI options of their own; ``start
+    --foreground`` and ``_coordinate`` pass their OWN ``--parallel``/``--policy``
+    through, so this ends up building the SAME wiring :func:`cli_run_start` already
+    built once for the state pre-write, rather than silently re-deriving config-only
+    defaults that could disagree with what the operator actually asked for.
     """
-    run_dir = FsRunDir.open(runs_dir, run_id)
+    run_dir = _open_run_dir(runs_dir, run_id)
     state = run_dir.read_state()
     workflow = get_workflow(state.workflow)
     args = workflow.args_model.model_validate(state.args)
-    wiring, _credential_desc = _build_wiring(ctx, runs_dir=runs_dir, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, policy_override=policy_override, parallel_override=parallel_override)
     journal = wiring.journal_factory(run_dir.journal_path, run_dir.audit_path)
     try:
         return asyncio.run(
@@ -529,82 +677,72 @@ def _print_outcome(run_id: str, outcome: RunOutcome) -> None:
 
 
 def _relaunch(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, reason: str, foreground: bool) -> None:
-    """Relaunch ``run_dir``'s coordinator, in-process or under a fresh background scope."""
+    """Relaunch ``run_dir``'s coordinator, in-process or under a fresh background scope.
+
+    ``resume``/``approve`` carry no ``--parallel``/``--policy`` of their own, so this
+    relaunch's ``_coordinate`` argv omits both and falls back to config, same as it
+    always has - only ``run start``'s OWN first background launch (:func:`cli_run_start`)
+    forwards them, since only it was actually given any to forward.
+    """
     run_id = run_dir.root.name
     if foreground:
         _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_dir, resume_reason=reason))
         return
-    wiring, _credential_desc = _build_wiring(ctx, runs_dir=runs_dir, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
     argv = [sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir), "--reason", reason]
-    handle = wiring.scope.start(
-        unit=_scope_unit(run_id),
-        argv=argv,
-        env=_clean_env(),
-        cwd=run_dir.root,
+    _launch_background(
+        wiring.scope, unit=_scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
     )
-    safe_console.echo(f"run {run_id} started (unit {handle.unit})")
 
 
 def _decision_for(
     run_dir: FsRunDir, state: RunState, *, run_id: str, node_id: str, decision_id: str, reason_text: str
 ) -> Decision:
-    """Build the :class:`Decision` to record for ``node_id``, from the live suspend or a folded record.
+    """Build the :class:`Decision` to record for ``node_id``, reading ``state.json``'s live cursor.
 
-    When the run is CURRENTLY suspended on exactly this node, the payload it is waiting
-    on comes straight from ``state.json``'s cursor - the primary path. Otherwise (the run
-    has already moved on, e.g. a repeat ``approve`` after it finished) this falls back to
-    the node's own recorded decision, if exactly one exists, so a REPLAY of an
-    already-answered node still resolves to the SAME (node id, payload hash) pair and
-    :meth:`~agentdag.adapters.kernel.run_store_fs.FsRunDir.write_decision` reports
-    "already decided" rather than a bare "not suspended".
+    Refuses outright rather than falling back to any OTHER node's or any PAST payload's
+    already-recorded answer - an earlier version of this function had exactly that
+    fallback, kept safe only by an invariant nothing enforced (the fold that clears
+    ``cursor``/``cursor_payload_hash`` on any non-suspend exit); this version reads and
+    refuses explicitly instead, in the order an operator would ask the questions:
+
+    1. the run is not even suspended - nothing to decide, name its actual status;
+    2. it IS suspended, but on a DIFFERENT node - name both, so the caller sees which
+       node it should have asked about;
+    3. it is suspended on exactly this node, but (:meth:`~agentdag.adapters.kernel.
+       run_store_fs.FsRunDir.read_decision`) this EXACT payload already has an answer -
+       a repeat ``approve`` for the same suspend, reported explicitly rather than only
+       via :meth:`~agentdag.adapters.kernel.run_store_fs.FsRunDir.write_decision`'s
+       own write-once ``FileExistsError`` (still the last-resort guard against a race
+       between this check and that write, not the primary signal any more).
     """
-    by = getpass.getuser()
-    if state.status is RunStatus.SUSPENDED and state.cursor == node_id and state.cursor_payload_hash is not None:
-        payload_hash = state.cursor_payload_hash
-        rel = f"nodes/{node_id}/{hash8(payload_hash)}/payload.json"
-        try:
-            text = run_dir.read_text(rel)
-        except FileNotFoundError:
-            _fail(f"run {run_id}: the payload file for {node_id!r} is missing at {rel}")
-        if content_hash(text) != payload_hash:
-            _fail(f"run {run_id}: the payload on disk at {rel} does not match state.json's cursor_payload_hash")
-        payload = ApprovePayload.model_validate_json(text)
-        valid_ids = sorted(option_.id for option_ in payload.options)
-        if decision_id not in valid_ids:
-            _fail(f"{decision_id!r} is not one of {node_id!r}'s offered options: {valid_ids}")
-        return Decision(
-            node_id=node_id,
-            decision=decision_id,
-            reason=reason_text,
-            by=by,
-            token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
-            payload_hash=payload_hash,
-        )
-    return _decision_from_recorded(
-        run_dir, state, run_id=run_id, node_id=node_id, decision_id=decision_id, reason_text=reason_text, by=by
-    )
-
-
-def _decision_from_recorded(
-    run_dir: FsRunDir, state: RunState, *, run_id: str, node_id: str, decision_id: str, reason_text: str, by: str
-) -> Decision:
-    """The fallback half of :func:`_decision_for`: answer against the node's already-recorded payload."""
-    existing: list[DecisionFileRef] = [ref for ref in run_dir.decision_files() if ref.node_id == node_id]
-    if not existing:
-        waiting = state.cursor or "nothing"
-        _fail(f"run {run_id} is not waiting on {node_id!r} (status={state.status.value}, waiting on {waiting!r})")
-    if len(existing) > 1:
-        _fail(
-            f"node {node_id!r} has {len(existing)} recorded decisions; the run must be suspended on the one to answer"
-        )
-    recorded = run_dir.read_decision_file(existing[0])
+    if state.status is not RunStatus.SUSPENDED:
+        _fail(f"run {run_id} is not waiting on a decision (status={state.status.value})")
+    if state.cursor != node_id:
+        _fail(f"run {run_id} is suspended on {state.cursor!r}, not {node_id!r}")
+    if state.cursor_payload_hash is None:
+        _fail(f"run {run_id}: state.json is suspended on {node_id!r} but names no payload hash")
+    payload_hash = state.cursor_payload_hash
+    if run_dir.read_decision(node_id, payload_hash) is not None:
+        _fail(f"run {run_id} already decided for this payload at {node_id!r}")
+    rel = f"nodes/{node_id}/{hash8(payload_hash)}/payload.json"
+    try:
+        text = run_dir.read_text(rel)
+    except FileNotFoundError:
+        _fail(f"run {run_id}: the payload file for {node_id!r} is missing at {rel}")
+    if content_hash(text) != payload_hash:
+        _fail(f"run {run_id}: the payload on disk at {rel} does not match state.json's cursor_payload_hash")
+    payload = ApprovePayload.model_validate_json(text)
+    valid_ids = sorted(option_.id for option_ in payload.options)
+    if decision_id not in valid_ids:
+        _fail(f"{decision_id!r} is not one of {node_id!r}'s offered options: {valid_ids}")
     return Decision(
         node_id=node_id,
         decision=decision_id,
         reason=reason_text,
-        by=by,
+        by=getpass.getuser(),
         token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
-        payload_hash=recorded.payload_hash,
+        payload_hash=payload_hash,
     )
 
 

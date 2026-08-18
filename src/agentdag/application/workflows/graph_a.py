@@ -92,13 +92,19 @@ The ONE place the prefix is spelled: ``_ensure_worktree`` builds a staging path 
 class GraphAArgs(BaseModel):
     """What one graph A run is given.
 
+    Carries no ``parallel``: how many map branches may be in flight is a
+    COORDINATOR-level scheduling knob (``Coordinator(parallel=...)``, set by the CLI
+    from ``--parallel``/config ``kernel.parallel`` - see ``adapters.cli.commands.run``'s
+    module docstring), not something this WORKFLOW decides - :func:`program` never read
+    this field even when it existed here, so it was dead weight duplicating a value the
+    coordinator already owns.
+
     Attributes:
         repos_file: A file listing one bare scratch clone per line; blank lines and
             ``#`` comments are ignored.
         brief_file: The change to make, as every work node's brief.
         scratch: The scratch directory this run owns; only ``<scratch>/origin`` is ever
             a push target.
-        parallel: How many map branches may be in flight at once.
         model: An explicit model alias for the work nodes, or ``None`` to let the tier
             policy resolve the standard row.
     """
@@ -108,7 +114,6 @@ class GraphAArgs(BaseModel):
     repos_file: Path
     brief_file: Path
     scratch: Path
-    parallel: int = 2
     model: str | None = None
 
 
