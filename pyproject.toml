@@ -151,10 +151,12 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 "src/agentdag/application/*.py" = ["PLR0913"]
 "src/agentdag/adapters/config/*.py" = ["PLR0913"]
 "src/agentdag/adapters/email/*.py" = ["PLR0913"]
-# Kernel adapters (task 14): outcome_from_usage's seven keyword-only params mirror
+# Kernel executor (task 14): outcome_from_usage's seven keyword-only params mirror
 # ResultMessage's own usage shape one-for-one - splitting them into a bundle would
-# just rename the same list, and the brief's binding signature is flat.
-"src/agentdag/adapters/kernel/*.py" = ["PLR0913"]
+# just rename the same list, and the brief's binding signature is flat. Scoped to
+# this one file (not the whole adapters/kernel/ dir) so a future kernel adapter
+# does not inherit this exemption for free.
+"src/agentdag/adapters/kernel/executor_claude.py" = ["PLR0913"]
 "src/agentdag/adapters/memory/*.py" = ["PLR0913"]
 # Kernel errors (task 9): LockHeld, WorkflowNotFound, SpecRejected, RunRefused and Suspended are
 # the coordinator design's own binding names - every later kernel task (journal, dispatch,
