@@ -1,6 +1,6 @@
 # Execution model
 
-**Status:** built (M2) except where a section says otherwise. This is the core the rest of the system
+**Status:** built except where a section says otherwise. This is the core the rest of the system
 hangs off: what a node is, what it returns, how that is recorded, and what happens when the machine
 dies in the middle.
 
@@ -8,7 +8,7 @@ dies in the middle.
 
 ## 1. A node
 
-**Status:** built (M2).
+**Status:** built.
 
 A node is one dispatched unit of work. It carries an identifier, a kind, the executor and model tier
 it wants, the knowledge datasets it may reach, the paths it declares it will write, the resources it
@@ -24,7 +24,7 @@ whatever a model felt like writing.
 
 ## 2. A record is the only thing the coordinator sees
 
-**Status:** built (M2).
+**Status:** built.
 
 Every node, whatever ran it, returns the same shape: a status from a closed set, references to
 artefacts it wrote, a map of key facts, the names of the fields in that map that are meant to be
@@ -46,7 +46,7 @@ coordinator's point of view, produced nothing.
 
 ## 3. The journal key: what makes a call the same call
 
-**Status:** built (M2).
+**Status:** built.
 
 Each dispatch is identified by a content hash. Everything that makes the call what it is goes in: the
 node's identity fields, the hash of its brief, the hash of its assembled input, and, chained in
@@ -71,7 +71,7 @@ collision.
 
 ## 4. The journal
 
-**Status:** built (M2).
+**Status:** built.
 
 Two files, both append-only, both owner-readable only. Every line is one JSON object with sorted keys
 and an ISO-8601 UTC timestamp. The audit copy is written and flushed first, then the journal, each
@@ -84,7 +84,7 @@ convenience, but it is derived, and the journal is what a replay reads.
 
 ## 5. Replay, the crash window, and what resumable actually buys
 
-**Status:** built (M2).
+**Status:** built.
 
 Folding the journal in one pass gives everything a relaunch needs: the results already recorded, the
 keys that have a started line and no result, the decisions already made, and the exact sequence of
@@ -121,11 +121,11 @@ and that is caught rather than discovered later.
 
 **Not yet:** a failed code node is final in this version. Its record is served from the journal on
 every resume and no command mints a new attempt, so a run that failed on a gate can only be started
-again as a new run. The retry path is M3.
+again as a new run. The retry path is a later milestone.
 
 ## 6. Suspend and resume: a human decision as control flow
 
-**Status:** built (M2).
+**Status:** built.
 
 An approve node does not block. It writes its payload, and if no decision exists for that exact
 payload it raises a suspension, which the driver treats as control flow rather than an error: the
@@ -146,11 +146,12 @@ validation: a default the coordinator may apply unattended must never itself be 
 option.
 
 **Not yet:** the timer that applies a payload's default when a deadline passes, and the notification
-that tells someone a run is waiting. Both are M3. Today a suspended run waits until a person looks.
+that tells someone a run is waiting. Both are later milestones. Today a suspended run waits until a
+person looks.
 
 ## 7. Side effects: stage, apply, and doing it once
 
-**Status:** built (M2).
+**Status:** built.
 
 External effects are split in two. A `stage` node writes an intent describing what should happen and
 performs nothing. An `apply` node performs intents, each guarded by a marker file named for the
@@ -195,7 +196,7 @@ A judging `reduce` is a mistake worth naming. A fold that decides something by w
 
 ## 9. Parallelism, and the rule for when it is allowed
 
-**Status:** built (M2), bounded by one run-wide limit.
+**Status:** built, bounded by one run-wide limit.
 
 `map` is the only fan-out. Its branches run concurrently under a single semaphore created once per
 run, so two maps running at the same time still admit the configured number of branches between them
@@ -217,7 +218,7 @@ either yet. One lock, enforced directly, is what exists.
 
 ## 10. The run lifecycle
 
-**Status:** partial (M2).
+**Status:** partial.
 
 A run is running, and ends suspended, done or failed. Suspended means an approve node is waiting and
 the process exited on purpose. Failed means the workflow raised. Done means it returned, and the
@@ -227,13 +228,14 @@ A raw process death writes nothing, which is the point: the state file still say
 started line still has no result, and that pair is precisely how the next launch recognises a crash.
 
 **Not yet:** cancelling, cancelled and crashed exist in the vocabulary and nothing sets them. Cancel
-as an operation, and the deadline that would kill a node's scope and record a deadline error, are M3.
-Whether either can reap a node's grandchildren depends on how the coordinator was launched; see
+as an operation, and the deadline that would kill a node's scope and record a deadline error, are
+later milestones. Whether either can reap a node's grandchildren depends on how the coordinator was
+launched; see
 [safety and sandbox](safety-and-sandbox.md).
 
 ## 11. The tier policy
 
-**Status:** built (M2) for resolution; the ceilings it declares are not enforced yet.
+**Status:** built for resolution; the ceilings it declares are not enforced yet.
 
 Which model runs a node is data, not code. A policy file lists model rows, each with an alias, the
 executor that runs it, a cost rank, the roles it can serve, the efforts it allows, its prices, and
@@ -248,7 +250,7 @@ in ordinary configuration, so that raising a turn ceiling does not move the poli
 The table also carries what the design calls thresholds and run limits: a floor on how much work
 justifies a dispatch, a fan-in width for reduce trees, a journal size to watch, a ceiling on
 continuations, per-row token ceilings for a whole run, and a deadline ceiling. They are loaded and
-reported on. Enforcing them is M3.
+reported on. Enforcing them is a later milestone.
 
 **Not yet:** escalation. The rule for retrying a node one rank up, and what to do when there is no
 higher row, is described in the policy shape and is not implemented.

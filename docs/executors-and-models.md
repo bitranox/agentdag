@@ -1,6 +1,6 @@
 # Executors and models
 
-**Status:** the Claude arm is built (M2); the Codex arm is M4; other families reach the same port
+**Status:** the Claude arm is built; the Codex arm is planned; other families reach the same port
 later. This document is the south face: what actually happens when the coordinator dispatches a node
 to a model.
 
@@ -8,7 +8,7 @@ to a model.
 
 ## 1. One port, several arms
 
-**Status:** built (M2), one adapter wired.
+**Status:** built, one adapter wired.
 
 There is a single executor port. An adapter behind it takes a request naming the node's directory,
 its working directory, its brief, its prompt, its model and effort, its turn ceiling, its isolation
@@ -22,7 +22,7 @@ the ones that are not models.
 
 ## 2. A Claude node
 
-**Status:** built (M2).
+**Status:** built.
 
 A Claude node is a child process running the same Claude Code binary a person runs interactively,
 started headlessly through the official Agent SDK and spoken to over a streaming JSON protocol on
@@ -45,7 +45,7 @@ the record is built from what the run reports about itself.
 
 ## 3. Credentials, and whether a subscription works
 
-**Status:** built (M2) for Claude. Yes for a subscription; the metered path is not implemented.
+**Status:** built for Claude. Yes for a subscription; the metered path is not implemented.
 
 Two credential sources, chosen once per invocation and printed when a run starts.
 
@@ -71,7 +71,7 @@ either way, so the answer changes which row a graph uses rather than whether the
 
 ## 4. Environment: an allowlist, not a filter
 
-**Status:** built (M2).
+**Status:** built.
 
 The node's environment is built from a named allowlist: the path, locale, temporary directory, proxy
 and certificate variables, and the platform variables Windows needs. Everything else the coordinator
@@ -87,7 +87,7 @@ The test gate has its own, separate allowlist, deliberately narrower.
 
 ## 5. Codex, the second arm
 
-**Status:** planned (M4). Measured against its real surface, not assumed.
+**Status:** planned. Measured against its real surface, not assumed.
 
 A Codex node is one `codex mcp-server` process per node, spoken to over MCP on standard input and
 output. Its surface was probed rather than guessed, and it reaches parity on most of what a node
@@ -120,7 +120,7 @@ loads the operator's own skills and tools unasked, which is both a cost and a co
 | working directory          | yes                                                      | yes                                                                |
 | schema-validated result    | output shape in the brief, adapter validates, one re-ask | same, re-asked on the same thread                                  |
 | usage reporting            | per turn and at the end                                  | absent, so charged at dispatch and reconciled from its session log |
-| in-node spend cap          | seam exists, the check and interrupt are M3              | none possible, which is why the budget is charged up front         |
+| in-node spend cap          | seam exists, the check and interrupt are planned         | none possible, which is why the budget is charged up front         |
 | write-set enforcement      | a tool hook denying writes outside the isolation root    | its own sandbox mode plus the working directory                    |
 | hard deadline              | interrupt, then terminate the process                    | terminate the process, one server per node so threads die with it  |
 | long-lived node            | the executor's own compaction                            | reply on the thread, with a compaction prompt                      |

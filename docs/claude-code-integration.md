@@ -1,6 +1,6 @@
 # Claude Code integration
 
-**Status:** partial. The isolation of a dispatched node is built (M2). The network face, the
+**Status:** partial. The isolation of a dispatched node is built. The network face, the
 knowledge grants and the self-improve graph are planned.
 
 This document answers the two questions people ask once they realise agentdag drives the same tool
@@ -11,7 +11,7 @@ Claude Code already runs for me.
 
 ## 1. Two tiers, one journal format
 
-**Status:** the headless tier is built (M2); the shared format is the design's intent.
+**Status:** the headless tier is built; the shared format is the design's intent.
 
 Claude Code's own in-session workflow tool and this program are two tiers of the same idea, and they
 share a journal format on purpose.
@@ -40,7 +40,7 @@ is built behind that surface rather than instead of it.
 
 ## 3. What a dispatched node inherits from your setup
 
-**Status:** built (M2). The answer is: nothing.
+**Status:** built. The answer is: nothing.
 
 Not your hooks. Not your CLAUDE.md cascade, at any level. Not your skills. Not your plugins. Not your
 environment variables, beyond a named allowlist of the ones a process needs to function at all.
@@ -74,7 +74,7 @@ installed this week.
 
 ## 5. What a node gets instead
 
-**Status:** built (M2).
+**Status:** built.
 
 Its brief, as its system prompt. A fixed short first instruction. A small tool set. Its own worktree.
 Its model and effort, resolved from the tier policy rather than chosen by the node. And two hooks of
@@ -109,8 +109,8 @@ ask.
 | resumable after a crash                | no                     | yes, exactly the node that did not finish |
 | result the caller can branch on        | its final text         | a typed record from a closed vocabulary   |
 | can wait overnight for a human answer  | no                     | yes, the process exits and comes back     |
-| spend accounted per model row          | no                     | measured now, capped in M3                |
-| runs a non-Claude model                | no                     | the port is there, the arm is M4          |
+| spend accounted per model row          | no                     | measured now, a cap is planned            |
+| runs a non-Claude model                | no                     | the port is there, the arm is planned     |
 
 Neither is better. A subagent is right for something bounded inside a conversation you are having. A
 node is right for something that has to survive the conversation, be paid for out of a budget, and be
@@ -137,7 +137,7 @@ because its blast radius is a directory of throwaway clones.
 
 ## 9. Getting told when something needs you
 
-**Status:** planned (M3 for the sink, later for the push channel).
+**Status:** planned. The sink comes first, the push channel later.
 
 A suspended run is only useful if someone finds out. The design emits a typed event when a run
 suspends, finishes, fails or crashes, from the coordinator, the approval timer or the server, and

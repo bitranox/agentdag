@@ -1,6 +1,6 @@
 # Architecture overview
 
-**Status:** mixed. The core and the Claude arm are built (M2); the sandbox, the spend cap, the second
+**Status:** mixed. The core and the Claude arm are built; the sandbox, the spend cap, the second
 executor and the network face are at various distances. Every section below says which.
 
 This is the bird's eye view. It answers each question once, briefly, and points at the document that
@@ -12,7 +12,7 @@ deliberately does not restate it.
 
 ## The system in one picture
 
-**Status:** core and south face built (M2); north face is a CLI today, a server later.
+**Status:** core and south face built; north face is a CLI today, a server later.
 
 agentdag is one program with three faces. Users come in at the north face, models go out at the
 south face, and the core in between is a deterministic scheduler that holds records and state but
@@ -75,7 +75,7 @@ including every step that decides anything, is ordinary code.
 
 ## 1. How a run is issued and launched
 
-**Status:** built (M2), CLI only.
+**Status:** built, CLI only.
 
 A run starts with `agentdag run start`, naming a workflow and passing its arguments. The CLI
 validates those arguments against the workflow's own typed argument model, mints a run id, creates
@@ -100,7 +100,7 @@ observe runs; they never submit graphs, because graphs are authored and reviewed
 
 ## 2. How the user's request and task reach a node
 
-**Status:** built (M2).
+**Status:** built.
 
 Two channels, and they carry different kinds of thing.
 
@@ -117,7 +117,7 @@ That "nothing else" is deliberate and it is stronger than it sounds. See section
 
 ## 3. How information passes between nodes
 
-**Status:** built (M2).
+**Status:** built.
 
 Not by talking. Nodes never message each other, and there is no shared conversation they all append
 to.
@@ -132,7 +132,7 @@ keeps the one context every node passes through from filling up with everything 
 
 ## 4. How results come back
 
-**Status:** built (M2).
+**Status:** built.
 
 The executor streams the agent's messages, writes them to a transcript, and builds the record from
 the structured metadata the run reports: turn count, error flag, token usage. The model's free text
@@ -149,7 +149,7 @@ Detail in [the execution model](execution-model.md).
 
 ## 5. How the graph's shape is decided, and altered while it runs
 
-**Status:** built (M2) for data-driven shape; the planner node is designed and deliberately deferred.
+**Status:** built for data-driven shape; the planner node is designed and deliberately deferred.
 
 A workflow is an ordinary Python program that calls the coordinator's primitives as functions. There
 is no graph object compiled up front and then walked. That means the shape can depend on data the run
@@ -169,7 +169,7 @@ sounds like it does.
 
 ## 6. What runs a node: Claude, Codex, other models
 
-**Status:** Claude built (M2); Codex planned (M4); other model families planned behind the same port.
+**Status:** Claude built; Codex planned; other model families planned behind the same port.
 
 There is one executor port and adapters behind it. Today one adapter exists. A Claude node is a child
 process running the same Claude Code binary a person runs interactively, driven headlessly through
@@ -198,7 +198,7 @@ Full comparison, including which side of each row is built, in
 
 ## 7. What a node may touch, and what stops it
 
-**Status:** partial (M2). Enforcement is real but limited, and the limits are measured, not guessed.
+**Status:** partial. Enforcement is real but limited, and the limits are measured, not guessed.
 
 A node works in its own worktree. It declares a write set. Two tool hooks refuse edits that resolve
 outside its isolation root and refuse a list of forbidden shell commands. After the node finishes, a
@@ -217,7 +217,7 @@ their variants. The write-set check happens after the write, not instead of it.
 
 ## 8. Crash, resume and human approval
 
-**Status:** built (M2).
+**Status:** built.
 
 Every dispatch is identified by a content hash over what makes the call what it is: the node's
 identity fields, its brief, its assembled input, and the results of everything it depends on. The
@@ -238,15 +238,16 @@ Detail in [the execution model](execution-model.md).
 
 ## 9. Cost and limits
 
-**Status:** partial (M2). Measurement is built; enforcement is M3.
+**Status:** partial. Measurement is built; enforcement is not.
 
 Token usage is measured per turn and per node and accumulated per model row across the run, and it is
 in the record and the run summary. A turn ceiling per node exists.
 
 **Not yet:** a cap that fires. Budgets are declared on nodes, per-row ceilings are declared in the
 policy, and a budget-exceeded error type exists, but nothing refuses a dispatch or interrupts a node
-yet. The seam is in place and the mechanism is M3: check the streamed per-turn usage and interrupt
-when the row's cap is passed, accepting one turn of overshoot rather than pretending it can be zero,
+yet. The seam is in place and the mechanism is designed: check the streamed per-turn usage and
+interrupt when the row's cap is passed, accepting one turn of overshoot rather than pretending it
+can be zero,
 and refuse the next dispatch when the run-level cap is reached.
 
 One cost note that shapes graphs rather than limiting them: starting an agent costs roughly the same
@@ -256,7 +257,7 @@ for folding many small items into one dispatch when they would not.
 
 ## 10. Sandbox mode
 
-**Status:** port only, landing with M3. One adapter, and it declares that it isolates nothing.
+**Status:** port only. One adapter, and it declares that it isolates nothing.
 
 Nodes run behind a sandbox port. Today exactly one adapter is wired, and its guarantees are three
 booleans, all false: no filesystem boundary, no egress control, no separate user. Those booleans are
@@ -275,7 +276,7 @@ than a container for the filesystem half and delivers nothing at all for the net
 
 ## 11. Claude Code, subagents and the self-improve loop
 
-**Status:** partial. The isolation is built (M2); knowledge grants and the self-improve graph are
+**Status:** partial. The isolation is built; knowledge grants and the self-improve graph are
 planned.
 
 A dispatched node does not inherit your Claude Code setup. Not your hooks, not your CLAUDE.md

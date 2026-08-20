@@ -1,7 +1,7 @@
 # Safety and sandbox
 
-**Status:** partial (M2). Real mechanisms, real limits, and the limits are measured rather than
-guessed. The sandbox port lands with M3 and declares that it isolates nothing; the containment layer
+**Status:** partial. Real mechanisms, real limits, and the limits are measured rather than
+guessed. The sandbox port declares that it isolates nothing; the containment layer
 behind it is wanted and not yet designed.
 
 The headline first, because everything else in this document is a detail beside it: **a node is not
@@ -16,7 +16,7 @@ writes, because a safety claim that only lives in prose is the kind that gets be
 
 ## 1. The one boundary that is real: the scratch-clone rule
 
-**Status:** built (M1, carried into M2).
+**Status:** built.
 
 A run never writes to a real repository. The real ones are read exactly once, into bare mirrors, and
 those mirrors are the only push targets a run will accept. A target anywhere else stops the run
@@ -32,7 +32,7 @@ because pushing is what you do after committing, cannot land anywhere that matte
 
 ## 2. Tool hooks: what they stop, and what they demonstrably do not
 
-**Status:** built (M2), with known and measured gaps.
+**Status:** built, with known and measured gaps.
 
 Every dispatched agent node gets two hooks that run before a tool call.
 
@@ -53,7 +53,7 @@ So the denylist is a speed bump on the exact shapes it names. Treat it as one.
 
 ## 3. The backstop: scanning what actually changed
 
-**Status:** built (M2), with one limit under parallelism.
+**Status:** built, with one limit under parallelism.
 
 Because a hook is a claim, something outside the node checks afterwards. A scan takes a content
 manifest of the whole run tree before and after a node runs and reports every path that appeared,
@@ -70,7 +70,7 @@ concurrency. Closing the first case needs a process boundary, which is section 7
 
 ## 4. One writer, one lock
 
-**Status:** built (M2).
+**Status:** built.
 
 At most one live coordinator per run directory. The lock is a file created exclusively, holding
 enough to identify its holder: host, boot identifier, process id, and that process's start time.
@@ -87,7 +87,7 @@ whole machine and two gates would rebuild it under each other.
 
 ## 5. Teardown: what a cancel can actually reap
 
-**Status:** partial (M2). Depends on how the coordinator was launched, and that difference is real.
+**Status:** partial. Depends on how the coordinator was launched, and that difference is real.
 
 | Launch                           | What a kill reaches                                             |
 |----------------------------------|-----------------------------------------------------------------|
@@ -103,7 +103,7 @@ Which one you get is decided by probing at startup rather than by trying and fal
 scope that should have worked and did not is worth stopping on.
 
 **Not yet:** cancel as an operation, and a deadline that kills the scope and records a deadline
-error, are M3.
+error, are a later milestone.
 
 ## 6. Things that look like access control and are not
 
@@ -125,7 +125,7 @@ credential copy.
 
 ## 7. The sandbox port, today
 
-**Status:** port only, landing with M3. Written and reviewed, not on the default branch yet.
+**Status:** port only. Written and reviewed, not on the default branch yet.
 
 Nodes run behind a sandbox port with two halves. One is a declaration made once per run: what
 isolation this run's nodes have, as three booleans for filesystem, network egress and separate user.

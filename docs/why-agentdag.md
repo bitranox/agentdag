@@ -1,7 +1,8 @@
 # Why agentdag exists
 
 **Status:** design rationale, settled 2026-08-16 and not reopened. The mechanisms it argues for are
-built out over M1 to M5; see [the documentation index](README.md) for where each one stands.
+built out over the milestones that follow; see [the documentation index](README.md) for where each
+one stands.
 
 agentdag coordinates teams of AI agents. Every structural choice in it follows from one question
 asked before any code was written: what are a language model's real limits, as opposed to the limits
@@ -26,10 +27,8 @@ surprises people, because it is not a capacity limit in the way a disk is. A mod
 perfectly up to the last token and then stop. It gets worse gradually, and it gets worse in a
 particular shape: it loses the middle. Give it twenty things to hold and it will answer confidently
 about the first few and the last few. The literature calls this lost-in-the-middle, and pairs it with
-context rot, the slower decline in quality as a window fills even when nothing has been dropped. If
-an informal analogy helps you remember it, people often reach for attention disorders: the trouble is
-not how much sits in front of it, but how much it can still attend to. That is a mnemonic and nothing
-more. The mechanism is the measured one, and it is what the design has to survive.
+context rot, the slower decline in quality as a window fills even when nothing has been dropped.
+That is the mechanism the design has to survive.
 
 **No state except on disk.** A model holds nothing between one dispatch and the next. Whatever must
 survive has to be written down somewhere a later process can read.
@@ -90,7 +89,7 @@ file. Nothing accumulates in a single growing context just because it passed thr
 
 ## 4. What falls out is a DAG scheduler
 
-**Status:** rationale, stable. The kernel that implements it shipped in M2.
+**Status:** rationale, stable. The kernel that implements it has shipped.
 
 Take the five constraints seriously and the shape is not a hierarchy and not a peer team. It is a
 dependency scheduler, and its ancestors are Make, Bazel and MapReduce rather than any org chart.
@@ -135,7 +134,7 @@ organisations are concurrent systems. Keep the rules, drop the hierarchy that ha
 
 ## 6. Graph as code, not a graph object
 
-**Status:** built (M2). Every shipped workflow is an ordinary Python program.
+**Status:** built. Every shipped workflow is an ordinary Python program.
 
 A graph can be expressed two ways: as data compiled once and then walked, or as a program that calls
 the primitives as functions. agentdag is the second, for three reasons in order of weight.
@@ -156,7 +155,7 @@ coordinator thin, so the cost of graph-as-code buys the property section 4 needs
 
 ## 7. Why build it rather than adopt something
 
-**Status:** decided (D2, 2026-08-17): rebuild.
+**Status:** decided 2026-08-17: rebuild.
 
 The honest version of this section starts with the number that decides it: how many runs per quarter.
 A coordinator used two to four times a quarter pays back its build only if the build is small. That is
