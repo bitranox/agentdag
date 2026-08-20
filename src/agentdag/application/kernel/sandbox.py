@@ -9,24 +9,33 @@ CONTAINER adapter needs to actually isolate a node (a mount list built from ``no
 ``worktree``/``isolation_root``, an env, a network policy), even though nothing here reads
 most of those fields yet - see each field's own docstring for why it exists.
 
-:class:`Sandbox` splits into two calls with different lifetimes on purpose. **What a run's
-sandbox enforces overall** (:meth:`Sandbox.guarantees`) is a static property of the wired
-adapter - one instance per run, so one answer for every node in it - and the coordinator
-stamps it onto every dispatched node's :class:`~agentdag.domain.models.ResultRecord`
+:class:`Sandbox` splits into two calls with different lifetimes on purpose, though only one
+of them is wired up yet. **What a run's sandbox enforces overall**
+(:meth:`Sandbox.guarantees`) IS a static property of the wired adapter - one instance per
+run, so one answer for every node in it - and the coordinator DOES stamp it onto every
+dispatched node's :class:`~agentdag.domain.models.ResultRecord`
 (:meth:`~agentdag.application.kernel.context.Coordinator._dispatch`), work nodes and code
 nodes alike, so a run's own records can answer "was this node contained?" without trusting
 the adapter's name alone. **What one node's dispatch needs prepared**
-(:meth:`Sandbox.prepare`) is per-call and only a WORK node (the one kind that hands a
-request to an :class:`~agentdag.application.kernel.ports.Executor`) has anything for it to
-act on; :class:`~agentdag.application.kernel.ports.Executor.run`'s own signature never
-changes for this - the coordinator calls :meth:`Sandbox.prepare` and folds whatever it
-yields into the SAME :class:`~agentdag.application.kernel.ports.ExecutorRequest` shape the
-executor already accepts, so adding a sandbox never means widening every executor.
+(:meth:`Sandbox.prepare`) is per-call and, once wired, would matter only for a WORK node
+(the one kind that hands a request to an :class:`~agentdag.application.kernel.ports.Executor`)
+- but this version of the coordinator never calls it: :meth:`~agentdag.application.kernel.
+context.Coordinator.work` builds its :class:`~agentdag.application.kernel.ports.ExecutorRequest`
+with no reference to the wired sandbox at all. The method and :class:`SandboxRequest` exist
+now, ahead of any caller, so that when a coordinator integration IS added - most likely by
+the container adapter this port is shaped for - it folds into the SAME
+:class:`~agentdag.application.kernel.ports.ExecutorRequest` shape the executor already
+accepts, rather than needing every executor widened to fit a sandbox added later.
 
 Contents:
     * :class:`SandboxRequest` - one node's isolation request, shaped for a future
       container adapter.
     * :class:`Sandbox` - the port: a static declaration, and a per-dispatch preparation hook.
+    * :class:`~agentdag.domain.models.SandboxGuarantees` - re-exported from
+      :mod:`agentdag.domain.models`, where it is defined (domain code may not import from
+      the application layer, so it cannot live here); listed in this module's own
+      ``__all__`` because it is what :meth:`Sandbox.guarantees` returns and what an adapter
+      constructs to implement this port, so an implementer needs it from the same place.
 """
 
 from __future__ import annotations
@@ -117,13 +126,21 @@ class Sandbox(Protocol):
     def prepare(self, request: SandboxRequest) -> Generator[SandboxRequest]:
         """Yield the request as the EXECUTOR should use it (paths/env possibly rewritten).
 
-        Only called for a WORK node, around building its
-        :class:`~agentdag.application.kernel.ports.ExecutorRequest` - the one kind of node
-        that hands a request to an :class:`~agentdag.application.kernel.ports.Executor`. A
-        context manager, not a plain function, because a container adapter needs a matching
-        TEARDOWN (stop the container, remove its mounts) once the executor is done with the
-        request this yielded - the ``with`` block's exit is that hook, even though
-        ``NoSandbox`` has nothing to tear down.
+        **Not called by this version of the coordinator.** :meth:`~agentdag.application.
+        kernel.context.Coordinator.work` builds its own
+        :class:`~agentdag.application.kernel.ports.ExecutorRequest` directly and never
+        touches the wired :class:`Sandbox` beyond :meth:`guarantees`; nothing in ``src/``
+        constructs a :class:`SandboxRequest` or calls this method. It is defined ahead of
+        that call site, shaped for the one kind of node that would ever have anything to
+        act on - a WORK node, around building its
+        :class:`~agentdag.application.kernel.ports.ExecutorRequest`, the one kind that hands
+        a request to an :class:`~agentdag.application.kernel.ports.Executor` - so a future
+        coordinator integration (most likely alongside the container adapter this port is
+        shaped for) has a shape to fold into rather than a shape to invent. A context
+        manager, not a plain function, because a container adapter needs a matching TEARDOWN
+        (stop the container, remove its mounts) once the executor is done with the request
+        this yielded - the ``with`` block's exit is that hook, even though ``NoSandbox`` has
+        nothing to tear down.
 
         Args:
             request: This node's isolation request, built by the coordinator from what it

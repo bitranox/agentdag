@@ -23,9 +23,13 @@ Contents:
     * :class:`ScopeHandle` - identifies a unit a :class:`Scope` started.
     * :class:`LaunchResult` - whether a background launch proved itself within
       :meth:`Scope.confirm`'s timeout, and any stderr it captured.
-    * :class:`Sandbox`, :class:`SandboxRequest` - re-exported from :mod:`.sandbox` (Task 19)
-      so every port the kernel needs is reachable from this one module, matching every port
-      above; the classes themselves are defined there, not duplicated here.
+    * :class:`Sandbox`, :class:`SandboxRequest`, :class:`SandboxGuarantees` - re-exported
+      from :mod:`.sandbox` (Task 19) so every port the kernel needs is reachable from this
+      one module, matching every port above; the classes themselves are defined there (or,
+      for ``SandboxGuarantees``, in :mod:`~agentdag.domain.models` and re-exported by
+      ``.sandbox`` in turn), not duplicated here. ``SandboxGuarantees`` travels with
+      ``Sandbox`` for the same reason ``SandboxRequest`` does: an adapter implementing the
+      port needs the type its own :meth:`~.sandbox.Sandbox.guarantees` method returns.
     * :class:`KernelWiring` - everything one CLI invocation needs to run or resume a
       coordinator, built once by the composition root's ``wire_kernel`` (Task 17).
 """
@@ -36,7 +40,7 @@ from dataclasses import dataclass
 from datetime import timezone
 from typing import TYPE_CHECKING, Protocol
 
-from .sandbox import Sandbox, SandboxRequest
+from .sandbox import Sandbox, SandboxGuarantees, SandboxRequest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -62,6 +66,7 @@ __all__ = [
     "RunDir",
     "RunLock",
     "Sandbox",
+    "SandboxGuarantees",
     "SandboxRequest",
     "Scope",
     "ScopeHandle",

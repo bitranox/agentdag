@@ -344,7 +344,8 @@ caveat above applies to the kernel unchanged in kind.
   turns the paragraph above into a typed declaration rather than only prose - every node
   the coordinator dispatches gets a record carrying `sandbox.adapter == "none"` with
   `filesystem`, `network_egress` and `separate_uid` all `false`, persisted in `record.json`
-  and the journal's `result` line, so `agentdag run records` shows it too. A record served
+  and the journal's `result` line, so `agentdag run records --json` shows it too (the
+  default plain-text output prints only node id, attempt, status and charged tokens). A record served
   from the journal on replay keeps the declaration it was originally dispatched under,
   even when a later launch is wired with a different `Sandbox` adapter.
 
