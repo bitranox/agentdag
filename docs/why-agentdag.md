@@ -23,7 +23,7 @@ more than the accumulated answer to these limits.
 | What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                                                                        | anything that must outlive a step is written down, or it did not happen                                                                                    |
 | Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                                            | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
 | Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                                                    | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a fixed cost before any work: about 19,000 tokens for a real dispatch even with no inherited settings, and tens of thousands more if it loads an operator's cascade | keep the inherited cascade at nothing, and give a node work worth roughly twenty thousand tokens of startup                                                |
+| Cost of one question | two minutes of work costs two minutes | a large cost before any work: one cold dispatch measured about 19,000 tokens, and an inherited cascade adds tens of thousands more | keep the inherited cascade at nothing, and give a node enough work to be worth starting at all |
 | Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | dispatching to a fresh subagent separates the contexts properly; what returns is a summary, and the coordinator keeps every one of them                             | constrain the return channel: a typed record and a path, so the coordinator decides what happens next without ever holding what happened                   |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
@@ -68,20 +68,25 @@ they are kept apart by disjoint work, not by telling one to wait.
 always, but often enough that the answer is not reliable enough to decide anything on. Confidence is
 free.
 
-**A fixed price per dispatch.** Starting an agent costs a large fixed amount before it reads a word
-of your task, and what makes it large is everything the child loads first: its system prompt, its
-tool definitions, and whatever settings cascade it inherits.
+**A fixed price per dispatch.** Starting an agent costs a large amount before it reads a word of
+your task, because its system prompt, its tool definitions and whatever settings cascade it
+inherits all have to be sent first.
 
-Measured on this machine, a real dispatch that inherits no settings at all still pays about 19,000
-tokens of input before the work starts. A bare child with no tools and a trivial prompt pays about
-170, which is a floor no working node comes near. Add the project's settings and it costs a few
-thousand more; add a full operator plugin set and it is tens of thousands more again. The executor
-therefore asks for no setting sources, which removes the part that is optional rather than the cost
-itself.
+What that costs, measured here on ONE cold dispatch: a real node inheriting no settings at all paid
+about 19,000 tokens of input before the work began. A bare child with no tools and a trivial prompt
+paid 170, a floor no working node comes near, and that same trivial child rose to a few thousand
+with the project's settings and to tens of thousands with a full operator plugin set. The last of
+those is why the executor asks for no setting sources: it removes the part that is optional, not the
+cost itself.
 
-So the price is fixed rather than proportional to the task, and a node has to carry enough work to
-be worth roughly twenty thousand tokens of greeting. Twenty small items dispatched separately spend
-most of their budget on being started.
+What the SECOND node pays is not known. Every measurement available is a cold start that read
+nothing from cache, so whether nodes share a cached prefix, and how much of that 19,000 a later
+dispatch therefore skips, is an open question. Read the figure as the first node's cost and the
+ceiling for the rest.
+
+The part that does not depend on that answer is the shape: the price is attached to starting a node
+rather than to the size of the task it is given, so a node should carry enough work to be worth
+starting at all.
 
 ## 2. Why the human org chart does not transfer
 
