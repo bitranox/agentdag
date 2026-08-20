@@ -321,6 +321,49 @@ def test_scrub_key_pass_redacts_nested_secret_keys_in_dicts_and_lists() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_scrub_key_pass_does_not_short_circuit_recursion_into_an_allowlisted_container() -> None:
+    """``output_tokens_details`` (unlike the other ten entries in
+    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST`, which are all scalars)
+    is a DICT in a real transcript - so "allowlisted" must mean exactly one thing: do
+    not redact THIS value whole. It must never mean "stop walking this value",
+    because a container is exactly where that would matter: anything nested inside an
+    allowlisted key would otherwise escape the KEY pass entirely.
+
+    This property already holds, and it was DISCOVERED while reviewing the extended
+    allowlist, not deliberately designed for this case: :func:`~agentdag.domain.scrub.scrub`'s
+    dict branch is ``"[scrubbed]" if _is_secret_key(key) else scrub(val)`` - the ELSE
+    branch always recurses, for every key that is not redacted whole, whether that
+    key is an ordinary non-secret key (``"content"``) or an allowlisted one
+    (``"output_tokens_details"``). :func:`~agentdag.domain.scrub._is_secret_key`
+    collapses both cases to the same single ``bool``, so both take the same branch;
+    there is no separate code path that treats "allowlisted" as "leave untouched".
+    This exact branch shape (redact-whole vs. recurse, never redact-whole vs.
+    leave-untouched) dates to the module's introduction at commit cbe7a62, before the
+    KEY pass, the regression, or either allowlist round existed - it was never
+    re-examined when the allowlist was added, it simply falls out of the shape.
+
+    A hypothetical real nested count field like ``reasoning_tokens`` is deliberately
+    NOT used as the "survives" half of this test: it is not itself on the allowlist
+    (it does not appear anywhere in this codebase's own transcripts, so adding it
+    would be a guess, not a verified field) and the component ``"tokens"`` in it
+    means it is currently redacted like any other unenumerated key - a SEPARATE
+    question from the containment property this test isolates. An ordinary
+    non-count nested value is used instead so the assertion cannot be read as taking
+    a position on that separate question.
+
+    Mutation check (verified by running it): a plausible ALTERNATIVE implementation -
+    one that special-cases an allowlisted key to return its value untouched instead
+    of recursing into it - makes the nested ``apiToken`` assertion fail (it survives
+    instead of being redacted), proving the container-safety property is not free
+    with just any allowlist implementation and is worth pinning explicitly rather
+    than assuming.
+    """
+    result = scrub({"output_tokens_details": {"note": "keep me", "apiToken": "hunter2"}})
+    assert result == {"output_tokens_details": {"note": "keep me", "apiToken": "[scrubbed]"}}
+    assert result["output_tokens_details"] != "[scrubbed]"  # the container itself must not be redacted whole
+
+
+@pytest.mark.os_agnostic
 def test_scrub_value_pass_still_redacts_a_secret_shaped_string_under_a_usage_key() -> None:
     """Defense in depth: the KEY pass no longer redacts ``input_tokens`` by name, but
     the VALUE pass never looked at the key at all - a secret-shaped STRING reaching
