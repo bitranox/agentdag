@@ -17,15 +17,15 @@ and [the architecture overview](architecture-overview.md) first if you want to k
 The overview alone answers every common question at least briefly; the topic documents are for when
 one of those answers is the one you actually needed.
 
-| Document                                              | What it covers                                                                                                              |
-|-------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
-| [Why agentdag exists](why-agentdag.md)                | the five constraints that bind a language model, and why the shape that follows is a DAG scheduler rather than an org chart |
-| [Architecture overview](architecture-overview.md)     | the bird's eye view: how a run is launched, how work and results move, how the graph's shape is decided, what runs a node   |
-| [Execution model](execution-model.md)                 | nodes, records, the journal key, replay and the crash window, approvals, parallelism, the tier policy                       |
-| [Executors and models](executors-and-models.md)       | how a model is actually driven, credentials and subscriptions, the Codex arm, and where other model families attach         |
-| [Safety and sandbox](safety-and-sandbox.md)           | what is enforced today, what measurably is not, and what a real boundary would take                                         |
+| Document                                              | What it covers                                                                                                                |
+|-------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| [Why agentdag exists](why-agentdag.md)                | the five constraints that bind a language model, and why the shape that follows is a DAG scheduler rather than an org chart   |
+| [Architecture overview](architecture-overview.md)     | the bird's eye view: how a run is launched, how work and results move, how the graph's shape is decided, what runs a node     |
+| [Execution model](execution-model.md)                 | nodes, records, the journal key, replay and the crash window, approvals, parallelism, the tier policy                         |
+| [Executors and models](executors-and-models.md)       | how a model is actually driven, credentials and subscriptions, the Codex arm, and where other model families attach           |
+| [Safety and sandbox](safety-and-sandbox.md)           | what is enforced today, what measurably is not, and what a real boundary would take                                           |
 | [Measurements](measurements.md)                       | what is actually known: measured numbers, source-verified facts, what is load-bearing and untested, and what turned out false |
-| [Claude Code integration](claude-code-integration.md) | what a dispatched node does and does not inherit from your setup, knowledge, and the self-improve loop                      |
+| [Claude Code integration](claude-code-integration.md) | what a dispatched node does and does not inherit from your setup, knowledge, and the self-improve loop                        |
 
 Two reference documents sit beside these. [Module reference](systemdesign/module_reference.md) is the
 file index for the source tree, and [the decision records](adr/) hold choices narrow enough to belong

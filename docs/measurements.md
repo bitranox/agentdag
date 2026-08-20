@@ -19,17 +19,29 @@ An entry names what was established, how, and what it does NOT establish. The la
 that keeps a measurement honest: a number measured once, on one shape of input, bounds less than it
 appears to.
 
-To add one: run something or cite a file and line. A careful argument is not a measurement, however
-convincing, and it goes in the design instead. If a measurement later turns out to have been
-misread, move it to section 5 rather than deleting it.
+An entry also says WHO established it, because that turned out to matter. Three provenances appear:
+
+- **run here** - executed while writing this file, numbers copied from the output.
+- **probe corpus** - measured by the session that built the kernel, in an internal probe with a
+  write-up; read here, not re-run.
+- **cited** - a reviewer reported it with a file and a line, and nobody re-opened that file
+  afterwards. This is the weakest tier and it is marked rather than blended in, because a design
+  intention described as a mechanism reached these documents twice in good faith.
+
+To add one: run something or cite a file and line, and say which. A careful argument is not a
+measurement however convincing, and it goes in the design instead. If a measurement later turns out
+to have been misread, move it to section 5 rather than deleting it.
 
 ---
 
 ## 2. Measured
 
+One of these was run while writing this file; the rest come from the kernel session's probe corpus
+and were read here rather than re-run. Each says which.
+
 ### A later node in the same run reads its startup from cache
 
-**Measured 2026-08-20**, two dispatches through the shipped executor, identical brief and tool set,
+**Run here, 2026-08-20**, two dispatches through the shipped executor, identical brief and tool set,
 different working directories, seconds apart.
 
 | node   | input tokens | of which cache_read |
@@ -47,16 +59,16 @@ apart two dispatches can be before the cache entry expires: these were seconds a
 
 ### The fixed startup cost is not a constant
 
-**Measured 2026-08-17 and 2026-08-20**, two separate probes of equally trivial work, both with no
-inherited settings: about 19,000 input tokens in one, about 26,000 in the other. The difference is
-the brief and the tool set, not anything either node did.
+**Probe corpus 2026-08-17, plus the run here 2026-08-20**: two separate probes of equally trivial
+work, both with no inherited settings, measured about 19,000 input tokens in one and about 26,000 in
+the other. The difference is the brief and the tool set, not anything either node did.
 
 **Consequence:** any figure derived from a single dispatch probe inherits whichever brief that probe
 happened to use. That includes the minimum-node-size threshold in the design.
 
 ### What an inherited settings cascade costs
 
-**Measured 2026-08-17**, one trivial prompt, three arms differing only in which settings the child
+**Probe corpus 2026-08-17**, one trivial prompt, three arms differing only in which settings the child
 loads:
 
 | setting sources        | total input tokens |
@@ -70,7 +82,7 @@ the RATIO between them, which is why the executor asks for no setting sources.
 
 ### A dispatch can be stopped mid-tool, in under a tenth of a second
 
-**Measured 2026-08-20.** An interrupt issued three seconds into a ninety-second Bash call ended the
+**Probe corpus 2026-08-20.** An interrupt issued three seconds into a ninety-second Bash call ended the
 stream 0.088 s later, and the tool's own process was dead afterwards, its last output unchanged six
 seconds on. At a turn boundary the same interrupt took 0.551 s.
 
@@ -79,8 +91,8 @@ client stopping its own child. A message between two agents is not preemptive.
 
 ### The tool hooks deny what they are specified to deny, and miss what was predicted
 
-**Measured 2026-08-18.** With `permission_mode="dontAsk"`, the SDK invokes the outside-root hook for
-every `Write`/`Edit`/`MultiEdit`/`NotebookEdit`, honours its denial, and still allows an in-root
+**Probe corpus 2026-08-18.** With `permission_mode="dontAsk"`, the SDK invokes the outside-root hook
+for every `Write`/`Edit`/`MultiEdit`/`NotebookEdit`, honours its denial, and still allows an in-root
 write with no prompt. The command denylist denies a listed command.
 
 Neither hook sees an out-of-root write made by shell redirection through Bash, because that is not a
@@ -89,7 +101,7 @@ why a post-node scan exists.
 
 ### A planner's emissions validated against the schema
 
-**Measured 2026-08-17**, 20 sequential emissions: 20 of 20 parsed as JSON and passed both the node
+**Probe corpus 2026-08-17**, 20 sequential emissions: 20 of 20 parsed as JSON and passed both the node
 schema and the five validation rules.
 
 **Does not establish** that a planner node is safe to build on: all 20 chose the same node kind for
@@ -97,34 +109,35 @@ the same prompt, so the run measures conformance on one scenario rather than jud
 
 ### A subscription token authenticates a headless child
 
-**Measured 2026-08-17.** An OAuth token authenticates an SDK child whose configuration directory is
+**Probe corpus 2026-08-17.** An OAuth token authenticates an SDK child whose configuration directory is
 empty, which is the mechanism the executor uses for subscription rather than metered billing.
 
 ---
 
 ## 3. Verified against source
 
-Each of these was read in the code at the stated place, not inferred. Line numbers move; the file
-and symbol are the durable part.
+Each of these was read at the stated place rather than inferred. Line numbers move, so the file and
+symbol are the durable part. The last column says whether it was read while writing this file or
+taken from a reviewer's citation without re-opening it.
 
-| Claim                                                                                                                               | Where                                                               |
-|-------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
-| The brief is the node's system prompt, passed as a plain string                                                                     | `executor_claude.py`, `_options_for`                                |
-| A node's working directory is a separate option, never prompt text                                                                  | same                                                                |
-| No settings cascade is inherited: setting sources are explicitly empty                                                              | same                                                                |
-| The child environment is a true allowlist, and everything else is blanked rather than omitted                                       | `executor_claude.py`, `_allowlisted_env` / `_blank_everything_else` |
-| No API-key path exists; credentials are a token file or a private per-node copy                                                     | `executor_claude.py`, credential sources                            |
-| The CLI never reads a credential's content; only the executor does, at dispatch                                                     | `adapters/cli/commands/run.py`, `_resolve_credential`               |
-| A journal key excludes dependency names, deadline and budget, and includes the brief's content rather than its path                 | `domain/keys.py`                                                    |
-| A record hash covers the record's whole canonical JSON, including its measured duration                                             | `domain/keys.py`, `record_hash`                                     |
-| The audit copy is written and synced before the journal, so the journal is never ahead of it                                        | `adapters/kernel/journal_jsonl.py`                                  |
-| A decision is keyed by node id and payload hash together                                                                            | `application/kernel/context.py`, approve                            |
-| An apply is guarded by a marker touched only after the effect succeeded                                                             | `application/kernel/context.py`, `_apply_one`                       |
-| The isolation scan compares content manifests and cannot attribute a write into a sibling's declared region                         | `application/kernel/context.py`, scan                               |
-| Nothing intersects two nodes' declared write sets                                                                                   | whole tree: `write_set` has two consumers                           |
-| `charged_tokens` sums input and output where input already includes cached reads, so the run-level total cannot be priced correctly | `executor_claude.py`, `outcome_from_usage`                          |
-| The Messages API is stateless; the full conversation is resent on every request                                                     | Anthropic API documentation                                         |
-| A subagent starts in a fresh isolated context and returns only its summary                                                          | Claude Code documentation                                           |
+| Claim                                                                                                                               | Where                                                               | Who checked |
+|-------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|-------------|
+| The brief is the node's system prompt, passed as a plain string                                                                     | `executor_claude.py`, `_options_for`                                | read here   |
+| A node's working directory is a separate option, never prompt text                                                                  | same                                                                | read here   |
+| No settings cascade is inherited: setting sources are explicitly empty                                                              | same                                                                | read here   |
+| The child environment is a true allowlist, and everything else is blanked rather than omitted                                       | `executor_claude.py`, `_allowlisted_env` / `_blank_everything_else` | cited       |
+| No API-key path exists; credentials are a token file or a private per-node copy                                                     | `executor_claude.py`, credential sources                            | cited       |
+| The CLI never reads a credential's content; only the executor does, at dispatch                                                     | `adapters/cli/commands/run.py`, `_resolve_credential`               | cited       |
+| A journal key excludes dependency names, deadline and budget, and includes the brief's content rather than its path                 | `domain/keys.py`                                                    | read here   |
+| A record hash covers the record's whole canonical JSON, including its measured duration                                             | `domain/keys.py`, `record_hash`                                     | read here   |
+| The audit copy is written and synced before the journal, so the journal is never ahead of it                                        | `adapters/kernel/journal_jsonl.py`                                  | cited       |
+| A decision is keyed by node id and payload hash together                                                                            | `application/kernel/context.py`, approve                            | read here   |
+| An apply is guarded by a marker touched only after the effect succeeded                                                             | `application/kernel/context.py`, `_apply_one`                       | cited       |
+| The isolation scan compares content manifests and cannot attribute a write into a sibling's declared region                         | `application/kernel/context.py`, scan                               | cited       |
+| Nothing intersects two nodes' declared write sets                                                                                   | whole tree: `write_set` has two consumers                           | read here   |
+| `charged_tokens` sums input and output where input already includes cached reads, so the run-level total cannot be priced correctly | `executor_claude.py`, `outcome_from_usage`                          | read here   |
+| The Messages API is stateless; the full conversation is resent on every request                                                     | Anthropic API documentation                                         | read here   |
+| A subagent starts in a fresh isolated context and returns only its summary                                                          | Claude Code documentation                                           | read here   |
 
 ---
 
