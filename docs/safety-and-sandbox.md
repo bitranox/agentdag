@@ -147,7 +147,8 @@ for the network half, which is the half that matters.
 
 ## 9. How to run it sensibly in the meantime
 
-Advice, not a mechanism. Nothing below is enforced by anything.
+Operator advice rather than mechanism: apart from the scratch-clone rule, which the graph does
+enforce, nothing here is something the system holds you to.
 
 Point runs at scratch mirrors, which the shipped graph enforces anyway. Run the coordinator as a user
 that does not have anything you would mind an agent reading. Keep the run directory's permissions
