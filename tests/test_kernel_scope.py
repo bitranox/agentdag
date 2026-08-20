@@ -32,6 +32,14 @@ from agentdag.composition.kernel import manager_state_is_live
 
 _SLEEP_ARGV = [sys.executable, "-c", "import time; time.sleep(30)"]
 _FAIL_ARGV = [sys.executable, "-c", "import sys; print('boom: bad argv', file=sys.stderr); sys.exit(3)"]
+_IGNORE_SIGTERM_ARGV = [
+    sys.executable,
+    "-c",
+    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+]
+"""Ignores SIGTERM, so ``NoScope.kill`` must escalate to SIGKILL to end it (a real process
+cannot ignore that one). Windows has no equivalent - ``terminate()`` there is
+``TerminateProcess`` - which is why the test using this is POSIX-only."""
 _SPAWNS_A_CHILD_ARGV = [
     sys.executable,
     "-c",
@@ -140,6 +148,28 @@ def test_noscope_confirm_reports_the_captured_stderr_for_an_early_failure(tmp_pa
     assert "boom: bad argv" in result.stderr
     assert handle.log_path.is_file()
     assert "boom: bad argv" in handle.log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows terminate() is TerminateProcess and cannot be ignored")
+def test_noscope_kill_escalates_to_sigkill_for_a_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """A LIVE process that survives the polite signal is really escalated to SIGKILL.
+
+    The realistic half of the escalation ladder, and the one thing its portable sibling
+    (``..._outlives_the_final_signal``) cannot show: there the ``Popen`` is patched to
+    report "still running", so the ladder is only ever walked against a child that is
+    already dead. Here nothing is patched - the child genuinely ignores ``SIGTERM``, so
+    ``kill`` can only return ``True`` by escalating for real. Kept POSIX-only rather than
+    made portable, because Windows offers no ignorable terminate to survive.
+    """
+    scope = NoScope()
+    handle = scope.start(unit="agentdag-noscope-ignores-sigterm", argv=_IGNORE_SIGTERM_ARGV, env={}, cwd=tmp_path)
+    time.sleep(_START_GRACE_S)
+    assert _pid_exists(handle.pid)  # control: it really is running, and really ignoring SIGTERM
+
+    assert scope.kill(handle) is True
+
+    assert not _pid_exists(handle.pid)
 
 
 @pytest.mark.os_posix
