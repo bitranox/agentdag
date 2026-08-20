@@ -24,6 +24,7 @@ one of those answers is the one you actually needed.
 | [Execution model](execution-model.md)                 | nodes, records, the journal key, replay and the crash window, approvals, parallelism, the tier policy                       |
 | [Executors and models](executors-and-models.md)       | how a model is actually driven, credentials and subscriptions, the Codex arm, and where other model families attach         |
 | [Safety and sandbox](safety-and-sandbox.md)           | what is enforced today, what measurably is not, and what a real boundary would take                                         |
+| [Measurements](measurements.md)                       | what is actually known: measured numbers, source-verified facts, what is load-bearing and untested, and what turned out false |
 | [Claude Code integration](claude-code-integration.md) | what a dispatched node does and does not inherit from your setup, knowledge, and the self-improve loop                      |
 
 Two reference documents sit beside these. [Module reference](systemdesign/module_reference.md) is the
