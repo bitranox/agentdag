@@ -16,15 +16,15 @@ organised and degrades for reasons nobody can see.
 Put the two side by side. The last column is the one that matters, because a team's shape is nothing
 more than the accumulated answer to these limits.
 
-| Limit                        | A person                                                                                                      | A language model                                                                                                         | What it does to the team                                                                                                                                   |
-|------------------------------|---------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle     |
-| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up   | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
-| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                             | anything that must outlive a step is written down, or it did not happen                                                                                    |
-| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
-| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                         | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a fixed startup before any work, from about 170 tokens to about 38,800 depending on what cascade it inherits             | keep the inherited cascade at nothing, then give a node enough work to clear even the small startup                                                        |
-| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | in a shared conversation every message lands in everyone's context and is re-read on every later turn, so cost squares   | coordinate through typed records and an order fixed at plan time, never through a shared conversation                                                      |
+| Limit                        | A person                                                                                                      | A language model                                                                                                                                | What it does to the team                                                                                                                                   |
+|------------------------------|---------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full                        | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle     |
+| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up                          | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
+| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                                                    | anything that must outlive a step is written down, or it did not happen                                                                                    |
+| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                        | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
+| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                                | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
+| Cost of one question         | two minutes of work costs two minutes                                                                         | a fixed startup before any work, from about 170 tokens to about 38,800 depending on what cascade it inherits                                    | keep the inherited cascade at nothing, then give a node enough work to clear even the small startup                                                        |
+| Coordinating who does what | you can say who talks to whom, and dispatching to fresh subagents does stop siblings paying for each other; what it does not stop is results piling into whoever coordinates | keep the centre thin: results go to disk and the coordinator holds references and typed fields, so its context does not grow with the run | make the sharing explicit: a node reads the records it needs, so what it costs follows from what it was given rather than from how long the run has run |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
 between heads is the expensive part and talking is the cheap part, so organisations grow layers to
@@ -127,10 +127,28 @@ the room. And before anyone speaks, they silently re-read the entire transcript 
 the beginning. People never work that way, because no one could. A model can be made to, every
 single turn, and you are billed for every word it re-reads.
 
-That is the money, in one sentence. A conversation between five agents does not cost five times what
-one agent costs. It grows roughly with the square of the conversation, because every new message is
-re-read by everybody on every turn that follows it. Teams get expensive fastest exactly when they
-start working well, because working well means saying more.
+That is one arrangement. The other is the one most people actually build, and it deserves credit
+rather than a strawman: a master agent that dispatches to subagents, where you say exactly which
+master talks to which subagent. That fixes the sibling problem outright. A subagent starts with a
+fresh context and a brief, never reads what its siblings said, and pays nothing for their talk.
+
+What it does not fix is the master. Every result comes back into the master's context and is re-read
+on every later turn it takes. The quadratic has not gone away; it has moved to the one context that
+everything passes through, which is also the context holding the plan. That is the failure where
+every individual worker looks fine and the thing coordinating them degrades late in a long run, and
+it is the harder one to see, because nothing in the transcript looks wrong.
+
+So the cost follows how many agents genuinely share a context, not how many agents there are. Where
+one is shared it grows with the square of the talk, because each message is re-read on every later
+turn. Prompt caching makes each re-read cheaper without making it free, which flattens the constant
+and leaves the shape alone.
+
+And the rule that falls out is not "avoid hierarchy". It is: whatever sits at the centre has to stay
+thin. Results go to disk; the thing coordinating holds references and typed fields and reads the
+content only when it must.
+
+The uncomfortable part is that a team gets expensive fastest exactly when it starts working well,
+because working well means saying more.
 
 **One whiteboard, several hands.** At the same date, LangGraph's standard way of holding state
 accumulated every message into one shared object, the most widely copied pattern in the field and
