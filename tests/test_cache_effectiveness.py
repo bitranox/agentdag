@@ -54,6 +54,22 @@ class TestGetConfig:
 
         assert first.as_dict() == second.as_dict()
 
+    def test_credentials_and_kernel_defaults_load_with_their_shipped_values(self) -> None:
+        """Task 14's ``[credentials]``/``[kernel]`` tables (defaultconfig.d/60-kernel.toml)
+        load through the same layered mechanism every other section does.
+        """
+        from agentdag.adapters.config.loader import get_config
+
+        data = get_config().as_dict()
+
+        assert data["credentials"]["claude_oauth_token_file"] == ""
+        assert data["kernel"] == {
+            "runs_dir": "/var/lib/agentdag/runs",
+            "parallel": 2,
+            "max_turns": 25,
+            "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],
+        }
+
 
 @pytest.mark.os_agnostic
 class TestConcurrentAccess:

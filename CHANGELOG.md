@@ -32,10 +32,45 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - Every push target is validated before the first node is dispatched, so a fleet naming a real
   repository is refused without spending a run and without asking anybody to approve a push
   that cannot happen. The apply step keeps the same check as its invariant.
+- The coordinator kernel and its CLI, `agentdag run` (`start`, `status`, `records`, `resume`,
+  `approve`): a journal (`journal.jsonl` plus an audit copy), a resumable run directory, a
+  tier policy table resolving specs to model rows and executors, and a Claude Agent SDK
+  executor with an allowlisted per-node environment and a per-node credential (an OAuth-token
+  keyfile, or a private owner-only copy of the operator's own login). The kernel's primitives -
+  work, gate, scan, map, reduce, stage, approve, apply - run the SAME `graph-a` workflow the
+  M1 baseline runs, replay-pure across a crash or a suspend: a relaunch re-dispatches only what
+  the journal shows never finished, and serves everything else from its recorded result.
+- `agentdag run start` launches detached by default, under a real `systemd --user --scope`
+  unit on Linux (measured live) or a plain child process elsewhere, so the command returns
+  immediately; `--foreground` drives the same coordinator in-process, the path every test
+  exercises. `agentdag graph-a ...` stays in the repo unchanged as the M1 baseline - the
+  control this kernel is measured against until M5 compares the two.
 
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.
+- Codex (a second executor arm) and a per-turn token spend cap are not in this version of the
+  coordinator kernel either.
+
+### What the kernel does not enforce
+- The per-node credential and the environment allowlists stop ACCIDENTAL leakage through
+  inherited environment variables. Nodes are not isolated by operating-system user or by a
+  sandbox in this version: a node runs as the same user as the coordinator, so its own Bash
+  tool can read files elsewhere on the machine and make outbound network requests.
+- The Bash denylist blocks only the exact command shapes the policy lists. Measured against
+  the shipped policy, `curl -XPOST`, `curl -d`, a GET carrying its data in the URL,
+  `git -C some/path push` and `python3 -c ...` all pass.
+- Per-node write-set enforcement is a post-hoc scan, not a live block, and under `--parallel`
+  greater than 1 a stray write landing inside a SIBLING's declared region is not attributable
+  to one node; the scan reports that rather than naming one.
+- `by` and `token_id` on a decision are not an authentication mechanism: any process running
+  as the same operating-system user can record one.
+- Cancel and deadline teardown reaps grandchildren only under the systemd scope. Under
+  `NoScope` (off Linux, or with no live `systemd --user` manager) the coordinator's process
+  group is killed on POSIX and only the one launched process on Windows.
+- A failed CODE node (gate, scan, tally, discover) is final in this version: its record is
+  served on every resume and no command mints a new attempt, so such a run can only be
+  restarted as a new run. M3 adds the retry path.
 
 ## [0.0.1] - 2026-08-17
 

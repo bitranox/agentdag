@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/node-spec.schema.json",
+  "title": "agentdag node spec",
+  "description": "What the planner emits and the coordinator validates and dispatches (design 2.1). One object per node in a workflow graph.",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier of this node within the run's graph."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "gate",
+        "synth",
+        "planner",
+        "approve",
+        "map",
+        "reduce",
+        "wait",
+        "batch",
+        "stage",
+        "apply"
+      ],
+      "description": "The DISPATCHED primitive this node runs (design 2.1, 4). Only dispatched kinds are listed: the coordinator-code patterns until-pass, until-dry, route and vote get no node record and are control flow in the workflow program, compact is a field on work, and deadline_s is a per-node scheduler field."
+    },
+    "brief_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A path in the run store to the node's brief (objective, output schema, tool/source guidance, explicit boundaries), validated to resolve INSIDE the run store after realpath (2.4). Input is built from the store by a filter, never pasted whole; the assembled input is written to input.json in the node dir and its hash is part of the journal key (3.2)."
+    },
+    "executor": {
+      "type": "string",
+      "pattern": "^(claude|code|mcp:[^/]+/[^/]+)$",
+      "description": "'claude', 'code' for a code-executed kind (gate, reduce, wait, stage, apply, approve), or 'mcp:<server>/<tool>' addressing an MCP-exposed executor such as 'mcp:codex/codex'. Absent on map and batch, which the coordinator performs itself (design 2.1, C1)."
+    },
+    "tier_role": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "mechanical",
+        "standard",
+        "deep",
+        "top",
+        null
+      ],
+      "description": "The role the tier policy resolves to a model row (design 2.1, 2.3). NULL for every code-executed kind and for map/batch, which resolve no model row - a map's standard default belongs to its BODY nodes."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional stable alias (e.g. haiku, sonnet, opus, fable, codex), never a pinned version. The planner may override the tier-role default per node with a one-line reason (2.3 rule 3)."
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "description": "Optional reasoning-effort knob. Only used at the extremes by default (2.3 rule 6)."
+    },
+    "knowledge": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(facts|docs:[A-Za-z0-9._-]+|run:[A-Za-z0-9._-]+|staging:[A-Za-z0-9._-]+)$"
+      },
+      "description": "semdex dataset names this node may read (2.1), one of the namespaces of design 3.7. Enters the journal key as the allowed list (3.2). NOT IN SLICE 1: needs semdex 4.4 (filter port) and 4.9 (staging queue); see ../../plans/build-plan-high.md cuts."
+    },
+    "stage_into": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The single semdex dataset this node may WRITE to (2.1). Validated explicitly (2.4) and part of the journal key (3.2), because changing where a node writes makes it a different call. NOT IN SLICE 1, with knowledge.",
+      "pattern": "^(run:[A-Za-z0-9._-]+|staging:[A-Za-z0-9._-]+)$"
+    },
+    "write_set": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "PATHS (globs) the node may create, edit or delete - enforced by the PreToolUse hook / Codex workspace-write sandbox and by the post-node ISOLATION-ROOT scan (design 5, 3.6). Confined to the node's own dir, except that a reduce may name manifest/, a stage intents/, and a reduce or synth artefacts/ (3.1). Shared resources are NOT here; see requires."
+    },
+    "requires": {
+      "type": "array",
+      "description": "Shared resources the node consumes, scheduled by admission against the HOST-LEVEL lease store (design 3.6): mutex (capacity 1), capacity in a unit, or rate over a window. Enters the journal key. In slice 1 the only registered resource is the bmk-tool-env mutex.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string",
+            "minLength": 1,
+            "description": "a registered resource name"
+          },
+          "amount": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 1
+          }
+        },
+        "required": [
+          "resource",
+          "amount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "isolation": {
+      "type": "string",
+      "enum": [
+        "worktree",
+        "dir",
+        "none"
+      ],
+      "description": "Isolation mode: worktree (default for work, cloned from a bare mirror under the run dir with core.fileMode=false), dir, or none. 'dir' runs the node in an EXISTING directory rather than a fresh worktree - typically a preceding node's worktree in the same branch (a gate running make test or an isolation-root scan against a work node's own checkout) - writing only inside its own declared write_set and creating nothing new under the run root. 'none' means NO worktree and no working dir of its own - such a node still writes, but only into its own artefact dir nodes/<node_id>/<hash8>/artefacts/ and, for its kind, the run-root prefixes of 3.1 (design 2.1, C8)."
+    },
+    "deps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "node_ids that must be done before this node dispatches; validated to exist and to leave the graph acyclic (2.1, 2.4)."
+    },
+    "deadline_s": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Per-node deadline in seconds (2.1, 3.4). A limit, not an input: not part of the journal key (3.2)."
+    },
+    "budget": {
+      "type": "object",
+      "description": "Per-node budget. Tokens per model row are the MEASURED and capped quantity (design 2.1/3.4, decided 2026-08-17); usd is an optional derived ceiling that binds only metered rows. Limits are NOT part of the journal key.",
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "description": "row alias -> token cap for this node on that row",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Optional derived-USD ceiling. It binds ONLY a row whose usd_per_mtoken values are non-null; on a row priced null (the codex row as shipped) the USD cap is unavailable and a budget.usd is rejected at validation (design 2.3, M4)."
+        }
+      },
+      "required": [
+        "tokens"
+      ],
+      "additionalProperties": false
+    },
+    "compact": {
+      "type": "object",
+      "description": "For a long serial work node: the executor is asked to compress its own history at trigger_tokens, keeping the last keep_last_n turns/messages (2.1, section 4 'compact').",
+      "properties": {
+        "trigger_tokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Token count at which the executor is asked to compact its own history."
+        },
+        "keep_last_n": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Number of most recent turns/messages to keep uncompacted."
+        }
+      },
+      "required": [
+        "trigger_tokens",
+        "keep_last_n"
+      ],
+      "additionalProperties": false
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0 on first dispatch, incremented on retry/escalation; enters the journal key so a re-dispatch after failed is not served from the journal (2.1)."
+    }
+  },
+  "required": [
+    "node_id",
+    "kind",
+    "brief_ref",
+    "write_set",
+    "requires",
+    "isolation",
+    "deps",
+    "deadline_s",
+    "budget",
+    "attempt"
+  ],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "node_id": "extract_vendor_ids",
+      "kind": "work",
+      "brief_ref": "runs/run-2026-08-17-001/briefs/extract_vendor_ids.md",
+      "executor": "claude",
+      "tier_role": "standard",
+      "model": "sonnet",
+      "effort": "medium",
+      "knowledge": [
+        "docs:pci-ids"
+      ],
+      "write_set": [
+        "artefacts/extract_vendor_ids/vendor_ids.json"
+      ],
+      "isolation": "worktree",
+      "deps": [
+        "fetch_device_list"
+      ],
+      "deadline_s": 900,
+      "attempt": 0,
+      "budget": {
+        "tokens": {
+          "sonnet": 400000
+        },
+        "usd": 1.5
+      },
+      "requires": [
+        {
+          "resource": "bmk-tool-env",
+          "amount": 1
+        }
+      ],
+      "stage_into": "staging:run-2026-08-17-001"
+    },
+    {
+      "node_id": "plan_next_wave",
+      "kind": "planner",
+      "brief_ref": "runs/run-2026-08-17-001/briefs/plan_next_wave.md",
+      "executor": "claude",
+      "tier_role": "deep",
+      "model": "opus",
+      "effort": "high",
+      "knowledge": [
+        "run:run-2026-08-17-001"
+      ],
+      "write_set": [],
+      "isolation": "none",
+      "deps": [
+        "reduce_wave1"
+      ],
+      "deadline_s": 600,
+      "compact": {
+        "trigger_tokens": 120000,
+        "keep_last_n": 20
+      },
+      "attempt": 0,
+      "budget": {
+        "tokens": {
+          "opus": 400000
+        },
+        "usd": 3.0
+      },
+      "requires": []
+    },
+    {
+      "node_id": "g_test_repo3",
+      "kind": "gate",
+      "brief_ref": "runs/run-2026-08-17-001/briefs/g_test_repo3.md",
+      "executor": "code",
+      "tier_role": null,
+      "write_set": [],
+      "requires": [
+        {
+          "resource": "bmk-tool-env",
+          "amount": 1
+        }
+      ],
+      "isolation": "dir",
+      "deps": [
+        "w_migrate_repo3"
+      ],
+      "deadline_s": 1800,
+      "attempt": 0,
+      "budget": {
+        "tokens": {}
+      }
+    },
+    {
+      "node_id": "m_migrate",
+      "kind": "map",
+      "brief_ref": "runs/run-2026-08-17-001/briefs/m_migrate.md",
+      "tier_role": null,
+      "write_set": [],
+      "requires": [],
+      "isolation": "none",
+      "deps": [
+        "g_discover"
+      ],
+      "deadline_s": 14400,
+      "attempt": 0,
+      "budget": {
+        "tokens": {
+          "sonnet": 8000000
+        }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "title": "map and batch carry no executor and no tier_role",
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "map",
+              "batch"
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "executor"
+          ]
+        },
+        "properties": {
+          "tier_role": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "title": "every other kind names its executor",
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "work",
+              "gate",
+              "synth",
+              "planner",
+              "approve",
+              "reduce",
+              "wait",
+              "stage",
+              "apply"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "executor"
+        ]
+      }
+    },
+    {
+      "title": "a code-executed node resolves no model row",
+      "if": {
+        "required": [
+          "executor"
+        ],
+        "properties": {
+          "executor": {
+            "const": "code"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "tier_role": {
+            "type": "null"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "model"
+              ]
+            },
+            {
+              "required": [
+                "effort"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "a model-executed node has a tier role",
+      "if": {
+        "required": [
+          "executor"
+        ],
+        "properties": {
+          "executor": {
+            "pattern": "^(claude|mcp:)"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "tier_role"
+        ],
+        "properties": {
+          "tier_role": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -9,7 +9,9 @@ be exercised against a temporary file instead of the operator's own login.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -18,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agentdag.adapters.graph_a.gate_make import MakeTestGate
+from agentdag.adapters.graph_a.gate_make import MakeTestGate, gate_env, withheld_names
 from agentdag.adapters.graph_a.git_cli import GitCli, clear_readonly_and_retry
 from agentdag.adapters.graph_a.store_fs import FsRunStore
 from agentdag.adapters.graph_a.work_claude_sdk import ClaudeSdkWork
@@ -219,6 +221,11 @@ def test_git_cli_push_moves_the_bare_target_and_leaves_the_source_alone(tmp_path
     assert git("rev-parse", "main", cwd=real) == before
 
 
+def test_git_cli_errors_carry_git_stderr(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match=r"not a git repository|fatal"):
+        GitCli().head_sha(tmp_path)
+
+
 def test_gate_returns_the_command_exit_code_under_the_lock(tmp_path: Path) -> None:
     for code in (0, 1, 3):
         gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", f"raise SystemExit({code})"))
@@ -233,6 +240,94 @@ def test_gate_writes_the_child_output_to_the_log(tmp_path: Path) -> None:
     written = log.read_text()
     assert "on stdout" in written
     assert "on stderr" in written
+
+
+def test_gate_reports_a_held_lock_by_path_instead_of_hanging(tmp_path: Path) -> None:
+    from filelock import FileLock
+
+    with FileLock(str(tmp_path / "l")):
+        gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"), timeout=0.2)
+        with pytest.raises(RuntimeError, match=re.escape(str(tmp_path / "l"))):
+            gate.run(tmp_path, tmp_path / "g.log")
+
+
+_OS_INJECTED_ENV: frozenset[str] = frozenset({"__CF_USER_TEXT_ENCODING"}) if sys.platform == "darwin" else frozenset()
+
+
+def test_gate_env_is_exactly_the_allowlist_intersection(tmp_path: Path) -> None:
+    # The gate is the one node body that runs as a plain subprocess of the coordinator, so
+    # without an explicit env= it inherits whatever the coordinator was started with - an
+    # operator's whole interactive shell under --foreground. A fake gate command that DUMPS
+    # its own environment is the only way to read what the child really got.
+    dump = tmp_path / "env.json"
+    program = f"import json, os, pathlib; pathlib.Path({str(dump)!r}).write_text(json.dumps(dict(os.environ)))"
+    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", program))
+
+    assert gate.run(tmp_path, tmp_path / "g.log") == 0
+
+    child_env = json.loads(dump.read_text(encoding="utf-8"))
+    expected = gate_env(os.environ)
+    # Whatever the child has beyond the allowlist is what the OS runtime itself stamps on
+    # every process at exec (macOS adds __CF_USER_TEXT_ENCODING), never something the
+    # coordinator passed; the allowlisted values arrive unchanged.
+    assert set(child_env) - set(expected) <= _OS_INJECTED_ENV
+    assert {key: child_env[key] for key in expected} == expected
+    # The two the coordinator itself carries (its systemd-run client needs them) and the one
+    # that would make bmk resolve its tooling from the wrong environment are all absent.
+    for banned in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "VIRTUAL_ENV"):
+        assert banned not in child_env
+    assert not [key for key in child_env if any(word in key.upper() for word in ("TOKEN", "KEY", "SECRET"))]
+
+
+def test_gate_log_header_names_what_was_withheld_and_never_its_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A gate that fails for a variable the allowlist dropped fails inside the project's own
+    # tooling, so the allowlist is the last thing suspected. The log an operator already
+    # opens has to say what was withheld - by NAME, because some of what it drops is a
+    # credential and this file is written to disk.
+    monkeypatch.setenv("AGENTDAG_PROBE_TOKEN", "sk-ant-oat01-NOTAREALSECRET")
+    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "print('gate output')"))
+    log = tmp_path / "g.log"
+
+    assert gate.run(tmp_path, log) == 0
+
+    text = log.read_text(encoding="utf-8")
+    assert "AGENTDAG_PROBE_TOKEN" in text.splitlines()[1]  # withheld, and named
+    assert "NOTAREALSECRET" not in text  # but never its value
+    assert "PATH" in text.splitlines()[0]  # control: the passed line lists what did get through
+    assert "gate output" in text  # and the gate's own output still follows the header
+
+
+def test_withheld_names_are_the_complement_of_the_allowlist() -> None:
+    # The pure half, with a control on each side: an allowlisted name is NOT reported as
+    # withheld, and a name nobody allowlisted is.
+    parent = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-secret", "XDG_RUNTIME_DIR": "/run/user/1000"}
+
+    assert withheld_names(parent) == ("ANTHROPIC_API_KEY", "XDG_RUNTIME_DIR")
+
+
+def test_gate_env_drops_a_secret_shaped_variable_the_parent_carries() -> None:
+    # The pure half, with a control: an allowlisted name survives the same call that drops
+    # the credential beside it, so a passing assertion cannot just mean "the filter ate
+    # everything".
+    parent = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-oat01-secret", "XDG_RUNTIME_DIR": "/run/user/1000"}
+
+    assert gate_env(parent) == {"PATH": "/usr/bin"}
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows has no 0600 equivalent")
+def test_gate_log_is_created_owner_only(tmp_path: Path) -> None:
+    # gate.log holds a build's whole stdout and stderr and lives under the run directory,
+    # which is 0700 throughout; created through Path.write_text it would land at the
+    # platform default minus the umask instead.
+    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "print('x')"))
+    log = tmp_path / "logs" / "gate.log"
+
+    assert gate.run(tmp_path, log) == 0
+
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
 @pytest.mark.integration

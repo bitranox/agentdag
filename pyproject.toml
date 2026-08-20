@@ -12,8 +12,9 @@ dependencies = [
     "btx_lib_mail>=1.5.2",
     "pydantic>=2.13.4",
     "orjson>=3.12.0",
-    "claude-agent-sdk>=0.2.139",
+    "claude-agent-sdk>=0.2.142",
     "filelock>=3.32.3",
+    "pyyaml>=6.0.3",
 ]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
@@ -68,7 +69,7 @@ dev = [
   "textual>=8.2.8",
   "import-linter>=2.13",
   "rtoml>=0.13.0",
-  "httpx2>=2.10.0",
+  "httpx2>=2.12.0",
   # Transitive CVE pins
   "click>=8.4.2",                # CVE-2026-7246
   "jaraco-context>=6.1.2",       # CVE-2025-23949
@@ -77,6 +78,8 @@ dev = [
   "pynacl>=1.6.2",               # CVE-2025-69277
   "urllib3>=2.7.0",              # CVE-2025-66471, CVE-2025-66418
   "virtualenv>=21.7.4",         # CVE-2025-22702
+  "jsonschema>=4.26.0",
+  "types-pyyaml>=6.0.12.20260815",
 ]
 
 [project.scripts]
@@ -95,6 +98,8 @@ include = [
     "src/agentdag/py.typed",
     "src/agentdag/adapters/config/defaultconfig.toml",
     "src/agentdag/adapters/config/defaultconfig.d/*.toml",
+    "src/agentdag/schemas/*.json",
+    "src/agentdag/policy/*.yaml",
 ]
 
 [tool.ruff]
@@ -149,7 +154,22 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 "src/agentdag/application/*.py" = ["PLR0913"]
 "src/agentdag/adapters/config/*.py" = ["PLR0913"]
 "src/agentdag/adapters/email/*.py" = ["PLR0913"]
+# Kernel executor (task 14): outcome_from_usage's seven keyword-only params mirror
+# ResultMessage's own usage shape one-for-one - splitting them into a bundle would
+# just rename the same list, and the brief's binding signature is flat. Scoped to
+# this one file (not the whole adapters/kernel/ dir) so a future kernel adapter
+# does not inherit this exemption for free.
+"src/agentdag/adapters/kernel/executor_claude.py" = ["PLR0913"]
 "src/agentdag/adapters/memory/*.py" = ["PLR0913"]
+# Kernel composition (task 17): wire_kernel's six keyword-only params are
+# KernelWiring's own fields, resolved once per CLI invocation - splitting them into a
+# bundle would just rename the same list every caller already builds inline.
+"src/agentdag/composition/kernel.py" = ["PLR0913"]
+# Kernel errors (task 9): LockHeld, WorkflowNotFound, SpecRejected, RunRefused and Suspended are
+# the coordinator design's own binding names - every later kernel task (journal, dispatch,
+# primitives, executor, CLI) imports them verbatim, so an Error-suffix rename would break every
+# consumer's import.
+"src/agentdag/domain/kernel_errors.py" = ["N818"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
@@ -263,13 +283,13 @@ layers = [
 
 [tool.pip-audit]
 # Known vulnerabilities to ignore (environment-level packages, not project dependencies)
-# PYSEC-2022-42969: py library ReDoS — py 1.11.0 is installed in the development
+# PYSEC-2022-42969: py library ReDoS - py 1.11.0 is installed in the development
 #   environment but is not a dependency of this project; no fix available.
 ignore-vulns = [
-  "PYSEC-2022-42969",  # py 1.11.0 — ReDoS, env-only, no fix available
-  "CVE-2025-8869",     # pip 24.3.1 — env-only, not a project dependency
-  "CVE-2026-1703",     # pip 24.3.1 — env-only, not a project dependency
-  "CVE-2026-25990",    # pillow 12.0.0 — env-only, fix in 12.1.1
+  "PYSEC-2022-42969",  # py 1.11.0 - ReDoS, env-only, no fix available
+  "CVE-2025-8869",     # pip 24.3.1 - env-only, not a project dependency
+  "CVE-2026-1703",     # pip 24.3.1 - env-only, not a project dependency
+  "CVE-2026-25990",    # pillow 12.0.0 - env-only, fix in 12.1.1
 ]
 
 [tool.bashate]

@@ -1,4 +1,13 @@
-"""Domain-specific exceptions for typed error handling at boundaries."""
+"""Domain-specific exceptions for typed error handling at boundaries.
+
+The coordinator kernel's own family lives next door in
+:mod:`agentdag.domain.kernel_errors`; nothing here is part of it.
+
+Contents:
+    * :class:`ConfigurationError` - missing, invalid or incomplete configuration.
+    * :class:`DeliveryError` - email delivery failed at the SMTP level.
+    * :class:`InvalidRecipientError` - an address failed RFC 5321/5322 validation.
+"""
 
 from __future__ import annotations
 

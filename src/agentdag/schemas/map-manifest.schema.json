@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/map-manifest.schema.json",
+  "title": "agentdag map manifest",
+  "description": "manifest/<map_id>.json, written by the reducer of each map: branch -> record ref (design 3.1). Never a branch write-back into coordinator state.",
+  "type": "object",
+  "properties": {
+    "map_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the map node this manifest belongs to."
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Identifier of this fan-out branch, unique within the map."
+          },
+          "item": {
+            "description": "The input item this branch processed. Left as an open JSON type since the design does not pin a shape: it is whatever the map is fanning out over (a string, number, or object).",
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "object",
+              "array"
+            ]
+          },
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The node_id dispatched for this branch."
+          },
+          "record_ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path to this branch's result-record.json under the run store."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked",
+              "needs_context",
+              "refused",
+              "cancelled"
+            ],
+            "description": "The branch's result status, same enum as result-record.status (2.2)."
+          }
+        },
+        "required": [
+          "branch_id",
+          "item",
+          "node_id",
+          "record_ref",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "reduced_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp with an explicit +00:00 offset, produced by the scheduler when the reducer ran (3.3: coordinator code never calls the clock itself).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\+00:00$"
+    },
+    "reducer_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version identifier of the reduce logic that produced this manifest, for replay auditing."
+    }
+  },
+  "required": [
+    "map_id",
+    "branches",
+    "reduced_at",
+    "reducer_version"
+  ],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "map_id": "review_wave2",
+      "branches": [
+        {
+          "branch_id": "review_wave2_branch1",
+          "item": "src/agentdag/scheduler.py",
+          "node_id": "review_wave2_branch1",
+          "record_ref": "nodes/review_wave2_branch1/a1b2c3d4/record.json",
+          "status": "done"
+        },
+        {
+          "branch_id": "review_wave2_branch2",
+          "item": "src/agentdag/journal.py",
+          "node_id": "review_wave2_branch2",
+          "record_ref": "nodes/review_wave2_branch2/e5f6a7b8/record.json",
+          "status": "done"
+        }
+      ],
+      "reduced_at": "2026-08-17T10:22:05+00:00",
+      "reducer_version": "reduce_review_findings@1"
+    }
+  ]
+}

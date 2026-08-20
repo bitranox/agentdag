@@ -6,7 +6,8 @@ business logic of the application.
 Contents:
     * :mod:`.behaviors` - Core domain behaviors (greeting)
     * :mod:`.enums` - Domain enumerations (OutputFormat, DeployTarget)
-    * :mod:`.errors` - Domain exception types
+    * :mod:`.errors` - Domain exception types (email and configuration)
+    * :mod:`.kernel_errors` - The coordinator kernel's own error family
 """
 
 from __future__ import annotations

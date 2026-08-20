@@ -41,16 +41,24 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.
 
     Returns:
         The completed process, with stdout and stderr decoded as utf-8.
+
+    Raises:
+        RuntimeError: ``check`` is true and git exits non-zero; the message
+            carries git's own stderr rather than the bare
+            ``subprocess.CalledProcessError`` repr, which drops it.
     """
     # Suppressions below: a fixed executable and an argument list, never a shell string.
-    return subprocess.run(  # nosec B603  # noqa: S603
-        [GIT_EXECUTABLE, *args],
-        cwd=cwd,
-        check=check,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        return subprocess.run(  # nosec B603  # noqa: S603
+            [GIT_EXECUTABLE, *args],
+            cwd=cwd,
+            check=check,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"git {' '.join(args)} failed ({exc.returncode}): {exc.stderr.strip()}") from exc
 
 
 def clear_readonly_and_retry(function: Callable[..., object], path: str, excinfo: BaseException) -> None:
@@ -98,6 +106,16 @@ class GitCli:
         read-only, which Windows will not unlink.
         """
         shutil.rmtree(dest, onexc=clear_readonly_and_retry)
+
+    def remove_tree(self, path: Path) -> None:
+        """Delete a working tree at ``path``, read-only object files included.
+
+        A plain :meth:`clone`'s ``.git/objects/**`` is written read-only exactly like a
+        mirror's, so a half-finished staging clone (``wt/.partial-<name>``) needs the
+        same read-only-tolerant removal as :meth:`remove_mirror`, just under a name
+        that does not claim the thing being removed is a mirror.
+        """
+        shutil.rmtree(path, onexc=clear_readonly_and_retry)
 
     def clone(self, origin: Path, dest: Path) -> None:
         """Clone ``origin`` into a working tree at ``dest`` with a committer identity.
