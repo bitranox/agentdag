@@ -281,12 +281,17 @@ higher row, is described in the policy shape and is not implemented.
 time. A long node grows its own context turn by turn until attention degrades, which is the failure
 [why agentdag exists](why-agentdag.md) is written around.
 
-The designed answer is a ceiling with a deterministic handover rather than a summary. The coordinator
-can read what each turn's input cost from the usage the executor reports, which is a good enough
-proxy for what the model just saw. At a
-threshold it stops the node, which writes a typed handover record: what is done, what is left, the key
-facts, the artefact paths, the state of its write set. The node ends with a continuation status, and
-the coordinator dispatches a successor with the same brief plus that record, in the same worktree, on
+None of what follows is built. The status a node would end with exists in the vocabulary and nothing
+in the kernel ever sets it or reads it; the continuation counter is a field on a node specification
+that nothing consumes. This section is a design, and it is here because the problem is real even
+though the answer is not written yet.
+
+The designed answer is a ceiling with a deterministic handover rather than a summary. The
+coordinator would read what each turn's input cost from the usage the executor reports, which is a
+good enough proxy for what the model just saw. At a threshold it would stop the node, which writes a
+typed handover record: what is done, what is left, the key facts, the artefact paths, the state of
+its write set. The node ends with a continuation status, and the coordinator dispatches a successor
+with the same brief plus that record, in the same worktree, on
 the same budget, with a continuation counter that becomes part of the successor's journal key.
 
 The reason for the typed record, rather than letting the harness compact prose, is that the
