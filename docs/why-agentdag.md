@@ -71,7 +71,10 @@ out to avoid, in a new costume. The constraint you dismiss is the one that shape
 
 ## 3. What the tools available today ask you to build
 
-**Status:** survey of the field, with each tool's own documented default named.
+**Status:** a survey, and the dates matter. The CrewAI structure below is checked against that
+project's current documentation. The two behavioural defaults are as our August 2026 sweep found
+them, and they are dated in the text rather than stated flat, because a default can change in a
+release without anyone announcing it and this document cannot watch three projects for you.
 
 Almost every framework for putting several AI agents to work starts you in the same place: name the
 roles. You declare that you want a researcher, a writer and an editor. You give each one a job
@@ -81,10 +84,10 @@ the other end.
 That feels reasonable, because it is exactly how you would staff the job with people. It is also the
 wrong shape, and the cheapest way to see why is to look at what it costs.
 
-**Everyone is copied on everything.** In AutoGen's graph mode, every message goes to every agent by
-default. The graph you drew controls the order people speak in, not who hears what: in its own
-words, the execution graph does not control what messages an agent receives. Limiting who sees what
-is something you have to switch on.
+**Everyone is copied on everything.** In August 2026, AutoGen's graph mode sent every message to
+every agent by default. The graph you drew controlled the order people spoke in, not who heard what:
+in its own words, the execution graph does not control what messages an agent receives. Limiting who
+sees what was something you switched on.
 
 Imagine a meeting where nobody is allowed a private word. Every remark goes to all eight people in
 the room. And before anyone speaks, they silently re-read the entire transcript of the meeting from
@@ -96,20 +99,23 @@ one agent costs. It grows roughly with the square of the conversation, because e
 re-read by everybody on every turn that follows it. Teams get expensive fastest exactly when they
 start working well, because working well means saying more.
 
-**One whiteboard, several hands.** LangGraph's standard way of holding state accumulates every
-message into one shared object, which is the most widely copied pattern in the field and carries no
-warning in its own documentation. When it fans work out to run in parallel, those branches write
-back into that same shared state, and if two of them write the same thing the default behaviour
-silently keeps one and discards the other. CrewAI has the same shape: parallel steps sharing one
-mutable state object, documented, presented as a feature.
+**One whiteboard, several hands.** At the same date, LangGraph's standard way of holding state
+accumulated every message into one shared object, the most widely copied pattern in the field and
+carrying no warning in its own documentation. When it fanned work out to run in parallel, those
+branches wrote back into that same shared state, and if two of them wrote the same thing the default
+kept one and discarded the other without saying so. CrewAI shares the shape: a flow's state is one
+mutable object that every step reads and writes.
 
 Three people writing on one whiteboard at once. The last hand wins, the others are rubbed out, and
 nobody is told. You find out later, from work that quietly went missing.
 
 **The org chart, rebuilt in software.** CrewAI is the clearest case, because it is two things at
-once. Its Flows are a genuine dependency graph on the outside, sensibly ordered. But a step inside
-that graph can start a crew, and inside the crew you are back to roles and a mailbox and a meeting.
-The good structure is the wrapper; the meeting is what actually runs.
+once, and this part is current rather than dated. Its Flows are a genuine dependency graph on the
+outside, sensibly ordered, with typed state. But a step inside that graph starts a crew, and a crew
+is a list of agents defined by their job titles, a senior research analyst and a technical writer
+and a senior editor, working through tasks until something comes out. The framework's own
+documentation teaches it that way. The good structure is the wrapper; the meeting is what runs
+inside it.
 
 None of this is anyone being careless. These are capable tools built by people who thought hard, and
 the role metaphor is genuinely the most natural way to explain multi-agent work to somebody new. It
