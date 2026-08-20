@@ -17,6 +17,8 @@ Contents:
     * :class:`LockHolder`, :class:`RunState` - the run's own state.
     * :class:`ApproveOption`, :class:`ApprovePayload`, :class:`Decision` - the approve
       node's suspend payload and its recorded decision (3.4).
+    * :class:`CancelIntent` - a whole-run cancel request, written as
+      ``decisions/_run.cancel.json`` before it is folded into the journal (3.4, O25).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ __all__ = [
     "ApproveOption",
     "ApprovePayload",
     "Budget",
+    "CancelIntent",
     "Decision",
     "ErrorType",
     "ExecutorKind",
@@ -419,3 +422,28 @@ class Decision(BaseModel):
     by: str
     token_id: str
     payload_hash: str = Field(min_length=1)
+
+
+class CancelIntent(BaseModel):
+    """A whole-run cancel request (design 3.4, O25), written as ``decisions/_run.cancel.json``.
+
+    Written by ``run cancel`` (temp+rename, the same write discipline
+    :meth:`~agentdag.application.kernel.ports.RunDir.write_decision` uses for an approve
+    decision) and later folded into the journal as a
+    :class:`~agentdag.domain.journal.CancelRequestedLine` by whichever process holds the
+    run's lock next. Carries no ``at``: like a :class:`Decision`'s own intent file, the
+    timestamp is stamped by whatever FOLDS this into the journal, read from the injected
+    clock at that moment (design 3.3) - never written by the CLI process that only wrote
+    the intent, which has no coordinator clock to read.
+
+    ``node_id`` is always ``None`` here (a whole-run cancel); the per-node cancel intent
+    reserved as ``decisions/<node_id>.cancel.json`` is a distinct, not-yet-built shape
+    (design 3.1) this model does not cover.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    node_id: None = None
+    by: str = Field(min_length=1)
+    token_id: str = Field(min_length=1)

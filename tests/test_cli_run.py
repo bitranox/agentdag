@@ -31,6 +31,7 @@ from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.adapters.kernel.scope_none import NoScope
+from agentdag.application.kernel.cancel import scope_unit
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
 
@@ -65,13 +66,31 @@ class RecordingScope:
     A plain class with a typed ``__init__``, not ``@dataclass``: a bare
     ``field(default_factory=list)`` infers ``list[Unknown]`` under pyright strict (the
     annotation is ignored), which this sidesteps.
+
+    ``is_alive_result``/``kill_result`` are DELIBERATELY separate from ``confirm_alive``
+    (M3): a launch-confirm test and a cancel/sweep test ask two different questions of
+    this fake, and conflating them would make one kind of test's fixture accidentally
+    control the other's outcome.
     """
 
-    def __init__(self, *, confirm_alive: bool = True, confirm_stderr: str = "") -> None:
-        """Bind the canned :meth:`confirm` answer; ``calls`` starts empty."""
+    def __init__(
+        self,
+        *,
+        confirm_alive: bool = True,
+        confirm_stderr: str = "",
+        cross_process_capable: bool = True,
+        is_alive_result: bool = True,
+        kill_result: bool = True,
+    ) -> None:
+        """Bind the canned answers; ``calls``/``kill_calls``/``is_alive_calls`` start empty."""
         self.confirm_alive = confirm_alive
         self.confirm_stderr = confirm_stderr
+        self.cross_process_capable = cross_process_capable
+        self.is_alive_result = is_alive_result
+        self.kill_result = kill_result
         self.calls: list[RecordedLaunch] = []
+        self.is_alive_calls: list[ScopeHandle] = []
+        self.kill_calls: list[ScopeHandle] = []
 
     def start(self, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path) -> ScopeHandle:
         """Record the call and return a handle naming it; no process is ever started."""
@@ -84,14 +103,14 @@ class RecordingScope:
         return LaunchResult(alive=self.confirm_alive, stderr=self.confirm_stderr)
 
     def is_alive(self, handle: ScopeHandle) -> bool:
-        """Return the canned ``confirm_alive`` value."""
-        del handle
-        return self.confirm_alive
+        """Record the call and return the canned ``is_alive_result``."""
+        self.is_alive_calls.append(handle)
+        return self.is_alive_result
 
     def kill(self, handle: ScopeHandle) -> bool:
-        """No process to kill; always report success."""
-        del handle
-        return True
+        """Record the call and return the canned ``kill_result`` - never trusted blindly by the caller."""
+        self.kill_calls.append(handle)
+        return self.kill_result
 
 
 def services_with(
@@ -352,6 +371,140 @@ def test_run_resume_refuses_a_done_run(cli_runner: CliRunner, tmp_path: Path) ->
     resumed = cli_runner.invoke(cli_mod.cli, resume_args, obj=obj)
     assert resumed.exit_code == ExitCode.INVALID_ARGUMENT
     assert "done" in resumed.output
+
+
+@pytest.mark.os_agnostic
+def test_run_cancel_verifies_and_a_second_call_is_idempotent(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """A verified cancel: ``cancelling`` at once, then ``verified: true`` in the same
+    invocation, journaled and reflected in ``state.json``; a repeat call short-circuits
+    without asking the scope to kill anything a second time."""
+    (tmp_path / "runs").mkdir()
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=True)
+    obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    # RecordingScope's is_alive_result is a CANNED value, not a real "was start() ever
+    # called" check (unlike NoScope's own in-memory tracking) - the initial `run start
+    # --foreground`'s OWN startup sweep therefore also sees "alive" and kills once, for a
+    # run whose unit was never really started. Only the CANCEL call below is under test.
+    scope.kill_calls.clear()
+
+    cancelled = cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", runs_arg], obj=obj)
+
+    assert cancelled.exit_code == 0, cancelled.output
+    assert f"run {run_id} cancelling" in cancelled.output
+    assert f"run {run_id} cancel verified: true" in cancelled.output
+    assert len(scope.kill_calls) == 1
+
+    status = cli_runner.invoke(cli_mod.cli, ["run", "status", run_id, "--runs", runs_arg], obj=obj)
+    assert "cancelled" in status.output
+
+    again = cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", runs_arg], obj=obj)
+    assert again.exit_code == 0, again.output
+    assert f"run {run_id} cancelled (verified: true)" in again.output
+    assert len(scope.kill_calls) == 1  # not asked to kill an already-verified scope again
+
+
+@pytest.mark.os_agnostic
+def test_run_cancel_under_noscope_reports_unverified_with_a_named_reason(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The STOP condition: a scope that cannot confirm a cross-process kill (a real
+    :class:`~agentdag.adapters.kernel.scope_none.NoScope`, not a fake) never claims a
+    verified cancel it never actually confirmed."""
+    (tmp_path / "runs").mkdir()
+    obj = services_with(CommittingExecutor(), tmp_path, scope=NoScope())
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+
+    cancelled = cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", str(tmp_path / "runs")], obj=obj)
+
+    assert cancelled.exit_code == 0, cancelled.output
+    assert f"run {run_id} cancel verified: false" in cancelled.output
+    assert "NoScope" in cancelled.output
+
+
+@pytest.mark.os_agnostic
+def test_run_cancel_refuses_a_done_run(cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / "runs").mkdir()
+    ex = CommittingExecutor()
+    obj = services_with(ex, tmp_path)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    approve_args = [
+        "run",
+        "approve",
+        run_id,
+        "a_push_list",
+        "--decision",
+        "approve",
+        "--runs",
+        runs_arg,
+        "--foreground",
+    ]
+    approved = cli_runner.invoke(cli_mod.cli, approve_args, obj=obj)
+    assert approved.exit_code == 0 and f"run {run_id} done" in approved.output, approved.output
+
+    cancelled = cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", runs_arg], obj=obj)
+
+    assert cancelled.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "done" in cancelled.output
+    assert not (tmp_path / "runs" / run_id / "decisions" / "_run.cancel.json").is_file()
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("verb", ["cancelling", "cancelled"])
+def test_run_resume_refuses_a_cancelling_or_a_cancelled_run(cli_runner: CliRunner, tmp_path: Path, verb: str) -> None:
+    (tmp_path / "runs").mkdir()
+    kill_result = verb == "cancelled"
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=kill_result)
+    obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", runs_arg], obj=obj)
+
+    resumed = cli_runner.invoke(cli_mod.cli, ["run", "resume", run_id, "--runs", runs_arg, "--foreground"], obj=obj)
+
+    assert resumed.exit_code == ExitCode.INVALID_ARGUMENT
+    assert verb in resumed.output
+
+
+@pytest.mark.os_agnostic
+def test_run_resume_stops_a_scope_a_dead_coordinator_left_behind_before_relaunching(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The startup sweep (Step 4): a resume calls ``scope.kill`` for THIS run's own unit
+    name before the coordinator dispatches anything, whether or not one is truly stuck -
+    the fake reports ``is_alive`` unconditionally, standing in for a scope a dead
+    coordinator left draining."""
+    (tmp_path / "runs").mkdir()
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=True)
+    obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    scope.kill_calls.clear()  # only the RESUME below is under test, not the initial start
+
+    # No decision is recorded: the coordinator replays back to the SAME suspend, which is
+    # exactly what proves the sweep fired BEFORE it - a resume that never dispatches
+    # anything new still had to check for a left-behind scope first.
+    resumed = cli_runner.invoke(cli_mod.cli, ["run", "resume", run_id, "--runs", runs_arg, "--foreground"], obj=obj)
+
+    assert resumed.exit_code == 0, resumed.output
+    assert f"run {run_id} suspended" in resumed.output
+    assert len(scope.kill_calls) == 1
+    assert scope.kill_calls[0].unit == scope_unit(run_id)
 
 
 @pytest.mark.os_agnostic

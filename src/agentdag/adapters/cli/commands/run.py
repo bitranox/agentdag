@@ -1,6 +1,6 @@
-"""``agentdag run``: start, inspect, resume and approve a kernel coordinator run.
+"""``agentdag run``: start, inspect, resume, approve and cancel a kernel coordinator run.
 
-Five verbs over one run directory (design 3.1/3.4, Task 17):
+Six verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` added M3):
 
 ``agentdag run start WORKFLOW [--arg key=value]... [--runs DIR] [--parallel N] [--policy FILE] [--foreground]``
     Validate WORKFLOW's arguments, mint a run id, create the run directory, and either
@@ -19,6 +19,13 @@ Five verbs over one run directory (design 3.1/3.4, Task 17):
 ``agentdag run approve RUN_ID NODE_ID --decision ID [--reason TEXT] [--runs DIR] [--no-relaunch] [--foreground]``
     Record a human decision for a suspended approve node, then relaunch unless
     ``--no-relaunch``.
+
+``agentdag run cancel RUN_ID [--runs DIR]``
+    Write the whole-run cancel intent and return AT ONCE with ``cancelling`` (mcp-surface
+    O25); then, on the SAME invocation, attempt the actual scope kill and the VERIFIED
+    journal outcome (design 3.4) - a live coordinator still holding the run's lock defers
+    that half to a later ``run cancel`` retry, or the startup sweep on the run's next
+    relaunch attempt.
 
 ``agentdag run _coordinate RUN_ID --runs DIR [--reason ...]``
     Hidden: the foreground path over an EXISTING run directory, invoked as the child
@@ -44,8 +51,8 @@ which it does exactly when they were given (see :func:`_launch_background`).
 Contents:
     * :func:`cli_run` - the ``run`` group.
     * :func:`cli_run_start`, :func:`cli_run_status`, :func:`cli_run_records`,
-      :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_coordinate` - the
-      five verbs, plus the hidden relaunch entry point.
+      :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_cancel`,
+      :func:`cli_run_coordinate` - the six verbs, plus the hidden relaunch entry point.
 """
 
 from __future__ import annotations
@@ -69,10 +76,11 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import current_holder
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
+from agentdag.application.kernel.cancel import request_cancel, resolve_cancel, scope_unit, sweep_stale_scope
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.domain.journal import ResultLine
-from agentdag.domain.kernel_errors import WorkflowNotFound
+from agentdag.domain.kernel_errors import RunRefused, WorkflowNotFound
 from agentdag.domain.keys import content_hash, hash8
 from agentdag.domain.models import ApprovePayload, Decision, RunState, RunStatus
 from agentdag.domain.scrub import scrub
@@ -97,6 +105,7 @@ if TYPE_CHECKING:
 __all__ = [
     "cli_run",
     "cli_run_approve",
+    "cli_run_cancel",
     "cli_run_coordinate",
     "cli_run_records",
     "cli_run_resume",
@@ -263,7 +272,7 @@ def cli_run_start(
     if policy_option is not None:
         argv += ["--policy", str(policy_option)]
     _launch_background(
-        wiring.scope, unit=_scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
+        wiring.scope, unit=scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
     )
 
 
@@ -325,9 +334,51 @@ def cli_run_resume(
     config = get_cli_context(ctx).config
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
-    if run_dir.read_state().status is RunStatus.DONE:
+    status = run_dir.read_state().status
+    if status is RunStatus.DONE:
         _fail(f"run {run_id} is done; nothing to resume")
+    if status is RunStatus.CANCELLED:
+        _fail(f"run {run_id} is cancelled; nothing to resume")
+    if status is RunStatus.CANCELLING:
+        _fail(f"run {run_id} is cancelling; run 'agentdag run cancel {run_id}' again to retry verification")
     _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason=reason_option, foreground=foreground)
+
+
+@click.command("cancel", context_settings=CLICK_CONTEXT_SETTINGS)
+@argument("run_id")
+@_RUNS_OPTION
+@click.pass_context
+def cli_run_cancel(ctx: click.Context, *, run_id: str, runs_option: Path | None) -> None:
+    """Cancel RUN_ID: write the intent, stop its scope, and record the verified outcome.
+
+    Prints ``cancelling`` at once (mcp-surface O25: this never waits for the run's own
+    deadline), then attempts the actual kill and verification in the same invocation -
+    the ONE thing this cannot do synchronously is wait out ANOTHER, still-live
+    coordinator's own lock; that half is reported as unverified and left to a later
+    ``run cancel`` retry, or the startup sweep the next time this run is relaunched.
+    """
+    config = get_cli_context(ctx).config
+    runs_dir = _resolve_runs_dir(config, runs_option)
+    run_dir = _open_run_dir(runs_dir, run_id)
+    try:
+        requested = request_cancel(
+            run_dir,
+            by=getpass.getuser(),
+            token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
+        )
+    except RunRefused as exc:
+        _fail(str(exc))
+    if requested.status is RunStatus.CANCELLED:
+        safe_console.echo(f"run {run_id} cancelled (verified: true)")
+        return
+    safe_console.echo(f"run {run_id} cancelling")
+    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    journal = wiring.journal_factory(run_dir.journal_path, run_dir.audit_path)
+    resolved = resolve_cancel(
+        run_dir, journal, scope=wiring.scope, lock=wiring.lock, clock=wiring.clock, holder=current_holder()
+    )
+    suffix = f" ({resolved.reason})" if resolved.reason else ""
+    safe_console.echo(f"run {run_id} cancel verified: {'true' if resolved.verified else 'false'}{suffix}")
 
 
 @click.command("approve", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -469,7 +520,7 @@ def _validate_run_id(run_id: str) -> None:
     The SAME character rule :meth:`~agentdag.adapters.kernel.run_store_fs.FsRunDir.
     _validate_node_id` applies to a node id: no path separator, no ``..`` - so a value
     taken straight from argv can never be joined onto ``runs_dir`` (``FsRunDir.open``
-    does not itself check this) or folded into ``_scope_unit`` and reach outside
+    does not itself check this) or folded into ``scope_unit`` and reach outside
     either. Argv is untrusted input at this CLI's boundary; this runs BEFORE any path
     join or unit-name build, never after.
 
@@ -560,21 +611,6 @@ def _clean_env() -> dict[str, str]:
     return {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
 
 
-def _scope_unit(run_id: str) -> str:
-    """Return the scope unit name a background launch uses for ``run_id``.
-
-    A HYPHEN, never ``@``: measured live on ``lxc-pydev`` while building this module,
-    ``systemd-run --user --scope --unit=agentdag-run@<run_id>`` fails outright
-    ("Failed to start transient scope unit: Invalid argument") because systemd reads
-    ``@`` in a unit name as the template-instance separator (``name@instance.type``,
-    as in ``getty@tty1.service``) - a transient ``--unit=`` name is not a template
-    instantiation, so the literal ``@`` is rejected. A minimal A/B on this same host
-    confirmed the character is the whole difference: ``--unit=agentdag-run@x.scope``
-    fails, ``--unit=agentdag-run-x.scope`` (hyphen) succeeds, argv otherwise identical.
-    """
-    return f"agentdag-run-{run_id}"
-
-
 def _open_run_dir(runs_dir: Path, run_id: str) -> FsRunDir:
     """Open an existing run directory, or exit naming it.
 
@@ -647,6 +683,12 @@ def _run_foreground(
     workflow = get_workflow(state.workflow)
     args = workflow.args_model.model_validate(state.args)
     wiring, _credential_desc = _build_wiring(ctx, policy_override=policy_override, parallel_override=parallel_override)
+    # The startup sweep (M3): a fresh run's own unit was never started under any scope
+    # kind, so this is always a safe no-op for `start --foreground`; for a relaunch of an
+    # EXISTING run (resume, approve, or this in-process path of _coordinate itself) it
+    # stops a scope a dead coordinator left draining before this launch dispatches
+    # anything into the same worktrees, gate lock or credential store.
+    sweep_stale_scope(run_dir, scope=wiring.scope)
     journal = wiring.journal_factory(run_dir.journal_path, run_dir.audit_path)
     try:
         return asyncio.run(
@@ -703,9 +745,15 @@ def _relaunch(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, reason: 
         _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_dir, resume_reason=reason))
         return
     wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    # A background relaunch REUSES this run's unit name (scope_unit is deterministic per
+    # run_id, not per launch), so a scope a dead coordinator left draining under that SAME
+    # name must be stopped BEFORE scope.start() below - systemd refuses a transient unit
+    # name already in use, and a fresh coordinator must never start while an old one's
+    # children can still be touching the same worktrees.
+    sweep_stale_scope(run_dir, scope=wiring.scope)
     argv = [sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir), "--reason", reason]
     _launch_background(
-        wiring.scope, unit=_scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
+        wiring.scope, unit=scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
     )
 
 
@@ -765,4 +813,5 @@ cli_run.add_command(cli_run_status)
 cli_run.add_command(cli_run_records)
 cli_run.add_command(cli_run_resume)
 cli_run.add_command(cli_run_approve)
+cli_run.add_command(cli_run_cancel)
 cli_run.add_command(cli_run_coordinate)

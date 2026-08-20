@@ -1,10 +1,13 @@
-"""Journal lines (design 3.1/3.2): the six events slice 1 emits, one JSON object per line.
+"""Journal lines (design 3.1/3.2): the eight events slice 1 and M3's cancel add, one JSON object per line.
 
 Contents:
     * :class:`StartedLine`, :class:`ResultLine`, :class:`RunStartedLine`,
       :class:`ResumeLine`, :class:`ApproveDecisionLine`, :class:`RunSummaryLine` -
       the six line shapes slice 1 emits into ``journal.jsonl``.
-    * :data:`JournalLine` - the discriminated union of the six.
+    * :class:`CancelRequestedLine`, :class:`CancelLine` - the two M3 adds for
+      ``run cancel`` (design 3.4, O25): the intent folded into the journal, and its
+      later, VERIFIED outcome once the run's scope is confirmed empty.
+    * :data:`JournalLine` - the discriminated union of the eight.
     * :func:`parse_journal_line` - one JSON object -> the typed line.
     * :func:`dump_journal_line` - the typed line -> one compact, sorted-key JSON line.
 """
@@ -20,6 +23,8 @@ from .models import ResultRecord
 
 __all__ = [
     "ApproveDecisionLine",
+    "CancelLine",
+    "CancelRequestedLine",
     "JournalLine",
     "ResultLine",
     "ResumeLine",
@@ -102,6 +107,48 @@ class ApproveDecisionLine(_Line):
     payload_hash: str = Field(min_length=1)
 
 
+class CancelRequestedLine(_Line):
+    """A cancel INTENT folded into the journal (design 3.1, 3.4, O25; ``journal-line.schema.json``'s
+    ``cancel_requested_line``).
+
+    ``run.cancel``/``agentdag run cancel`` never appends this line itself - it writes the
+    intent as a file under ``decisions/`` (``_run.cancel.json`` for a whole-run cancel,
+    write discipline shared with an approve :class:`~agentdag.domain.models.Decision`) and
+    returns at once. Whichever process later holds this run's lock (the still-live
+    coordinator, at its next node boundary or lock wait, or a later relaunch that reclaims
+    a stale lock) folds the intent into the journal as this line, exactly once, before the
+    verified :class:`CancelLine` that follows it.
+    """
+
+    event: Literal["cancel_requested"] = "cancel_requested"
+    run_id: str
+    node_id: str | None
+    """The node running when the cancel arrived, or ``None`` for a whole-run cancel."""
+    by: str
+    token_id: str
+
+
+class CancelLine(_Line):
+    """The VERIFIED end of a cancel: written once the run scope's cgroup is empty (design 3.4).
+
+    ``verified`` is never the stop verb's own return value taken on trust - it is set
+    from an actual EMPTY-CGROUP check (:meth:`~agentdag.application.kernel.ports.Scope.kill`
+    already polls exactly that), or ``False`` with the reason recorded elsewhere (the CLI's
+    own output) when the run's :class:`~agentdag.application.kernel.ports.Scope` cannot
+    confirm a kill across two separate process invocations at all (``NoScope``).
+
+    ``node_id`` is required and non-empty per ``journal-line.schema.json``'s
+    ``cancel_line``, which carries no per-node/whole-run distinction of its own (unlike
+    :class:`CancelRequestedLine`'s nullable ``node_id``); a whole-run cancel uses the same
+    ``"_run"`` sentinel :mod:`~agentdag.adapters.kernel.run_store_fs` already reserves for
+    its ``_run.cancel.json`` intent file.
+    """
+
+    event: Literal["cancel"] = "cancel"
+    node_id: str = Field(min_length=1)
+    verified: bool
+
+
 class RunSummaryLine(_Line):
     """The drift signals of design 3.5, written at the end of every launch that reaches ``done``.
 
@@ -128,10 +175,17 @@ class RunSummaryLine(_Line):
 
 
 JournalLine = Annotated[
-    StartedLine | ResultLine | RunStartedLine | ResumeLine | ApproveDecisionLine | RunSummaryLine,
+    StartedLine
+    | ResultLine
+    | RunStartedLine
+    | ResumeLine
+    | ApproveDecisionLine
+    | CancelRequestedLine
+    | CancelLine
+    | RunSummaryLine,
     Field(discriminator="event"),
 ]
-"""The discriminated union of every journal line slice 1 emits, keyed on ``event``."""
+"""The discriminated union of every journal line slice 1 and M3's cancel emit, keyed on ``event``."""
 
 _ADAPTER: TypeAdapter[JournalLine] = TypeAdapter(JournalLine)
 
@@ -147,7 +201,7 @@ def parse_journal_line(text: str) -> JournalLine:
 
     Raises:
         ValueError: ``text`` is not valid JSON, or its ``event`` does not match any
-            of the six known lines (pydantic's ``ValidationError`` is a ``ValueError``).
+            of the known lines (pydantic's ``ValidationError`` is a ``ValueError``).
 
     Example:
         >>> text = '{"event": "started", "key": "v2:sha256:00", "node_id": "n", "attempt": 0,' \\

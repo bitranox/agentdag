@@ -26,7 +26,17 @@ def test_models_accept_the_schema_examples_and_emit_valid_json() -> None:
     for ex in load("approve-payload")["examples"]:
         validator("approve-payload").validate(json.loads(ApprovePayload.model_validate(ex).model_dump_json()))
     for ex in load("journal-line")["examples"]:
-        if ex["event"] in {"started", "result", "run_started", "resume", "approve_decision", "run_summary"}:
+        modeled_events = {
+            "started",
+            "result",
+            "run_started",
+            "resume",
+            "approve_decision",
+            "run_summary",
+            "cancel_requested",
+            "cancel",
+        }
+        if ex["event"] in modeled_events:
             validator("journal-line").validate(json.loads(dump_journal_line(parse_journal_line(json.dumps(ex)))))
 
 
