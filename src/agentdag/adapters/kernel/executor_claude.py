@@ -795,7 +795,11 @@ class ClaudeExecutor:
                 ``None`` when the node declares no cap for it, in which case nothing is
                 enforced (mirrors :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`'s
                 same "no cap declared, nothing checked" rule on the run-level call site,
-                and the same SPEND unit - see that method's docstring).
+                and the same SPEND unit - see that method's docstring). The comparison
+                is INCLUSIVE of ``cap`` itself: ``running_total == cap`` does NOT
+                interrupt, only ``running_total > cap`` does - a node's cap is a ceiling
+                it may fully spend, not a strict bound that trips on reaching it exactly
+                (the code below reads ``running_total <= cap: return False``).
 
         Returns:
             Whether ``running_total`` passed ``cap`` and ``client.interrupt()`` was
