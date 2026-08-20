@@ -314,6 +314,11 @@ class ExecutorRequest:
     isolation_root: Path
     write_set: tuple[str, ...]
     deny_bash: tuple[str, ...]
+    token_cap: int | None = None
+    """This node's own token cap for its resolved row (``NodeSpec.budget.tokens[row]``),
+    or ``None`` when the node declares no cap for this row - nothing for the executor to
+    enforce at the turn seam (design 7, M3). Defaults to ``None`` so every call site and
+    test fixture that predates this field still constructs without naming it."""
 
 
 class Executor(Protocol):

@@ -15,15 +15,17 @@ import asyncio
 import stat
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
+from claude_agent_sdk import AssistantMessage, ResultMessage
 
 # append_transcript and input_total are tested seams this fix round's review asked to
 # be unit-tested directly (owner-only file mode; the three-field sum) rather than only
 # indirectly through ClaudeExecutor.run(), which would need a real SDK/network call
 # this module's own design keeps out of unit tests - both are public, per the same
 # review, exactly because they are tested this way.
+from agentdag.adapters.kernel import executor_claude as executor_claude_module
 from agentdag.adapters.kernel.executor_claude import (
     ClaudeExecutor,
     CredentialCopy,
@@ -35,6 +37,9 @@ from agentdag.adapters.kernel.executor_claude import (
 from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_root
 from agentdag.application.kernel.ports import ExecutorRequest
 from agentdag.domain.kernel_errors import KernelError
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 def decision(result: dict[str, Any]) -> str | None:
@@ -383,3 +388,220 @@ def test_result_translation_missing_usage_fields_default_to_zero() -> None:
     assert o.tokens.in_ == 0
     assert o.tokens.out == 0
     assert o.charged_tokens == {"sonnet": 0}
+
+
+# ---------------------------------------------------------------------------------
+# M3: the token cap's two call sites. The per-run call site (Coordinator._run_cap_refusal)
+# is covered in test_kernel_context.py, where the caller that owns tokens_by_row and
+# the policy ceiling lives. Below is the per-node, per-turn call site: _on_turn's own
+# comparison (a pure unit test against a bare interrupt() double, no stream at all),
+# then _run's use of it end-to-end against a fake ClaudeSDKClient stream - the SDK
+# client construction is this module's own documented external edge (see the module
+# docstring), the same reasoning that already keeps every other test in this file off
+# a real SDK/network call.
+# ---------------------------------------------------------------------------------
+
+
+class _RecordingInterruptClient:
+    """A bare double for ``_Interruptible``: only the one method ``_on_turn`` calls."""
+
+    def __init__(self) -> None:
+        self.interrupt_calls = 0
+
+    async def interrupt(self) -> None:
+        """Record that this dispatch was asked to stop."""
+        self.interrupt_calls += 1
+
+
+def _turn(usage_input: int) -> AssistantMessage:
+    """Build a minimal ``AssistantMessage`` whose usage sums to ``usage_input`` input tokens."""
+    return AssistantMessage(content=[], model="sonnet", usage={"input_tokens": usage_input})
+
+
+def _result(*, is_error: bool, subtype: str, num_turns: int, usage_input: int = 0) -> ResultMessage:
+    """Build a minimal terminal ``ResultMessage`` with a fixed shape for these tests."""
+    return ResultMessage(
+        subtype=subtype,
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=is_error,
+        num_turns=num_turns,
+        session_id="s1",
+        usage={"input_tokens": usage_input, "output_tokens": 3},
+        result="" if is_error else "ok",
+    )
+
+
+class FakeStreamClient:
+    """A ``ClaudeSDKClient`` stand-in that replays whatever :meth:`configure` last staged.
+
+    ``_run`` constructs its client as ``ClaudeSDKClient(options=options)`` with no
+    other argument, so the message sequence a test wants replayed cannot be passed at
+    construction time - it is staged first via :meth:`configure` (a queue of one) and
+    consumed by the NEXT construction. Kept as one module-level class (never a class
+    built per test inside a closure) purely so every attribute below is concretely
+    typed under pyright strict - a factory returning a locally-defined nested class
+    cannot forward-reference that class in its own return annotation, which pyright
+    then reports as ``type[Unknown]`` at every call site.
+
+    Mirrors the probe's own measurement (``workflow/design/probes/m3-interrupt.md``
+    in RESEARCH): once ``interrupt()`` is called, no further turn is delivered, but
+    exactly one terminal ``ResultMessage`` still arrives - what makes the
+    both-SDK-shapes test meaningful is that the CALLER, never this fake, decides the
+    outcome from that message.
+    """
+
+    _pending: ClassVar[tuple[list[AssistantMessage], ResultMessage] | None] = None
+    instances: ClassVar[list[FakeStreamClient]] = []
+
+    def __init__(self, *, options: object) -> None:
+        self.options = options
+        self.interrupt_calls = 0
+        self.turns_yielded = 0
+        self.queried_with: str | None = None
+        pending = type(self)._pending
+        assert pending is not None, "FakeStreamClient.configure() was not called before construction"
+        self._turns, self._result = pending
+        type(self)._pending = None
+        type(self).instances.append(self)
+
+    @classmethod
+    def configure(cls, turns: list[AssistantMessage], result: ResultMessage) -> None:
+        """Stage the message sequence the NEXT construction will replay, and reset ``instances``."""
+        cls._pending = (turns, result)
+        cls.instances = []
+
+    async def __aenter__(self) -> FakeStreamClient:
+        """Return self, matching ``ClaudeSDKClient``'s own context-manager protocol."""
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """No-op: nothing this fake holds needs releasing."""
+        return None
+
+    async def query(self, prompt: str) -> None:
+        """Record the prompt this dispatch queried with."""
+        self.queried_with = prompt
+
+    async def receive_response(self) -> AsyncIterator[AssistantMessage | ResultMessage]:
+        """Yield the staged turns, stopping early once interrupted, then one terminal ResultMessage."""
+        for turn in self._turns:
+            yield turn
+            self.turns_yielded += 1
+            if self.interrupt_calls:
+                break
+        yield self._result
+
+    async def interrupt(self) -> None:
+        """Record that this dispatch was asked to stop."""
+        self.interrupt_calls += 1
+
+
+@pytest.mark.os_agnostic
+def test_on_turn_interrupts_once_this_turn_s_own_total_passes_the_cap_never_a_running_sum(
+    tmp_path: Path,
+) -> None:
+    """Compares EACH turn's own ``input_total`` against ``cap`` directly, never a sum
+    across turns: under prompt caching a turn's usage already reflects the
+    conversation's cumulative size, so summing successive turns would double-count
+    the same cached context. 100 then 250 must cross a cap of 200 on the SECOND
+    call alone (250 > 200), not because 100 + 250 does.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    client = _RecordingInterruptClient()
+
+    first = asyncio.run(executor._on_turn({"input_tokens": 100}, client, 200))  # pyright: ignore[reportPrivateUsage]
+    assert first is False
+    assert client.interrupt_calls == 0
+    second = asyncio.run(executor._on_turn({"input_tokens": 250}, client, 200))  # pyright: ignore[reportPrivateUsage]
+    assert second is True
+    assert client.interrupt_calls == 1
+    # No cap declared for this row at all: never enforced, whatever the usage.
+    third = asyncio.run(executor._on_turn({"input_tokens": 10_000}, client, None))  # pyright: ignore[reportPrivateUsage]
+    assert third is False
+    assert client.interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_lets_all_three_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn(100), _turn(250), _turn(400)]
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=200)))
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.type == "budget_exceeded"
+    instance = FakeStreamClient.instances[0]
+    assert instance.interrupt_calls == 1
+    assert instance.turns_yielded == 2  # the third turn was never even seen
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
+    outcome2 = asyncio.run(executor.run(_request(tmp_path, token_cap=10_000)))
+    assert outcome2.status == "done"
+    control_instance = FakeStreamClient.instances[0]
+    assert control_instance.interrupt_calls == 0
+    assert control_instance.turns_yielded == 3
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("is_error", "subtype"),
+    [(False, "success"), (True, "error_during_execution")],
+    ids=["turn_boundary_success_shaped", "mid_tool_error_shaped"],
+)
+def test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_s_own_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_error: bool, subtype: str
+) -> None:
+    """Both shapes the probe measured (``workflow/design/probes/m3-interrupt.md`` in
+    RESEARCH): a turn-boundary interrupt reports itself ``is_error=False,
+    subtype="success"`` - indistinguishable from a node that finished; a mid-tool
+    interrupt reports ``is_error=True, subtype="error_during_execution"`` - the
+    opposite. NEITHER may decide this node's outcome: both must land
+    ``BUDGET_EXCEEDED``, ``transient=False``, with no artefact ref at all (never the
+    half-finished worktree presented as a completed one).
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn(500)]  # crosses a cap of 100 on the very first turn
+    result = _result(is_error=is_error, subtype=subtype, num_turns=1, usage_input=500)
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, result)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.status == "failed"
+    assert outcome.artefact_refs == []  # never the half-finished worktree, whichever SDK shape
+    assert outcome.error is not None
+    assert outcome.error.type == "budget_exceeded"
+    assert outcome.error.transient is False  # never retried into spending the cap again
+    assert outcome.key_facts.get("cap_hit") is True
+    assert outcome.charged_tokens == {"sonnet": 500 + 3}  # the terminal usage the SDK still reported
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_node_with_no_declared_cap_is_never_interrupted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control for the whole call site: ``ExecutorRequest.token_cap`` defaults to
+    ``None`` (nothing set it), and a dispatch under it must run to a normal DONE
+    outcome with ``interrupt()`` never called.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn(999_999)]  # would cross any real cap, but none is declared
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=1))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path)))  # token_cap not overridden: None
+
+    assert outcome.status == "done"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0

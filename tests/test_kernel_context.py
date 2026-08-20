@@ -32,16 +32,29 @@ if TYPE_CHECKING:
 
 
 class OneRowPolicy:
-    """A one-row tier policy: every spec resolves to the sonnet row on the claude executor."""
+    """A one-row tier policy: every spec resolves to the sonnet row on the claude executor.
+
+    ``tokens_per_row`` is set far above anything these tests charge or cap - it is the
+    ceiling the run-level budget check (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`)
+    reads, and nothing here is exercising THAT (see :class:`LowCeilingPolicy` for a
+    policy that is). Kept generous rather than removed so a test added later that adds
+    a couple more work dispatches over this same policy does not spuriously trip it.
+    """
 
     version: str = "sha256:test"
     max_turns: int = 5
     deny_bash: tuple[str, ...] = ("git push",)
-    tokens_per_row: Mapping[str, int] = {"sonnet": 10}
+    tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
         return ResolvedRow(alias="sonnet", executor="claude")
+
+
+class LowCeilingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a run ceiling low enough for the budget-cap tests to hit."""
+
+    tokens_per_row: Mapping[str, int] = {"sonnet": 100}
 
 
 class RecordingExecutor:
@@ -111,12 +124,14 @@ def wire(
     scanner: FakeScanner,
     *,
     executors: Mapping[str, RecordingExecutor] | None = None,
+    policy: OneRowPolicy | None = None,
 ) -> Coordinator:
     """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
 
     ``executors`` defaults to ``{"claude": executor}`` (what ``OneRowPolicy`` resolves
     to); a test that must exercise a misconfigured coordinator passes its own, e.g. an
-    empty mapping to prove the resolved executor is not wired.
+    empty mapping to prove the resolved executor is not wired. ``policy`` defaults to
+    ``OneRowPolicy()``; a budget-cap test passes ``LowCeilingPolicy()`` instead.
     """
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     return Coordinator(
@@ -130,7 +145,7 @@ def wire(
         gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=scanner,
-        policy=OneRowPolicy(),
+        policy=OneRowPolicy() if policy is None else policy,
         sandbox=NoSandbox(),
         parallel=2,
     )
@@ -212,3 +227,82 @@ def test_work_refuses_a_cwd_outside_the_run_root(tmp_path: Path) -> None:
 
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     assert journal.lines() == []
+
+
+@pytest.mark.os_agnostic
+def test_work_threads_the_node_s_own_cap_into_the_executor_request(tmp_path: Path) -> None:
+    """The other half of the token cap's two call sites (design 7): the per-node,
+    per-turn check lives in the executor, which needs the cap on the request it is
+    handed - this is what ``work()`` sends it.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert executor.requests[0].token_cap == 400_000  # work_spec()'s own Budget(tokens={"sonnet": 400_000})
+
+
+@pytest.mark.os_agnostic
+def test_work_is_not_capped_when_the_spec_declares_no_budget_for_the_resolved_row(tmp_path: Path) -> None:
+    """A node with no declared cap for the resolved row is checked against NEITHER
+    call site - not the per-turn one (``token_cap`` stays ``None``) and not the
+    run-level one (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`
+    returns ``None`` on a ``None`` cap before it ever reads the ceiling), even under a
+    ceiling (``LowCeilingPolicy``) low enough to refuse ``work_spec()``'s own cap.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 5}))
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowCeilingPolicy())
+    spec = work_spec().model_copy(update={"budget": Budget()})
+
+    record = asyncio.run(coordinator.work(spec, brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert record.status == NodeStatus.DONE
+    assert executor.requests[0].token_cap is None
+
+
+@pytest.mark.os_agnostic
+def test_work_refuses_the_dispatch_when_the_node_s_own_cap_would_push_the_run_past_its_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The run-level cap (design 7): the SECOND call site, evaluated before the
+    executor is ever called. ``work_spec()``'s node declares a 400,000-token cap on
+    ``sonnet``; :class:`LowCeilingPolicy` caps the whole run at 100 - so this dispatch
+    must be refused OUTRIGHT, never reach the executor, and still produce a normal
+    ``started``/``result`` journal pair (the always-a-record invariant: a refusal is a
+    RECORD, not an exception).
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowCeilingPolicy())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert record.status == NodeStatus.FAILED
+    assert record.error is not None
+    assert record.error.type == "budget_exceeded"
+    assert record.error.transient is False
+    assert executor.requests == []  # never dispatched
+    assert coordinator.tokens_by_row == {}  # nothing was actually spent
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    # Still a normal started/result pair, like any other dispatch - the refusal is
+    # JOURNALED, not a silent skip: a resume of this run must see it, not re-attempt it.
+    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]
+
+
+@pytest.mark.os_agnostic
+def test_work_dispatches_normally_when_the_node_s_cap_fits_under_the_run_ceiling(tmp_path: Path) -> None:
+    """Control for the refusal test above: the identical node spec, under a ceiling
+    its own cap fits comfortably under, runs the executor as normal.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())  # OneRowPolicy's generous ceiling
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert record.status == NodeStatus.DONE
+    assert executor.requests[0].token_cap == 400_000
+    assert coordinator.tokens_by_row == {"sonnet": 120}

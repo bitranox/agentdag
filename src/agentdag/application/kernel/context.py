@@ -156,6 +156,15 @@ class Coordinator:
         ``deny_bash`` reach the executor request but are not part of the key or of
         ``input_obj``, so changing only those does not.
 
+        The token cap has two call sites (design 7, M3): this method threads
+        ``spec.budget.tokens.get(row.alias)`` through as ``ExecutorRequest.token_cap``,
+        which the executor enforces per TURN by calling ``client.interrupt()`` once a
+        turn's own usage passes it; and its ``body`` closure calls
+        :meth:`_run_cap_refusal` first, which refuses the dispatch OUTRIGHT (a FAILED,
+        ``BUDGET_EXCEEDED`` record, the executor never called) when this node's own cap
+        would push the run's row total past ``policy.tokens_per_row``. Both checks are a
+        no-op for a node whose spec declares no cap for the resolved row.
+
         Args:
             spec: The node spec, with its tier role, write set, deps and limits.
             brief: The node's brief; its content hash is part of the journal key.
@@ -192,8 +201,18 @@ class Coordinator:
             "model": row.alias,
             "effort": spec.effort,
         }
+        node_cap = spec.budget.tokens.get(row.alias)
 
         async def body(node_dir: Path) -> NodeOutcome:
+            refusal = self._run_cap_refusal(row.alias, node_cap)
+            if refusal is not None:
+                return NodeOutcome(
+                    status=NodeStatus.FAILED,
+                    executor_used=row.executor,
+                    model_used=row.alias,
+                    effort_used="-",
+                    error=refusal,
+                )
             request = ExecutorRequest(
                 node_dir=node_dir,
                 cwd=cwd,
@@ -205,11 +224,56 @@ class Coordinator:
                 isolation_root=self.run_dir.root,
                 write_set=tuple(spec.write_set),
                 deny_bash=self.policy.deny_bash,
+                token_cap=node_cap,
             )
             return await executor.run(request)
 
         dispatched = spec.model_copy(update={"executor": row.executor, "model": row.alias})
         return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
+
+    def _run_cap_refusal(self, row: str, node_cap: int | None) -> NodeError | None:
+        """Whether dispatching now, with ``node_cap`` on ``row``, would push the run past its ceiling.
+
+        Checked freshly at BODY-EXECUTION time (called from inside :meth:`work`'s own
+        ``body`` closure, not precomputed before ``_dispatch`` is awaited) so a concurrent
+        map branch's own charge - landed between this call being queued and it actually
+        running - is reflected here rather than read stale (design 7: "evaluated before
+        the NEXT dispatch"). The check is against the node's OWN DECLARED CAP, not what it
+        might actually spend: a node that stays well under its cap still could not have
+        been allowed to start once its cap alone would tip the row over, because the
+        coordinator has no way to promise it will not use the whole of what it declared.
+
+        Args:
+            row: The resolved model row alias (``ResolvedRow.alias``).
+            node_cap: This node's own cap for ``row`` (``NodeSpec.budget.tokens.get(row)``),
+                or ``None`` when the node declares no cap for this row at all - nothing to
+                check here (the run-level cap has nothing to add against; the per-node
+                turn-seam check in the executor is the same "no cap declared, nothing
+                enforced" rule).
+
+        Returns:
+            A ``BUDGET_EXCEEDED`` :class:`~agentdag.domain.models.NodeError` when
+            ``tokens_by_row[row] + node_cap`` would exceed ``policy.tokens_per_row[row]``,
+            else ``None`` - also ``None`` when ``policy.tokens_per_row`` declares no
+            ceiling for ``row`` at all (an operator who did not cap a row is not capping
+            it here either).
+        """
+        if node_cap is None:
+            return None
+        ceiling = self.policy.tokens_per_row.get(row)
+        if ceiling is None:
+            return None
+        charged = self.tokens_by_row.get(row, 0)
+        if charged + node_cap <= ceiling:
+            return None
+        return NodeError(
+            type=ErrorType.BUDGET_EXCEEDED,
+            message=(
+                f"row {row!r} already charged {charged} of {ceiling}; this node's own "
+                f"cap {node_cap} would push the run past its ceiling"
+            ),
+            transient=False,
+        )
 
     def snapshot(self) -> Mapping[str, str]:
         """Take the isolation-root manifest a later :meth:`scan` compares against.

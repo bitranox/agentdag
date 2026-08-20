@@ -152,6 +152,21 @@ _EFFORT_LEVELS: tuple[EffortLevel, ...] = ("low", "medium", "high", "xhigh", "ma
 """Every value ``claude_agent_sdk.types.EffortLevel`` allows, read from source (0.2.139)."""
 
 
+class _Interruptible(Protocol):
+    """What :meth:`ClaudeExecutor._on_turn` needs from the live client: only ``interrupt()``.
+
+    A narrower seam than the concrete :class:`~claude_agent_sdk.ClaudeSDKClient` this
+    method is actually handed (:meth:`ClaudeExecutor._run` calls it with the real
+    client) - a real client structurally satisfies this Protocol, and a unit test can
+    hand it a bare double with one method and no cast, the same reasoning
+    :class:`CredentialSource` below already applies to the credential seam.
+    """
+
+    async def interrupt(self) -> None:
+        """Stop the in-flight dispatch; the SDK's own ``ClaudeSDKClient.interrupt``."""
+        ...
+
+
 class CredentialSource(Protocol):
     """What :class:`ClaudeExecutor` needs from a credential: one node's own env slice."""
 
@@ -610,23 +625,43 @@ class ClaudeExecutor:
 
         ``cwd_rel`` is a parameter, computed by :meth:`run` BEFORE this method is even
         called (and before its own try/except), so a bad one never reaches here.
+
+        The token cap (design 7, M3; ``workflow/design/probes/m3-interrupt.md`` in
+        RESEARCH) is enforced HERE, not left to the terminal ``ResultMessage``: once
+        :meth:`_on_turn` calls ``client.interrupt()``, ``cap_hit`` is latched and every
+        branch below that would otherwise translate the SDK's own report is skipped in
+        favour of :meth:`_budget_outcome` - the probe measured that an interrupted
+        dispatch's terminal message reports itself as a plain SUCCESS when the interrupt
+        landed at a turn boundary and as a transient ``executor_error`` when it landed
+        mid-tool, and NEITHER may decide this node's outcome (a plain success would hand
+        a half-finished worktree downstream as complete; a transient error would let
+        Task 24's retry re-dispatch the same node into spending its cap again). Once
+        ``cap_hit`` is set, no further :meth:`_on_turn` call is made even if more
+        ``AssistantMessage``s arrive before the stream actually stops - avoids a second,
+        redundant ``interrupt()`` call on an already-interrupted client.
         """
         options = self._options_for(request)
         transcript_path = request.node_dir / "transcript.jsonl"
         first_turn_input = 0
         seen_first_turn = False
+        cap_hit = False
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
             async for message in client.receive_response():
                 append_transcript(transcript_path, message)
                 if isinstance(message, AssistantMessage):
                     usage = message.usage or {}
-                    self._on_turn(usage)
                     if not seen_first_turn:
                         first_turn_input = input_total(usage)
                         seen_first_turn = True
+                    if not cap_hit and await self._on_turn(usage, client, request.token_cap):
+                        cap_hit = True
                 if isinstance(message, ResultMessage):
+                    if cap_hit:
+                        return self._budget_outcome(request, first_turn_input, message.usage or {})
                     return self._outcome_for(request, message, first_turn_input, cwd_rel)
+        if cap_hit:
+            return self._budget_outcome(request, first_turn_input, {})
         return NodeOutcome(
             status=NodeStatus.FAILED,
             executor_used="claude",
@@ -708,19 +743,93 @@ class ClaudeExecutor:
             outcome = outcome.model_copy(update={"effort_used": request.effort})
         return outcome
 
-    def _on_turn(self, usage: dict[str, Any]) -> None:
-        """Per-``AssistantMessage`` hook point; a no-op here.
+    async def _on_turn(self, usage: dict[str, Any], client: _Interruptible, cap: int | None) -> bool:
+        """Per-``AssistantMessage`` hook point: stop the dispatch once this turn passes ``cap``.
 
-        M3 fills this in with the per-turn spend check and ``client.interrupt()`` call
-        (design 7's "the token cap has two call sites"); this task only creates the
-        seam and records ``first_turn_input_tokens`` (done by :meth:`_run` itself, not
-        by this method). This method's OWN signature will need to change for that: a
-        spend check that decides to stop the dispatch needs the live ``client`` handle
-        (to call ``client.interrupt()``) or some other stop signal ``_run`` can act on
-        after this call returns - ``usage`` alone cannot express "stop now" back to the
-        caller. Not built here; :meth:`_run` calls this once per turn with only
-        ``usage`` because that is all M2 needs.
+        Compares THIS turn's own :func:`input_total` - "what the model just saw"
+        (design 3.8), the same call site the context-ceiling handover trigger will
+        reuse - directly against ``cap``, never a sum across turns: under prompt
+        caching each turn's usage already reflects the conversation's cumulative size
+        (``cache_read_input_tokens`` re-reads everything cached so far), so summing
+        successive turns would double- and triple-count the same cached context and
+        trip the cap on a node that never actually grew past it.
+
+        Args:
+            usage: This turn's ``AssistantMessage.usage``.
+            client: The live client this dispatch is running on - needed to call
+                ``interrupt()``; M2's docstring on this method already flagged the
+                signature would have to change for exactly this.
+            cap: ``request.token_cap`` - this node's own cap for the resolved row, or
+                ``None`` when the node declares no cap for it, in which case nothing is
+                enforced (mirrors :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`'s
+                same "no cap declared, nothing checked" rule on the run-level call site).
+
+        Returns:
+            Whether this turn passed ``cap`` and ``client.interrupt()`` was called.
+            :meth:`_run` uses this to stamp the record ``BUDGET_EXCEEDED`` itself,
+            regardless of which of the two shapes the (now-interrupted) dispatch's own
+            terminal message reports - the probe measured that message never says
+            "interrupted" and gets it backwards in both directions.
         """
+        if cap is None or input_total(usage) <= cap:
+            return False
+        await client.interrupt()
+        return True
+
+    def _budget_outcome(self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]) -> NodeOutcome:
+        """Build the record a cap-stopped dispatch gets, stamped on the path that called ``interrupt()``.
+
+        This is the ONLY place that gets to decide a capped node's outcome - never the
+        terminal ``ResultMessage`` :meth:`_run` may still receive afterward (the probe
+        measured one always arrives, carrying real usage, which is why ``usage`` is
+        threaded through here rather than left at zero: a capped node still spent real
+        tokens and :attr:`~agentdag.application.kernel.context.Coordinator.tokens_by_row`
+        must reflect that, the same as any other outcome's ``charged_tokens``).
+
+        Two things this outcome deliberately does NOT carry, both load-bearing:
+        ``artefact_refs`` stays empty (never ``[cwd_rel]``) so a work node's
+        half-finished worktree is never handed downstream as a completed artefact - the
+        empty-result refusal (:func:`~agentdag.application.kernel.dispatch._refuse_empty`)
+        only inspects a ``DONE`` outcome, so it cannot rescue this one; and
+        ``error.transient`` is ``False``, so Task 24's retry path never re-dispatches a
+        node that was stopped for spending its own budget, straight back into spending
+        it again.
+
+        Args:
+            request: The dispatch this outcome is for - ``request.model`` names the row
+                charged, ``request.token_cap`` is quoted in the error message.
+            first_turn_input: What :meth:`_run` recorded as the FIRST turn's own
+                :func:`input_total`, kept in ``key_facts`` like every other outcome.
+            usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
+                produced, or ``{}`` on the rarer path where the stream ended with no
+                terminal message at all.
+
+        Returns:
+            A ``FAILED`` outcome, ``error.type=BUDGET_EXCEEDED``, ``transient=False``,
+            ``key_facts["cap_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
+        """
+        in_tokens = input_total(usage)
+        out_tokens = int(usage.get("output_tokens", 0))
+        cache_read = int(usage.get("cache_read_input_tokens", 0))
+        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        return NodeOutcome(
+            status=NodeStatus.FAILED,
+            key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
+            typed_fields=["cap_hit"],
+            tokens=tokens,
+            charged_tokens={request.model: in_tokens + out_tokens},
+            executor_used="claude",
+            model_used=request.model,
+            effort_used=_NO_VALUE,
+            error=NodeError(
+                type=ErrorType.BUDGET_EXCEEDED,
+                message=(
+                    f"node token cap {request.token_cap} exceeded at a turn seam; "
+                    "interrupted, overshoot bounded by one turn"
+                ),
+                transient=False,
+            ),
+        )
 
 
 def append_transcript(path: Path, message: object) -> None:
