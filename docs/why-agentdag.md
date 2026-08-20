@@ -1,12 +1,11 @@
 # Why agentdag exists
 
-**Status:** design rationale, settled 2026-08-16 and not reopened. The mechanisms it argues for are
-built out over the milestones that follow; see [the documentation index](README.md) for where each
-one stands.
+**Status:** design rationale. The mechanisms it argues for are built out over the milestones that
+follow; see [the documentation index](README.md) for where each one stands.
 
-agentdag coordinates teams of AI agents. Every structural choice in it follows from one question
-asked before any code was written: what are a language model's real limits, as opposed to the limits
-the word "team" quietly imports from human organisations.
+agentdag coordinates teams of AI agents. Every structural choice in it follows from one question:
+what are a language model's real limits, as opposed to the limits the word "team" quietly imports
+from human organisations.
 
 The short answer is that the obvious structure is the wrong one. Lead agent, teammates, delegation,
 a shared mailbox: all of that describes an organisation of people, and it answers a problem people
@@ -211,23 +210,22 @@ coordinator thin, so the cost of graph-as-code buys the property section 5 needs
 
 ## 8. Why build it rather than adopt something
 
-**Status:** decided 2026-08-17: rebuild.
+**Status:** the reasoning the current shape rests on.
 
-The honest version of this section starts with the number that decides it: how many runs per quarter.
-A coordinator used two to four times a quarter pays back its build only if the build is small. That is
-why the first milestone was a deliberately minimal baseline with no journal, no cap and no unattended
-approval, and why the adopt-versus-rebuild question was asked against that baseline rather than
-against a wish list.
+The number that decides this is runs per quarter. A coordinator used a handful of times a quarter
+repays only a small build, so the build stays small, and the baseline graph that sits beside the
+kernel carries no journal, no cap and no unattended approval on purpose. It is the control the
+kernel is measured against, and what its absences cost is the thing worth knowing.
 
-Durable-execution platforms exist and they solve the hard half properly. Checkpoint and resume,
-idempotency, retry, spend caps, an observability journal: those are runtime guarantees in that world,
-not conventions a coordinator is asked to honour. The design was compared against one of them on the
-same failure tests before anything was hand-rolled. The test it had to pass is the one paper designs
-always fail: the coordinator process dies between a node finishing and its record being written. What
-does the next run resume from, and does the side effect happen twice.
+Durable-execution platforms solve the hard half properly, and adopting one is the serious
+alternative rather than a straw man. Checkpoint and resume, idempotency, retry, spend caps, an
+observability journal: in that world those are runtime guarantees, not conventions a coordinator is
+asked to honour.
 
-The decision was to rebuild, on the same negative tests, with those answers designed in rather than
-assumed. What that costs and what it bought is [the execution model](execution-model.md).
+The test that decides between building and adopting is the one a design on paper always fails. The
+coordinator process dies between a node finishing and its record being written. What does the next
+run resume from, and does the side effect happen twice? Anything built here has to answer that with
+a mechanism rather than an intention, and [the execution model](execution-model.md) is that answer.
 
 ---
 

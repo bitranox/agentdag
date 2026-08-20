@@ -168,16 +168,15 @@ out how. That is why the preparation half of the port has no call site: what bel
 environment cannot be settled before the adapter that needs it exists.
 
 So the honest statement is that a boundary is wanted, the reason is measured, and the mechanism is
-open. The case for wanting it is that egress is the hole that was measured rather than theorised,
+open. The case for wanting it is that egress is the measured hole rather than the theorised one,
 and the command denylist in section 2 is the measurement.
 
 **A virtual machine per node** would inherit the same open problem, more so, and only becomes
 worth solving if work is ever pointed at repositories outside our control.
 
-**A separate operating system user per node** was considered and decided against, which is worth
-recording because it is the obvious first idea. It costs more than the container for the filesystem
-half of the problem, and it delivers nothing at all for the network half, which is the half that
-matters.
+**A separate operating system user per node** is the obvious first idea and it is the wrong one. It
+costs more than a container for the filesystem half of the problem, and it delivers nothing at all
+for the network half, which is the half that matters.
 
 ## 9. How to run it sensibly in the meantime
 

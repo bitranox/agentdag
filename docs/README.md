@@ -33,21 +33,18 @@ for it; these documents link to it rather than restating it.
 
 ## Where the project stands
 
-| Milestone | Scope                                                                                                                                                                                         | State            |
-|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------|
-| M0        | close the design's contradictions before anything is built                                                                                                                                    | done             |
-| S0        | measure the premises the design rests on rather than assuming them                                                                                                                            | done             |
-| M1        | the baseline: one graph, no journal, no cap, no unattended approval                                                                                                                           | done             |
-| D2        | adopt a durable-execution platform, or rebuild against the same failure tests                                                                                                                 | decided: rebuild |
-| M2        | the kernel: journal, run store, replay, tier policy, the Claude arm, the CLI                                                                                                                  | done             |
-| M3        | the three properties: a cap that fires, a deadline that kills, approve and cancel. The sandbox port is defined and declares that it isolates nothing; a real boundary behind it is undesigned | in flight        |
-| M4        | the Codex arm, and a graph that runs one branch on each family                                                                                                                                | planned          |
-| M5        | the first real run, attended, against a real fleet chore                                                                                                                                      | planned          |
-| later     | the network face, resources beyond one lock, knowledge grants, a planner node, further graphs, the drift review loop                                                                          | planned          |
+|       | Scope                                                                                                                                 | State     |
+|-------|---------------------------------------------------------------------------------------------------------------------------------------|-----------|
+| today | the baseline graph and the kernel beside it: journal, run store, replay, suspend and resume, the tier policy, the Claude arm, the CLI | built     |
+| M3    | a cap that fires, a deadline that kills, cancel, and a retry path for a failed code node                                              | in flight |
+| M4    | the Codex arm, and a graph running one branch on each model family                                                                    | next      |
+| M5    | the first real run against a real fleet chore, attended                                                                               | next      |
+| later | the network face, resources beyond one lock, knowledge grants, a planner node, further graphs, the drift review loop                  | later     |
+| open  | a sandbox that actually isolates: the port exists and declares that it does not, and a real boundary is undesigned                    | wanted    |
 
-The M1 baseline is still in the repository and still runs. It is the control the kernel is measured
-against, which is why it was built deliberately without a journal, a cap or an unattended approval:
-what their absence costs is the thing worth knowing.
+The baseline graph is still in the repository and still runs, as the control the kernel is measured
+against. It carries no journal, no cap and no unattended approval on purpose: what their absence
+costs is the thing worth knowing.
 
 The full design corpus, including the probes behind the measured claims and the milestone plans at
 three altitudes, is internal and not part of this repository. What it decided is stated in these

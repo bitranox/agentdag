@@ -90,7 +90,8 @@ The test gate has its own, separate allowlist, deliberately narrower.
 **Status:** planned. Measured against its real surface, not assumed.
 
 A Codex node is one `codex mcp-server` process per node, spoken to over MCP on standard input and
-output. Its surface was probed rather than guessed, and it reaches parity on most of what a node
+output. Its surface is known from probing rather than assumption, and it reaches parity on most of
+what a node
 needs: a working directory, per-node instructions in two flavours, a model, an effort setting through
 its configuration, and a sandbox mode plus a never-ask approval policy that together do the write-set
 job the Claude arm does with a hook.
@@ -140,10 +141,10 @@ Four rules hold whatever is in the right-hand column, and they are what make add
 
 ## 7. Why Claude is not reached through MCP too
 
-**Status:** decided (2026-08-18).
+**Status:** settled design decision.
 
-It would be tidier to have one transport for every model. It was considered and rejected for a
-specific reason rather than a stylistic one.
+It would be tidier to have one transport for every model. The reason not to is specific rather than
+stylistic.
 
 Claude Code can act as an MCP server, exposing its session's tool set including an agent tool. Against
 what a node actually needs, that surface is missing the working directory, the system prompt and
@@ -170,7 +171,7 @@ executor field on a node specification already accepts a server-and-tool name fo
 the parity table above shows is that vendors' agent-as-a-tool surfaces are dialects rather than one
 protocol, so each arm is a transport plus a mapping, and the mapping is where the work is.
 
-The vendor-neutral candidate is the Agent Client Protocol, which was designed for driving a coding
+The vendor-neutral candidate is the Agent Client Protocol, designed for driving a coding
 agent from a client rather than for exposing tools to a model. It has a session with a working
 directory, a prompt call that returns a stop reason and usage, cancellation with a defined stop
 reason, and, notably, a permission request where the *client* decides every sensitive tool call,

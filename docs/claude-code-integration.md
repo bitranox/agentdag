@@ -125,10 +125,10 @@ everything but name: it maps over levels and facts, folds the results, reviews t
 changes through the memory engine's own scripts, which are mechanical checks and therefore natural
 gates.
 
-Running it as a subagent fan-out has already demonstrated, in production, each of the properties the
-coordinator exists to provide. A parallel writer once clobbered a sibling's target and reported
-success, which is the shared-mutable-artifact rule being violated. There is no journal, so an
-interrupted pass starts over. There is no resume. There is no cap.
+Run as a subagent fan-out, it demonstrates in the negative every property the coordinator exists to
+provide. Parallel writers share a mutable target, so one can clobber another's work and report
+success, which is the shared-mutable-artifact rule being violated rather than enforced. There is no
+journal, so an interrupted pass starts over. There is no resume. There is no cap.
 
 Expressing it as a graph is a later milestone rather than the first one, for a reason worth being
 straight about: it is a graph whose write set is the knowledge store itself, which is the least

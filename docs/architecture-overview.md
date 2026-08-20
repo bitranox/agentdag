@@ -274,8 +274,8 @@ seam where a real boundary will attach.
 with egress denied by default and allowed only to the model API. It is wanted rather than planned,
 and the open problem is not the container: the run directory, the gate and the isolation scan all
 run on the coordinator's side of any boundary you would draw, and making them cross it is undesigned.
-A separate operating system user per node was considered and decided against outright: it costs more
-than a container for the filesystem half and delivers nothing at all for the network half.
+A separate operating system user per node is not the answer either: it costs more than a container
+for the filesystem half and delivers nothing at all for the network half.
 
 ## 11. Claude Code, subagents and the self-improve loop
 
