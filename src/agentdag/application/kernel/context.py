@@ -165,6 +165,21 @@ class Coordinator:
         would push the run's row total past ``policy.tokens_per_row``. Both checks are a
         no-op for a node whose spec declares no cap for the resolved row.
 
+        The resolved row naming an executor :attr:`executors` does not carry (the tier
+        policy table describes the full target deployment; wiring an executor is a
+        separate, incremental step - a policy row can legitimately be ``available``
+        before its executor exists) is ALSO checked inside ``body``, the same shape as
+        :meth:`_run_cap_refusal`: it raises :class:`~agentdag.domain.kernel_errors.KernelError`,
+        which :func:`~agentdag.application.kernel.dispatch._run_body`'s own guard turns
+        into a ``FAILED``, ``transient=False`` record - never an exception escaping this
+        method uncaught, which would abort the WHOLE run over one misresolved node
+        rather than fail just that node with a record the workflow (and the operator)
+        can see. The trade-off, taken deliberately: unlike the cwd check below, fixing
+        the wiring alone does not change this node's identity, so a plain resume with
+        the SAME spec is served this SAME failed record from the journal rather than
+        re-attempting - an operator who fixes the wiring re-dispatches with a bumped
+        ``spec.attempt`` (an identity field) or starts a fresh run, not a bare resume.
+
         Args:
             spec: The node spec, with its tier role, write set, deps and limits.
             brief: The node's brief; its content hash is part of the journal key.
@@ -178,17 +193,13 @@ class Coordinator:
             :attr:`tokens_by_row`.
 
         Raises:
-            KernelError: the resolved row names an executor not in :attr:`executors`,
-                or ``cwd`` sits outside the run root - both a misconfiguration, so they
-                raise HERE, before anything is dispatched: a failed record for either
-                would just be retried forever, never fixed by another attempt.
+            KernelError: ``cwd`` sits outside the run root - a misconfiguration in
+                whatever BUILT the request, so it raises HERE, before anything is
+                dispatched: a failed record for it would just be retried forever
+                (fixing it changes ``cwd``, hence the call's own identity, so nothing
+                a bare resume could ever re-serve usefully).
         """
         row = self.policy.resolve(spec)
-        if row.executor not in self.executors:
-            raise KernelError(
-                f"executor {row.executor!r} for node {spec.node_id!r} is not wired; wired: {sorted(self.executors)}"
-            )
-        executor = self.executors[row.executor]
         try:
             cwd_rel = cwd.relative_to(self.run_dir.root)
         except ValueError as exc:
@@ -204,6 +215,12 @@ class Coordinator:
         node_cap = spec.budget.tokens.get(row.alias)
 
         async def body(node_dir: Path) -> NodeOutcome:
+            if row.executor not in self.executors:
+                raise KernelError(
+                    f"row {row.alias!r} (node {spec.node_id!r}) resolved to executor "
+                    f"{row.executor!r}, which is not wired; wired: {sorted(self.executors)}"
+                )
+            executor = self.executors[row.executor]
             refusal = self._run_cap_refusal(row.alias, node_cap)
             if refusal is not None:
                 return NodeOutcome(

@@ -22,7 +22,7 @@ from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.domain.kernel_errors import KernelError
-from agentdag.domain.models import Budget, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, TierRole
+from agentdag.domain.models import Budget, ErrorType, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, TierRole
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -203,16 +203,31 @@ def test_snapshot_asks_the_scanner_about_the_run_root(tmp_path: Path) -> None:
 
 @pytest.mark.os_agnostic
 def test_work_refuses_the_resolved_executor_when_it_is_not_wired(tmp_path: Path) -> None:
+    """An available row naming an unwired executor is a FAILED record, not an
+    exception escaping the coordinator (design: "the design promises a typed
+    refusal and a record" - see :meth:`Coordinator.work`'s own docstring for why
+    this is checked inside ``body``, unlike the cwd check below it, and what that
+    trades away). One misresolved node must not abort the whole run: the record
+    names the row alias, the unwired executor key, and what IS wired, so the
+    operator can tell what is wrong without a stack trace.
+    """
     run_dir = fresh_run_dir(tmp_path)
     coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner(), executors={})
 
-    with pytest.raises(KernelError, match="not wired"):
-        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
 
-    # A misconfiguration raises before anything is dispatched: no started line, no
-    # result line - a retry after fixing the wiring is not replaying a half-attempt.
+    assert record.status == NodeStatus.FAILED
+    assert record.error is not None
+    assert record.error.type == ErrorType.EXECUTOR_ERROR
+    assert record.error.transient is False
+    assert "sonnet" in record.error.message  # the resolved row's own alias
+    assert "claude" in record.error.message  # the executor key that is not wired
+    assert "not wired" in record.error.message
+
+    # Unlike the cwd misconfiguration below, this one IS recorded: a started line and
+    # a result line, same as any other node the body raised inside.
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
-    assert journal.lines() == []
+    assert len(journal.lines()) == 2
 
 
 @pytest.mark.os_agnostic
