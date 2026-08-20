@@ -247,7 +247,7 @@ for folding many small items into one dispatch when they would not.
 
 ## 10. Sandbox mode
 
-**Status:** port only (M3, in flight). One adapter, and it declares that it isolates nothing.
+**Status:** port only, landing with M3. One adapter, and it declares that it isolates nothing.
 
 Nodes run behind a sandbox port. Today exactly one adapter is wired, and its guarantees are three
 booleans, all false: no filesystem boundary, no egress control, no separate user. Those booleans are
@@ -258,10 +258,11 @@ That is the point of shipping it as a no-op first. It names today's behaviour ho
 seam where a real boundary will attach.
 
 **Not yet:** a container per node, with its own home, its own mounts, and its own network namespace
-with egress denied by default and allowed only to the model API. It comes ahead of the other M3
-mechanisms because egress is the hole that was actually measured. A VM per node is the step after
-that. A separate operating system user per node was considered and decided against: it costs more
-than the container for the filesystem half and delivers nothing at all for the network half.
+with egress denied by default and allowed only to the model API. It is wanted rather than planned,
+and the open problem is not the container: the run directory, the gate and the isolation scan all
+run on the coordinator's side of any boundary you would draw, and making them cross it is undesigned.
+A separate operating system user per node was considered and decided against outright: it costs more
+than a container for the filesystem half and delivers nothing at all for the network half.
 
 ## 11. Claude Code, subagents and the self-improve loop
 

@@ -1,7 +1,8 @@
 # Safety and sandbox
 
 **Status:** partial (M2). Real mechanisms, real limits, and the limits are measured rather than
-guessed. The containment layer is M3 and is in flight.
+guessed. The sandbox port lands with M3 and declares that it isolates nothing; the containment layer
+behind it is wanted and not yet designed.
 
 The headline first, because everything else in this document is a detail beside it: **a node is not
 contained today**. It runs as the same operating system user as the coordinator, with no sandbox and
@@ -124,7 +125,7 @@ credential copy.
 
 ## 7. The sandbox port, today
 
-**Status:** port only (M3, in flight).
+**Status:** port only, landing with M3. Written and reviewed, not on the default branch yet.
 
 Nodes run behind a sandbox port with two halves. One is a declaration made once per run: what
 isolation this run's nodes have, as three booleans for filesystem, network egress and separate user.
@@ -135,28 +136,43 @@ Exactly one adapter is wired, and it declares all three booleans false, which is
 preparation step passes the request through unchanged.
 
 Two things make shipping that no-op worth doing rather than a formality. The declaration is stamped
-onto every record the run writes, so the isolation a piece of work ran under is a journaled fact that
-travels with it, and a record replayed from the journal keeps the declaration it was originally
-dispatched under rather than being restamped with today's. And the seam now exists in the one place a
-boundary has to attach, which means the container adapter is an adapter rather than a refactor.
+onto every record the run writes, at the point the record is constructed, so the isolation a piece of
+work ran under is a journaled fact that travels with it, and a record replayed from the journal keeps
+the declaration it was originally dispatched under rather than being restamped with today's. And the
+seam now exists in the one place a boundary has to attach, which means a real adapter is an adapter
+rather than a refactor.
 
-## 8. What the sandbox becomes
+The preparation half is defined and tested and has no live call site yet, because what belongs in the
+request's environment cannot be settled before an adapter needs it. So today the port is exercised
+only through its declaration.
 
-**Status:** planned (M3 for the container, later for the rest).
+## 8. What the sandbox could become
 
-**A container per node.** Its own home, its own mounts, and, the part that matters most, its own
-network namespace with egress denied by default and allowed only to the model API. The request shape
-the port already passes is built for exactly this: the node directory and the worktree as the two
-writable mounts, the isolation root as the ceiling, a working directory that can be rewritten to an
-in-container path, the environment to inject, and an egress allowlist. The current adapter ignores
-all of it, which is why its egress boolean stays false however that list is filled in.
+**Status:** wanted, and not yet designed. The implementation is parked and the hard part is open.
+This section describes a goal, not a plan.
 
-The container comes ahead of the other M3 mechanisms, ahead of the spend cap and the deadline,
-because egress is the hole that was measured rather than the one that was theorised. The command
-denylist section above is the measurement.
+**A container per node** is the shape everyone means: its own home, its own mounts, and, the part
+that matters most, its own network namespace with egress denied by default and allowed only to the
+model API. The request shape the port already passes is drawn for that: the node directory and the
+worktree as the two writable mounts, the isolation root as the ceiling, a working directory that can
+be rewritten to an in-container path, the environment to inject, and an egress allowlist. The
+current adapter ignores all of it, which is why its egress boolean stays false however that list is
+filled in.
 
-**A virtual machine per node** is the step after that, and only becomes necessary if work is ever
-pointed at repositories outside our control.
+**What makes it hard is not the container.** The kernel assumes the coordinator and the node see one
+filesystem, and quite a lot rests on that assumption. The run directory is written by the
+coordinator. The gate is a child process the coordinator starts in the node's worktree. The
+isolation scan walks the run tree from the coordinator's side and compares content before and after.
+Put the node behind a mount boundary and every one of those has to cross it, and nobody has worked
+out how. That is why the preparation half of the port has no call site: what belongs in a node's
+environment cannot be settled before the adapter that needs it exists.
+
+So the honest statement is that a boundary is wanted, the reason is measured, and the mechanism is
+open. The case for wanting it is that egress is the hole that was measured rather than theorised,
+and the command denylist in section 2 is the measurement.
+
+**A virtual machine per node** would inherit the same open problem, more so, and only becomes
+worth solving if work is ever pointed at repositories outside our control.
 
 **A separate operating system user per node** was considered and decided against, which is worth
 recording because it is the obvious first idea. It costs more than the container for the filesystem

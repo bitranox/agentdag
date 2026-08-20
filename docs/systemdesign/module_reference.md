@@ -2,7 +2,9 @@
 
 ## Status
 
-Current: the CLI, configuration, logging and email surface, plus the graph A baseline.
+Current: the CLI, configuration, logging and email surface, the graph A baseline, and the
+coordinator kernel with its Claude executor. For what the system is and where it is going, start at
+the [documentation index](../README.md).
 
 ---
 
@@ -12,11 +14,27 @@ Current: the CLI, configuration, logging and email surface, plus the graph A bas
 - `src/agentdag/domain/behaviors.py`  -  Pure domain functions (greeting)
 - `src/agentdag/domain/enums.py`  -  Type-safe enums (OutputFormat, DeployTarget)
 - `src/agentdag/domain/graph_a.py`  -  Graph A records (WorkResult, Tally, TallySummary, PushIntent) and the pure decisions over them (reduce_tally, stage, dedup_key, is_scratch_target)
+- `src/agentdag/domain/models.py`  -  Kernel records and their closed vocabularies (NodeSpec, NodeOutcome, ResultRecord, RunState, Decision, SandboxGuarantees; Kind, NodeStatus, ErrorType, RunStatus, TierRole)
+- `src/agentdag/domain/journal.py`  -  The six journal line shapes and their canonical serialisation
+- `src/agentdag/domain/keys.py`  -  The content-addressed journal key: which fields are identity, canonical JSON, the dependency prefix hash
+- `src/agentdag/domain/policy.py`  -  The tier policy shapes (TierRow, KindDefault, Thresholds, RunLimits, ResourceRow) and row resolution
+- `src/agentdag/domain/scan.py`  -  Pure manifest comparison: what changed, and which changes no declared write set covers
+- `src/agentdag/domain/scrub.py`  -  Secret scrubbing applied before anything is written to a transcript
+- `src/agentdag/domain/kernel_errors.py`  -  Kernel error family, including Suspended, which is control flow rather than a failure
 
 ### Application Layer
 - `src/agentdag/application/ports.py`  -  Callable Protocol definitions for adapter functions
 - `src/agentdag/application/graph_a_ports.py`  -  The five graph A ports (GitPort, GatePort, WorkPort, ApprovePort, RunStore) and GraphAWiring, the record holding one run's implementations
 - `src/agentdag/application/graph_a.py`  -  Graph A as a deterministic program: `make_scratch_fleet` (mirror the fleet), `run_graph` (map work and gate, tally, stage, approve) and `apply` (the idempotent push)
+- `src/agentdag/application/kernel/ports.py`  -  The kernel ports (Journal, RunDir, Clock, Executor, Policy, Scope, Lock) and KernelWiring
+- `src/agentdag/application/kernel/context.py`  -  Coordinator: the primitives a workflow program calls (work, gate, scan, map, reduce, stage, approve, apply)
+- `src/agentdag/application/kernel/dispatch.py`  -  One dispatch: compute the key, serve from the journal or run the body between a started and a result line
+- `src/agentdag/application/kernel/replay.py`  -  Folding the journal into a replay index: results, crash window, decisions, key sequence
+- `src/agentdag/application/kernel/run.py`  -  Driving one launch of a run: lock, opening line, workflow, terminal state
+- `src/agentdag/application/kernel/sandbox.py`  -  The Sandbox port: a per-run guarantees declaration and a per-dispatch preparation step
+- `src/agentdag/application/kernel/summary.py`  -  The run summary line appended by every launch that reaches done
+- `src/agentdag/application/kernel/workflow_check.py`  -  The determinism check over a replay's dispatched keys
+- `src/agentdag/application/workflows/graph_a.py`  -  Graph A re-expressed as a kernel workflow: journaled, resumable, approve-bearing
 
 ### Adapters Layer
 - `src/agentdag/adapters/config/loader.py`  -  Configuration loading with LRU caching
@@ -31,21 +49,33 @@ Current: the CLI, configuration, logging and email surface, plus the graph A bas
   - `constants.py`  -  Shared constants
   - `safe_console.py`  -  Encode-safe terminal output; use `safe_console.echo` instead of `click.echo`
   - `exit_codes.py`  -  POSIX exit codes (ExitCode IntEnum)
-  - `traceback.py`  -  Traceback state management
+  - `typed_click.py`  -  Typed facade over rich-click's decorators, so call sites stay fully typed
   - `context.py`  -  Click context helpers
   - `root.py`  -  Root command group
   - `main.py`  -  Entry point
   - `commands/info.py`  -  info, hello, fail commands
   - `commands/config.py`  -  config, config-deploy, config-generate-examples commands
-  - `commands/email.py`  -  send-email, send-notification commands
+  - `commands/email/`  -  send-email and send-notification, plus their shared helpers
   - `commands/logging.py`  -  logdemo command
   - `commands/graph_a.py`  -  graph-a group: the scratch and run commands
+  - `commands/run.py`  -  run group: start, status, records, resume, approve, and the hidden coordinator entry point
 - `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
   - `git_cli.py`  -  GitPort over the git CLI (mirror, remove_mirror, clone, inspect, push)
   - `gate_make.py`  -  GatePort: the project's `make test` in a child process, under one host-wide lock
   - `store_fs.py`  -  RunStore: one timestamped run directory holding worktrees, logs, homes, records and done markers
   - `work_claude_sdk.py`  -  WorkPort over the Claude Agent SDK, one isolated client and credential per node
   - `approve_console.py`  -  ApprovePort: the console confirmation asked once before anything is pushed
+- `src/agentdag/adapters/kernel/`  -  Kernel adapter package, one module per port:
+  - `executor_claude.py`  -  The Claude executor: one SDK client per node, an allowlisted environment, a per-node credential, per-turn usage
+  - `hooks_claude.py`  -  The two PreToolUse hooks: deny writes outside the isolation root, deny the configured command shapes
+  - `journal_jsonl.py`  -  The append-only journal and its audit copy, each written and synced in order
+  - `run_store_fs.py`  -  One run directory on disk: state, decisions, intents, artefacts, worktrees, node directories, markers
+  - `lock_file.py`  -  The exclusive run lock, with a holder identity that survives pid reuse
+  - `policy_yaml.py`  -  Loading the tier policy and content-hashing it into a policy version
+  - `scope_none.py`, `scope_systemd.py`, `scope_common.py`  -  Launching and reaping the coordinator, as a process group or a systemd user scope
+  - `sandbox_none.py`  -  The only Sandbox adapter: declares that it isolates nothing
+  - `isolation_scan.py`  -  Content manifests of the run tree, before and after a node
+  - `clock_utc.py`  -  The one place the system reads the wall clock
 
 ### Adapters Layer (In-Memory / Testing)
 - `src/agentdag/adapters/memory/__init__.py`  -  Public facade + Protocol conformance assertions
@@ -56,6 +86,11 @@ Current: the CLI, configuration, logging and email surface, plus the graph A bas
 ### Composition Layer
 - `src/agentdag/composition/__init__.py`  -  Wires adapters to ports
 - `src/agentdag/composition/graph_a.py`  -  Builds the GraphAWiring for one run: the production adapters plus a fresh run directory
+- `src/agentdag/composition/kernel.py`  -  Builds the KernelWiring for one run, including probing which Scope adapter this host can actually use
+
+### Shipped Data
+- `src/agentdag/policy/tier-policy.yaml`  -  The tier policy: model rows, per-kind defaults, thresholds and run limits
+- `src/agentdag/schemas/`  -  The JSON schemas the kernel records are checked against
 
 ### Entry Points
 - `src/agentdag/__main__.py`  -  Thin shim for `python -m`
@@ -84,6 +119,21 @@ Current: the CLI, configuration, logging and email surface, plus the graph A bas
 - `tests/test_graph_a_adapters.py`  -  Graph A adapters over real git repositories and real child processes
 - `tests/test_graph_a_run.py`  -  Graph A end to end, with the work node as the only substitution
 - `tests/test_cli_graph_a.py`  -  `graph-a` CLI stories through the real root group
+- `tests/test_enums.py`, `tests/test_errors.py`, `tests/test_logging.py`  -  Domain enums, error types, logging setup
+- `tests/test_cli_env_file.py`, `tests/test_cli_overrides.py`, `tests/test_cli_validation.py`  -  Root-group option behaviour
+- `tests/test_deploy_permissions.py`  -  Config deployment file and directory modes
+- `tests/test_metadata_sync.py`  -  Package metadata agrees with `pyproject.toml`
+- `tests/test_property_email.py`, `tests/test_property_overrides.py`  -  Property-based tests over email config and `--set` parsing
+
+Kernel tests, and the helpers they share:
+
+- `tests/kernel_fakes.py`, `tests/schema_helpers.py`  -  Test doubles for the kernel ports, and schema comparison helpers (imported by bare module name, never as `tests.<module>`)
+- `tests/test_kernel_domain.py`, `tests/test_kernel_journal.py`, `tests/test_kernel_schemas.py`  -  Records, journal lines, and their agreement with the shipped schemas
+- `tests/test_kernel_dispatch.py`, `tests/test_kernel_run.py`, `tests/test_kernel_run_dir.py`  -  One dispatch, one launch, and the run directory on disk
+- `tests/test_kernel_context.py`, `tests/test_kernel_primitives.py`, `tests/test_kernel_workflow_check.py`  -  The coordinator's primitives and the determinism check
+- `tests/test_kernel_executor_claude.py`, `tests/test_kernel_secrets.py`  -  The Claude executor, its environment allowlist, and secret scrubbing
+- `tests/test_kernel_policy.py`, `tests/test_kernel_lock.py`, `tests/test_kernel_scope.py`, `tests/test_kernel_scan.py`, `tests/test_kernel_sandbox.py`  -  Policy resolution, the run lock, scope teardown, isolation scanning, the sandbox declaration
+- `tests/test_workflow_graph_a.py`, `tests/test_cli_run.py`  -  Graph A on the kernel, replay and crash window proven, and the `run` CLI stories
 
 ---
 
@@ -91,18 +141,21 @@ Current: the CLI, configuration, logging and email surface, plus the graph A bas
 
 ### Layer Assignments
 
-| Directory/Module         | Layer       | Responsibility                                          |
-|--------------------------|-------------|---------------------------------------------------------|
-| `domain/`                | Domain      | Pure logic  -  no I/O, logging, or frameworks           |
-| `application/ports.py`   | Application | Protocol definitions for adapters                       |
-| `application/graph_a.py` | Application | Graph A as a deterministic program over typed records   |
-| `adapters/config/`       | Adapters    | Configuration loading, deployment, display              |
-| `adapters/email/`        | Adapters    | SMTP email sending                                      |
-| `adapters/logging/`      | Adapters    | lib_log_rich initialization                             |
-| `adapters/cli/`          | Adapters    | Click CLI framework integration                         |
-| `adapters/graph_a/`      | Adapters    | git, gate, run store, work node and approve for graph A |
-| `adapters/memory/`       | Adapters    | In-memory implementations for testing                   |
-| `composition/`           | Composition | Wires adapters to ports                                 |
+| Directory/Module         | Layer       | Responsibility                                             |
+|--------------------------|-------------|------------------------------------------------------------|
+| `domain/`                | Domain      | Pure logic  -  no I/O, logging, or frameworks              |
+| `application/ports.py`   | Application | Protocol definitions for adapters                          |
+| `application/graph_a.py` | Application | Graph A as a deterministic program over typed records      |
+| `adapters/config/`       | Adapters    | Configuration loading, deployment, display                 |
+| `adapters/email/`        | Adapters    | SMTP email sending                                         |
+| `adapters/logging/`      | Adapters    | lib_log_rich initialization                                |
+| `adapters/cli/`          | Adapters    | Click CLI framework integration                            |
+| `adapters/graph_a/`      | Adapters    | git, gate, run store, work node and approve for graph A    |
+| `adapters/memory/`       | Adapters    | In-memory implementations for testing                      |
+| `application/kernel/`    | Application | The coordinator: primitives, dispatch, replay, one run     |
+| `application/workflows/` | Application | Workflow programs the coordinator runs                     |
+| `adapters/kernel/`       | Adapters    | Journal, run store, lock, policy, scope, sandbox, executor |
+| `composition/`           | Composition | Wires adapters to ports                                    |
 
 ### Import Enforcement
 
@@ -273,6 +326,13 @@ Run graph A over the scratch origins in `REPOS_FILE`, applying the change in `BR
 
 **Exit codes:** 0, 22 (a push target outside the scratch tree)
 
+### run
+
+The coordinator group: `start`, `status`, `records`, `resume` and `approve`, over one run directory
+per run id. Its verbs and options are documented once, in the [README](../../README.md#coordinator-agentdag-run),
+and are not restated here. What each verb means for the run's state is in
+[the execution model](../execution-model.md).
+
 ---
 
 ## Profile Validation
@@ -391,4 +451,4 @@ Use `composition.build_testing()` to wire all in-memory adapters.
 
 ---
 
-**Last Updated:** 2026-08-17 (graph A baseline)
+**Last Updated:** 2026-08-20 (graph A baseline plus the coordinator kernel)

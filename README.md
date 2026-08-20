@@ -506,6 +506,7 @@ send_notification(
 
 ## Further Documentation
 
+- [Documentation index](docs/README.md)  -  what agentdag is, why it is shaped this way, and how it works
 - [Install Guide](INSTALL.md)
 - [Development Handbook](DEVELOPMENT.md)
 - [Contributor Guide](CONTRIBUTING.md)
