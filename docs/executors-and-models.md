@@ -77,9 +77,12 @@ The test gate has its own, separate allowlist, deliberately narrower.
 
 ## 5. Codex, the second arm
 
+No Codex adapter exists yet. What follows is what one will do, written against a surface that was
+probed rather than assumed, because the two parity gaps below shape the design instead of turning up
+once it is half built.
+
 A Codex node is one `codex mcp-server` process per node, spoken to over MCP on standard input and
-output. Its surface is known from probing rather than assumption, and it reaches parity on most of
-what a node
+output. It reaches parity on most of what a node
 needs: a working directory, per-node instructions in two flavours, a model, an effort setting through
 its configuration, and a sandbox mode plus a never-ask approval policy that together do the write-set
 job the Claude arm does with a hook.
@@ -149,7 +152,7 @@ the wrapper is a remote executor, which is an added row rather than a change of 
 
 ## 8. Other models
 
-Two paths, and they are not equivalent.
+No adapter exists for any of these either. There are two paths to one, and they are not equivalent.
 
 An MCP server plus a per-vendor field map covers anything that exposes an agent as a tool. The
 executor field on a node specification already accepts a server-and-tool name for exactly this. What
