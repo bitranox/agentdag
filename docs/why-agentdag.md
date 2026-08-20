@@ -16,15 +16,15 @@ organised and degrades for reasons nobody can see.
 Put the two side by side. The last column is the one that matters, because a team's shape is nothing
 more than the accumulated answer to these limits.
 
-| Limit                        | A person                                                                                                      | A language model                                                                                                         | What it does to the team                                                                                                                               |
-|------------------------------|---------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle |
-| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, and one node knowing something costs nothing to give another                   | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                              |
-| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives the dispatch                                                                                            | anything that must outlive a step is written down, or it did not happen                                                                                |
-| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time             |
-| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it does not help                                                                           | the check that decides anything is a program with an exit code, never another agent                                                                    |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a two-minute task costs nearly what a two-hour one costs, because the fixed startup dominates                            | a node carries work worth the startup, or small items get batched into a single dispatch                                                               |
-| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | every message lands in everyone's context and is re-read on every later turn, so cost grows with the square of the talk  | coordinate through typed records and an order fixed at plan time, never through a shared conversation                                                  |
+| Limit                        | A person                                                                                                      | A language model                                                                                                         | What it does to the team                                                                                                                                   |
+|------------------------------|---------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle     |
+| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, and one node knowing something costs nothing to give another                   | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
+| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives the dispatch                                                                                            | anything that must outlive a step is written down, or it did not happen                                                                                    |
+| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
+| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                         | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
+| Cost of one question         | two minutes of work costs two minutes                                                                         | a two-minute task costs nearly what a two-hour one costs, because the fixed startup dominates                            | a node carries work worth the startup, or small items get batched into a single dispatch                                                                   |
+| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | every message lands in everyone's context and is re-read on every later turn, so cost grows with the square of the talk  | coordinate through typed records and an order fixed at plan time, never through a shared conversation                                                      |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
 between heads is the expensive part and talking is the cheap part, so organisations grow layers to
@@ -190,10 +190,25 @@ serial task in parallel is destructive: divergent decisions, wasted dispatches, 
 thrown away. Because the two errors cost so differently, the default is serial and fanning out is
 something you prove, not something you assume.
 
-**Verification is a non-AI node returning an exit code.** By constraint four a model cannot grade its
-own work, and an agent grading another agent inherits the same problem with an extra dispatch. So the
-check that decides anything is mechanical: run the tests, read the exit code. The gate is the step an
-agent cannot satisfy by asserting that it did the work.
+**Nothing decides on prose, and nothing grades itself.** By constraint four a model asked about its
+own work is not a source of information, so the checks that decide anything in the shipped graph are
+programs: run the tests and read the exit code, walk the tree and list what was written outside the
+declared set. A gate is the step an agent cannot satisfy by asserting that it did the work. An exit
+code is the simplest form of that, not the only one; what matters is that the result is a typed
+field the coordinator can branch on rather than a paragraph.
+
+That is not the same as saying a model may never judge. Plenty of useful questions have no exit
+code, and for those the design keeps a judgement node: a fresh context that reads the store and
+forms a view. Two properties do the work there, and neither is mechanical. The judge is independent
+of the work, and it has no stake in the verdict. Self-assessment fails both; a separate node fails
+neither.
+
+Putting the review on a different model family is a further lever on the same axis. It is designed,
+it is off by default, and it is off because nobody has measured whether family diversity finds real
+defects that a fresh context of the same family misses. The measurement is specified rather than
+assumed, and if the answer is no, the claim gets retired rather than kept as folklore. Where several
+judgements are collected, the counting is done by code, never by one more model asked to summarise
+the others.
 
 ## 6. What survives from human organisations
 
