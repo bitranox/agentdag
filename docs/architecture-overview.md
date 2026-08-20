@@ -84,9 +84,10 @@ deadline can reap the node's grandchildren, so it is not a detail; see
 
 Four more verbs operate on the run directory afterwards: `status`, `records`, `resume` and `approve`.
 That is the whole `run` surface. The CLI is allowed to read the clock and randomness when it mints a
-run id. A workflow program may not, and a static check refuses one that reaches for either directly,
-so a value that would differ on replay never reaches a node's input. The coordinator itself reads
-time only through one injected clock, which is what lets a test pin it.
+run id. A workflow program may not, and a static check refuses one that reaches for either directly.
+That check reads the workflow module and not its imports, so it raises the cost of a
+non-reproducible input rather than making one impossible. The coordinator itself reads time only
+through one injected clock, which is what lets a test pin it.
 
 **Not yet:** the network face. The design puts an MCP server over streamable HTTP with a bearer
 token in front of the same verbs, so that another tool, including Claude Code itself, can start runs
@@ -119,9 +120,9 @@ to.
 A node returns a typed record: a status from a closed vocabulary, references to artefacts it wrote,
 a small map of key facts, and the names of the fields in that map a caller is allowed to trust. The
 content it produced stays on disk. The next node that needs the content reads the file; the
-coordinator, which passes the record along, never interprets that content and never pulls it into
-another node's context. It does hash it, since the isolation scan reads every file under the run
-root to build its manifest, but nothing it reads there ever reaches a branch decision.
+coordinator, which passes the record along, does not interpret that content or pull it into another
+node's context. It does hash it, since the isolation scan reads every file under the run root to
+build its manifest. The one place prose is inspected at all is section 4's exception.
 
 This is the "records, not content" rule from [why agentdag exists](why-agentdag.md), and it is what
 keeps the one context every node passes through from filling up with everything every node said.

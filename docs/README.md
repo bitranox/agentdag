@@ -2,8 +2,8 @@
 
 agentdag coordinates teams of AI agents. It dispatches each node of a graph, gates what the node
 produced on something mechanical, and branches only on typed records, never on prose an agent wrote.
-The coordinator's decisions never depend on content, only on typed records and state, which is what
-keeps it thin enough to run a long graph without losing the plot. The run directory it manages does
+The coordinator branches on typed records and state rather than on content, which is what keeps it
+thin enough to run a long graph without losing the plot. The run directory it manages does
 hold content: worktrees, transcripts, the files a node wrote.
 
 The project is mid-build, and these documents describe the system as it is intended to work rather
