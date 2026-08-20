@@ -133,6 +133,48 @@ def test_scrub_key_pass_is_selective_not_a_blanket_redaction() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_scrub_key_pass_no_longer_redacts_usage_token_counts() -> None:
+    """The bug this fix round closed: ``SECRET_KEY_RE`` used to match ``token`` as a
+    bare substring anywhere in a key, so every usage-accounting field the kernel
+    executor streams - ``input_tokens``, ``output_tokens``,
+    ``cache_creation_input_tokens``, ``cache_read_input_tokens`` - had its own
+    INTEGER replaced by ``"[scrubbed]"`` in every archived ``transcript.jsonl``,
+    permanently destroying the per-turn audit trail a reviewer needs to reconstruct a
+    dispatch's spend. Mutation check: reverting ``SECRET_KEY_RE`` to
+    ``re.compile(r"(?i)token|secret|password|authorization|credential")`` (the
+    pre-fix pattern) makes this assertion fail - verified by hand against that exact
+    pattern before this fix landed.
+    """
+    usage = {
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "cache_creation_input_tokens": 56,
+        "cache_read_input_tokens": 78,
+    }
+    assert scrub({"usage": usage}) == {"usage": usage}  # all four integers survive untouched
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_still_redacts_every_real_secret_key_shape() -> None:
+    """The other half of the same fix: component-bounded matching must not have
+    over-corrected into missing a real secret key. A bare secret word, and each as
+    one underscore-delimited component of a longer key, must still redact whole.
+    """
+    for key in ("token", "api_token", "auth_token", "secret", "password", "authorization", "credential"):
+        assert scrub({key: "hunter2"}) == {key: "[scrubbed]"}, f"{key!r} should still redact"
+
+
+@pytest.mark.os_agnostic
+def test_scrub_value_pass_still_redacts_a_secret_shaped_string_under_a_usage_key() -> None:
+    """Defense in depth: the KEY pass no longer redacts ``input_tokens`` by name, but
+    the VALUE pass never looked at the key at all - a secret-shaped STRING reaching
+    that field (never a real usage integer, but ``scrub`` has no way to know that) is
+    still caught by :data:`SECRET_TOKEN_SHAPE_RE`, independent of the key fix above.
+    """
+    assert scrub({"input_tokens": "sk-ant-oat01-LEAKED"}) == {"input_tokens": "[scrubbed]"}
+
+
+@pytest.mark.os_agnostic
 def test_append_transcript_redacts_a_secret_shaped_value_under_a_non_secret_key(tmp_path: Path) -> None:
     """Design 9's other half: ``scrub()``'s VALUE pass catches a token-shaped string
     even under a key ("content") that is not itself named like a secret - driven

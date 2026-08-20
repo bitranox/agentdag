@@ -22,9 +22,28 @@ from typing import Any, cast
 
 __all__ = ["SECRET_KEY_RE", "SECRET_TOKEN_SHAPE_RE", "scrub"]
 
-SECRET_KEY_RE = re.compile(r"(?i)token|secret|password|authorization|credential")
-"""The KEY pass: a dict value is redacted whole when its own key matches this -
-catches ``{"password": "hunter2"}`` regardless of what the value looks like."""
+SECRET_KEY_RE = re.compile(r"(?i)(?:\A|[^a-z0-9])(?:token|secret|password|authorization|credential)(?:\Z|[^a-z0-9])")
+"""The KEY pass: a dict value is redacted whole when its own key NAMES a secret -
+catches ``{"password": "hunter2"}`` and ``{"auth_token": "..."}`` regardless of what
+the value looks like.
+
+Matches the secret word only as a whole snake_case/kebab-case COMPONENT of the key -
+bounded on each side by the key's start/end or a non-alphanumeric separator - not as
+a bare substring anywhere in it. That is deliberate: this module used to match
+``token`` etc. as a plain substring, which also matched every usage-accounting field
+this package's own kernel executor streams (``input_tokens``, ``output_tokens``,
+``cache_creation_input_tokens``, ``cache_read_input_tokens``) - "tokens" there is a
+DIFFERENT word (a count of them), not a secret, but shares five letters with
+"token". Redacting those integers made every archived transcript's per-turn usage
+permanently unreadable, exactly the audit trail a security reviewer needs to
+reconstruct a dispatch's spend. Component-bounded matching keeps catching a REAL
+secret key (``token``, ``api_token``, ``auth_token``, ``secret``, ``password``,
+``authorization``, ``credential``, and any of those as one dash/underscore-delimited
+segment of a longer key) while leaving a merely-containing key alone. Not a full
+identifier tokenizer: two components run together with no separator at all (a
+hypothetical ``mytoken`` with no underscore) would not be caught this way either,
+but nothing in this codebase's own JSON-shaped keys is written that way - every real
+key here is snake_case."""
 
 SECRET_TOKEN_SHAPE_RE = re.compile(
     r"sk-ant-[A-Za-z0-9_-]{8,}|oat01-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}"
