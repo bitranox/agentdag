@@ -89,19 +89,17 @@ class YesApprover:
         return True
 
 
-def services_wiring(
-    store: FsRunStore, approve: YesApprover, lock: Path, work: WorkPort | None = None
-) -> Callable[[], AppServices]:
+def services_wiring(store: FsRunStore, approve: YesApprover, work: WorkPort | None = None) -> Callable[[], AppServices]:
     """Return a services factory whose ``wire_graph_a`` hands back these fakes."""
     wiring = GraphAWiring(
         git=GitCli(),
-        gate=MakeTestGate(lock=lock, command=(sys.executable, "-c", "raise SystemExit(0)")),
+        gate=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
         work=work or CommittingWork(),
         approve=approve,
         store=store,
     )
 
-    def _wire(*, runs: Path, lock: Path) -> GraphAWiring:
+    def _wire(*, runs: Path) -> GraphAWiring:
         return wiring
 
     prod = build_production()
@@ -170,7 +168,7 @@ def test_when_graph_a_run_is_approved_it_pushes_the_scratch_origin(
     result: Result = cli_runner.invoke(
         cli_mod.cli,
         ["graph-a", "run", str(repos), str(brief), "--scratch", str(scratch), "--parallel", "1"],
-        obj=services_wiring(store, approver, tmp_path / "gate.lock"),
+        obj=services_wiring(store, approver),
     )
 
     assert result.exit_code == 0
@@ -202,7 +200,7 @@ def test_when_graph_a_run_targets_a_non_scratch_repo_it_exits_invalid_argument(
     result: Result = cli_runner.invoke(
         cli_mod.cli,
         ["graph-a", "run", str(repos), str(brief), "--scratch", str(tmp_path / "scratch"), "--parallel", "1"],
-        obj=services_wiring(store, approver, tmp_path / "gate.lock", work),
+        obj=services_wiring(store, approver, work),
     )
 
     assert result.exit_code == ExitCode.INVALID_ARGUMENT
@@ -227,7 +225,7 @@ def test_when_graph_a_run_gets_parallel_zero_it_refuses_instead_of_hanging(
     result: Result = cli_runner.invoke(
         cli_mod.cli,
         ["graph-a", "run", str(repos), str(brief), "--parallel", "0"],
-        obj=services_wiring(store, YesApprover(), tmp_path / "gate.lock"),
+        obj=services_wiring(store, YesApprover()),
     )
 
     assert result.exit_code == 2  # Click's UsageError: refused while parsing, before the callback

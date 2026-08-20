@@ -127,11 +127,11 @@ class NoApprover:
 
 def true_gate(tmp_path: Path) -> MakeTestGate:
     # the gate is a subprocess exit code; use the interpreter so the unit test needs no `make`
-    return MakeTestGate(lock=tmp_path / "gate.lock", command=(sys.executable, "-c", "raise SystemExit(0)"))
+    return MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)"))
 
 
 def false_gate(tmp_path: Path) -> MakeTestGate:
-    return MakeTestGate(lock=tmp_path / "gate.lock", command=(sys.executable, "-c", "raise SystemExit(1)"))
+    return MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(1)"))
 
 
 def scratch_fleet(tmp_path: Path, git_port: GitCli, names: list[str]) -> tuple[Path, list[Path]]:
@@ -273,7 +273,7 @@ def test_run_graph_a_failed_work_node_never_runs_the_gate(tmp_path: Path) -> Non
     gitp.mirror(real, origin)
     store = FsRunStore.create(tmp_path / "runs")
     # a green gate: the assertion is that it never RAN, proved by the absence of its log
-    unused_gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"))
+    unused_gate = MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)"))
     rc = asyncio.run(
         run_graph(
             origins=[origin],

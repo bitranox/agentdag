@@ -302,7 +302,7 @@ def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_p
                 workflow=get_workflow("graph-a"),
                 args=OtherArgs(),
                 executors={"claude": CommittingExecutor()},
-                gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+                gate_port=MakeTestGate(),
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),

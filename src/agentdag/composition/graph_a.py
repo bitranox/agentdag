@@ -21,19 +21,18 @@ if TYPE_CHECKING:
 __all__ = ["wire"]
 
 
-def wire(*, runs: Path, lock: Path) -> GraphAWiring:
+def wire(*, runs: Path) -> GraphAWiring:
     """Build the production wiring, creating a fresh run directory.
 
     Args:
         runs: Directory holding every run; a new timestamped one is created inside it.
-        lock: Host-wide lock file serialising the gate across concurrent branches.
 
     Returns:
         The wiring for this run.
     """
     return GraphAWiring(
         git=GitCli(),
-        gate=MakeTestGate(lock=lock),
+        gate=MakeTestGate(),
         work=ClaudeSdkWork(),
         approve=ConsoleApprove(),
         store=FsRunStore.create(runs),

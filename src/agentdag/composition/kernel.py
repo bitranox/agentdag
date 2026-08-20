@@ -16,8 +16,6 @@ from __future__ import annotations
 import shutil
 import subprocess  # nosec B404 - probing the user systemd manager IS this module's job
 import sys
-import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..adapters.graph_a.gate_make import MakeTestGate
@@ -34,17 +32,12 @@ from ..application.kernel.ports import KernelWiring
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from ..adapters.kernel.executor_claude import CredentialSource
     from ..application.kernel.ports import Scope
 
 __all__ = ["manager_state_is_live", "wire_kernel"]
-
-_GATE_LOCK = Path(tempfile.gettempdir()) / "agentdag-bmk-tool-env.lock"
-"""Host-wide lock serialising the gate: the same shared bmk tool environment
-``adapters.cli.commands.graph_a.DEFAULT_LOCK`` guards for the M1 baseline - one physical
-resource, so the kernel's own gate nodes wait behind the SAME lock file rather than a
-second one that could race it."""
 
 _LIVE_MANAGER_STATES = frozenset({"running", "degraded"})
 """``systemctl --user is-system-running``'s own STDOUT values that mean a live manager:
@@ -83,7 +76,7 @@ def wire_kernel(
         lock=FileRunLock(),
         clock=UtcClock(),
         executors={"claude": ClaudeExecutor(credentials=credential, deny_bash=tuple(deny_bash))},
-        gate_port=MakeTestGate(lock=_GATE_LOCK),
+        gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),

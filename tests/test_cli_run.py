@@ -113,7 +113,7 @@ def services_with(
         lock=FileRunLock(),
         clock=UtcClock(),
         executors={"claude": executor},
-        gate_port=MakeTestGate(lock=tmp_path / "gate.lock", command=(sys.executable, "-c", "raise SystemExit(0)")),
+        gate_port=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),

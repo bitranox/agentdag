@@ -126,7 +126,7 @@ def wire(
         run_dir=run_dir,
         clock=UtcClock(),
         executors={"claude": executor} if executors is None else executors,
-        gate_port=MakeTestGate(lock=run_dir.root / "gate.lock"),
+        gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=scanner,
         policy=OneRowPolicy(),

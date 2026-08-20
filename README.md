@@ -244,7 +244,7 @@ A run never writes to a real repository.
 
 ### The gate runs one at a time
 
-The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. All gate runs are serialised by one host-wide lock file (`--lock`, default `<tmp>/agentdag-bmk-tool-env.lock`), because the build tool environment is shared across the whole host and two gates running at once rebuild it under each other. `--parallel` therefore bounds the agent nodes, not the gates.
+The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
 
 ### One credential per node
 

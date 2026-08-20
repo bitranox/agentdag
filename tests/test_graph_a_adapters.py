@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -228,27 +227,18 @@ def test_git_cli_errors_carry_git_stderr(tmp_path: Path) -> None:
 
 def test_gate_returns_the_command_exit_code_under_the_lock(tmp_path: Path) -> None:
     for code in (0, 1, 3):
-        gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", f"raise SystemExit({code})"))
+        gate = MakeTestGate(command=(sys.executable, "-c", f"raise SystemExit({code})"))
         assert gate.run(tmp_path, tmp_path / f"g{code}.log") == code
 
 
 def test_gate_writes_the_child_output_to_the_log(tmp_path: Path) -> None:
     program = "import sys; print('on stdout'); print('on stderr', file=sys.stderr)"
-    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", program))
+    gate = MakeTestGate(command=(sys.executable, "-c", program))
     log = tmp_path / "logs" / "out.log"
     assert gate.run(tmp_path, log) == 0
     written = log.read_text()
     assert "on stdout" in written
     assert "on stderr" in written
-
-
-def test_gate_reports_a_held_lock_by_path_instead_of_hanging(tmp_path: Path) -> None:
-    from filelock import FileLock
-
-    with FileLock(str(tmp_path / "l")):
-        gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "raise SystemExit(0)"), timeout=0.2)
-        with pytest.raises(RuntimeError, match=re.escape(str(tmp_path / "l"))):
-            gate.run(tmp_path, tmp_path / "g.log")
 
 
 _OS_INJECTED_ENV: frozenset[str] = frozenset({"__CF_USER_TEXT_ENCODING"}) if sys.platform == "darwin" else frozenset()
@@ -261,7 +251,7 @@ def test_gate_env_is_exactly_the_allowlist_intersection(tmp_path: Path) -> None:
     # its own environment is the only way to read what the child really got.
     dump = tmp_path / "env.json"
     program = f"import json, os, pathlib; pathlib.Path({str(dump)!r}).write_text(json.dumps(dict(os.environ)))"
-    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", program))
+    gate = MakeTestGate(command=(sys.executable, "-c", program))
 
     assert gate.run(tmp_path, tmp_path / "g.log") == 0
 
@@ -287,7 +277,7 @@ def test_gate_log_header_names_what_was_withheld_and_never_its_value(
     # opens has to say what was withheld - by NAME, because some of what it drops is a
     # credential and this file is written to disk.
     monkeypatch.setenv("AGENTDAG_PROBE_TOKEN", "sk-ant-oat01-NOTAREALSECRET")
-    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "print('gate output')"))
+    gate = MakeTestGate(command=(sys.executable, "-c", "print('gate output')"))
     log = tmp_path / "g.log"
 
     assert gate.run(tmp_path, log) == 0
@@ -322,7 +312,7 @@ def test_gate_log_is_created_owner_only(tmp_path: Path) -> None:
     # gate.log holds a build's whole stdout and stderr and lives under the run directory,
     # which is 0700 throughout; created through Path.write_text it would land at the
     # platform default minus the umask instead.
-    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "print('x')"))
+    gate = MakeTestGate(command=(sys.executable, "-c", "print('x')"))
     log = tmp_path / "logs" / "gate.log"
 
     assert gate.run(tmp_path, log) == 0
@@ -337,7 +327,7 @@ def test_gate_runs_real_make_test(tmp_path: Path) -> None:
     # gate is distinguishable from a green one, with the green repo as the control.
     green = make_repo(tmp_path, "green", "test:\n\t@exit 0\n")
     red = make_repo(tmp_path, "red", "test:\n\t@exit 1\n")
-    gate = MakeTestGate(lock=tmp_path / "l")
+    gate = MakeTestGate()
     assert gate.run(green, tmp_path / "green.log") == 0
     assert gate.run(red, tmp_path / "red.log") != 0
 
@@ -427,3 +417,48 @@ def test_work_never_writes_to_the_source_credential(tmp_path: Path) -> None:
     assert copy.read_text() == '{"token": "read-only-operator"}'
     assert source.read_text() == '{"token": "read-only-operator"}'
     assert source.stat().st_mtime_ns == before
+
+
+def test_two_gates_run_concurrently_rather_than_serialising(tmp_path: Path) -> None:
+    """Gates must not serialise against each other on this host.
+
+    bmk >= 3.17.0 guards its own shared tool environment: every bmk holds a shared lock on
+    it for its lifetime and the Makefile takes that lock exclusively around the upgrade, so
+    only the provisioning waits. Serialising whole GATES here would be a blunter instrument
+    for a problem the build tool already solves more precisely - and it is what made
+    ``--parallel`` bound the agent nodes but not the gates.
+
+    Each gate's command announces itself and then waits for the other. If the two are
+    serialised, the first can never see the second and gives up.
+    """
+    import threading
+
+    def waiting_for(mine: Path, theirs: Path) -> str:
+        return (
+            "import pathlib,time,sys\n"
+            f"pathlib.Path({str(mine)!r}).touch()\n"
+            f"other=pathlib.Path({str(theirs)!r})\n"
+            "deadline=time.monotonic()+10\n"
+            "while time.monotonic()<deadline:\n"
+            "    if other.exists(): raise SystemExit(0)\n"
+            "    time.sleep(0.02)\n"
+            "raise SystemExit(1)\n"
+        )
+
+    first, second = tmp_path / "first.marker", tmp_path / "second.marker"
+    gates = (
+        MakeTestGate(command=(sys.executable, "-c", waiting_for(first, second))),
+        MakeTestGate(command=(sys.executable, "-c", waiting_for(second, first))),
+    )
+    codes: dict[int, int] = {}
+
+    def run(index: int) -> None:
+        codes[index] = gates[index].run(tmp_path, tmp_path / f"g{index}.log")
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in (0, 1)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert codes == {0: 0, 1: 0}, f"the gates did not overlap: {codes}"

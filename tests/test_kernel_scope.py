@@ -86,7 +86,7 @@ def test_noscope_kill_reaps_a_grandchild_not_only_the_process_it_started(tmp_pat
 
     A real coordinator spawns a gate subprocess, git commands and executors. Signalling
     only the one ``Popen`` leaves every one of them running after a cancel or a deadline,
-    holding the gate lock and the worktrees of a run that is supposed to be over.
+    holding the worktrees of a run that is supposed to be over.
     """
     scope = NoScope()
     handle = scope.start(unit="agentdag-noscope-grandchild", argv=_SPAWNS_A_CHILD_ARGV, env={}, cwd=tmp_path)

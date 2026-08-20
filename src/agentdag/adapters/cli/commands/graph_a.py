@@ -43,9 +43,6 @@ DEFAULT_SCRATCH = Path(tempfile.gettempdir()) / "agentdag-scratch"
 DEFAULT_RUNS = Path(tempfile.gettempdir()) / "agentdag-baseline"
 """Where each run keeps its worktrees, logs and records."""
 
-DEFAULT_LOCK = Path(tempfile.gettempdir()) / "agentdag-bmk-tool-env.lock"
-"""Host-wide lock serialising the gate: the build tool environment is shared."""
-
 REPOS_FILE_NAME = "REPOS.txt"
 """Name of the list ``scratch`` writes and ``run`` reads."""
 
@@ -118,14 +115,6 @@ def cli_graph_a_scratch(*, real_repos_file: Path, scratch: Path, refresh: bool) 
     help="How many branches may run at once.",
 )
 @option("--model", type=str, default="sonnet", show_default=True, help="Model each work node runs on.")
-@option(
-    "--lock",
-    "lock",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=DEFAULT_LOCK,
-    show_default=True,
-    help="Host-wide lock file serialising the gate across branches.",
-)
 @click.pass_context
 def cli_graph_a_run(
     ctx: click.Context,
@@ -138,7 +127,6 @@ def cli_graph_a_run(
     runs: Path,
     parallel: int,
     model: str,
-    lock: Path,
 ) -> None:
     """Run graph A over the scratch origins in REPOS_FILE with the change in BRIEF_FILE.
 
@@ -154,7 +142,7 @@ def cli_graph_a_run(
     with lib_log_rich.runtime.bind(job_id="cli-graph-a-run", extra=extra):
         origins = parse_repos_text(repos_file.read_text())
         brief = brief_file.read_text()
-        wiring = services.wire_graph_a(runs=runs, lock=lock)
+        wiring = services.wire_graph_a(runs=runs)
         safe_console.echo(f"run store: {wiring.store.root}")
         logger.info("Running graph A", extra={"repos": len(origins), "run_root": str(wiring.store.root)})
         try:

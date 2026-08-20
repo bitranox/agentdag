@@ -109,7 +109,7 @@ class InitLogging(Protocol):
 class WireGraphA(Protocol):
     """Build the graph A wiring for one run, creating that run's store."""
 
-    def __call__(self, *, runs: Path, lock: Path) -> GraphAWiring: ...
+    def __call__(self, *, runs: Path) -> GraphAWiring: ...
 
 
 class WireKernel(Protocol):

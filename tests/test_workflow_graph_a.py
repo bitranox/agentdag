@@ -89,7 +89,7 @@ def launch_over(
             workflow=get_workflow("graph-a"),
             args=args,
             executors={"claude": executor},
-            gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+            gate_port=MakeTestGate(),
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
@@ -128,7 +128,7 @@ def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = 
 
     Args:
         run_dir: The run directory to build over.
-        tmp_path: The test's temporary directory, for the gate lock.
+        tmp_path: The test's temporary directory.
         git: The git port to inject; defaults to the plain shipped adapter. A test that
             has to prove NO push was made passes :class:`RecordingGit`.
 
@@ -144,7 +144,7 @@ def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = 
         run_dir=run_dir,
         clock=UtcClock(),
         executors={},
-        gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+        gate_port=MakeTestGate(),
         git=git if git is not None else GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
@@ -477,7 +477,7 @@ def test_two_fleet_members_that_would_share_one_worktree_are_refused_before_any_
                 workflow=get_workflow("graph-a"),
                 args=args,
                 executors={"claude": CommittingExecutor()},
-                gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+                gate_port=MakeTestGate(),
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),

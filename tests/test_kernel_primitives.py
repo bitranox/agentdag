@@ -88,9 +88,7 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
         run_dir=run_dir,
         clock=UtcClock(),
         executors={},
-        gate_port=MakeTestGate(
-            lock=tmp_path / "gate.lock", command=(sys.executable, "-c", f"raise SystemExit({gate_rc})")
-        ),
+        gate_port=MakeTestGate(command=(sys.executable, "-c", f"raise SystemExit({gate_rc})")),
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
