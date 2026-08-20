@@ -83,21 +83,42 @@ USAGE_COUNT_KEY_ALLOWLIST = frozenset(
         ("output", "tokens"),
         ("cache", "creation", "input", "tokens"),
         ("cache", "read", "input", "tokens"),
+        ("max", "output", "tokens"),
+        ("estimated", "tokens"),
+        ("estimated", "tokens", "delta"),
+        ("output", "tokens", "details"),
+        ("ephemeral", "1h", "input", "tokens"),
+        ("ephemeral", "5m", "input", "tokens"),
+        ("truncated", "by", "token", "cap"),
     }
 )
-"""The narrow exception to :data:`SECRET_KEY_COMPONENTS`'s default-redact stance: the
-four usage-accounting fields the kernel executor streams for every turn - each one an
-INTEGER count of tokens, not a secret - in both spellings the SDK uses
-(``input_tokens``/``inputTokens``, ``output_tokens``/``outputTokens``,
-``cache_creation_input_tokens``/``cacheCreationInputTokens``,
-``cache_read_input_tokens``/``cacheReadInputTokens``). A key's SPLIT COMPONENTS are
-compared against this set (not the raw string), so one entry here covers both
-spellings at once. Redacting these made every archived transcript's per-turn usage
-permanently unreadable, exactly the audit trail a security reviewer needs to
-reconstruct a dispatch's spend - but the exception is enumerated and small on
-purpose: a token-count field NOT on this list (``maxOutputTokens``,
-``estimated_tokens``, a future SDK field) is still redacted by default, trading an
-audit-trail line for never silently under-redacting an unanticipated key."""
+"""The narrow exception to :data:`SECRET_KEY_COMPONENTS`'s default-redact stance:
+eleven usage-accounting fields the kernel executor streams for every turn - each one
+an INTEGER count or a boolean about a count, never a secret - identified by SPLIT
+COMPONENTS (not the raw string), so one entry covers every spelling the SDK uses for
+that field at once (``cache_read_input_tokens``/``cacheReadInputTokens`` both split to
+``("cache", "read", "input", "tokens")``).
+
+The first four are the per-turn token counts (``input_tokens``, ``output_tokens``,
+``cache_creation_input_tokens``, ``cache_read_input_tokens``); redacting them made
+every archived transcript's per-turn usage permanently unreadable, exactly the audit
+trail a security reviewer needs to reconstruct a dispatch's spend. The other seven
+were found still redacted after that first fix, by checking all 138 distinct keys the
+real transcripts under ``/var/lib/agentdag/runs`` carry against the shipped
+allowlist: ``max_output_tokens``, ``estimated_tokens``, ``estimated_tokens_delta``,
+``output_tokens_details``, ``truncated_by_token_cap`` (all numeric or boolean usage
+metadata), and ``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` - the
+cache-tier breakdown that is the ONLY evidence in a transcript of which prompt-caching
+TTL a turn used, load-bearing for reconstructing a dispatch's actual cache-read cost,
+not merely informative.
+
+The exception is enumerated and stays small ON PURPOSE: it grows only when someone
+identifies a specific field and adds it deliberately, never by widening the shape
+this set matches (e.g. "anything ending in a tokens component"). A token-count-shaped
+key NOT on this list - a future SDK field, or a key that only looks like a count
+(``access_tokens``, a plural noun ending in the same word, but naming an actual
+credential) - is still redacted by default. That is the trade this module makes:
+audit-trail lines cost less than a silently under-redacted secret."""
 
 
 def _is_secret_key(key: str) -> bool:

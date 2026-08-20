@@ -172,6 +172,66 @@ def test_scrub_key_pass_usage_token_counts_survive_in_both_spellings() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_scrub_key_pass_extended_usage_metadata_keys_survive() -> None:
+    """Round two of the same fix, prompted by checking all 138 distinct keys the real
+    transcripts under ``/var/lib/agentdag/runs`` carry against the first allowlist:
+    seven more numeric-or-boolean usage-metadata fields were still being redacted -
+    ``max_output_tokens``, ``estimated_tokens``, ``estimated_tokens_delta``,
+    ``output_tokens_details``, ``truncated_by_token_cap``, and the cache-tier
+    breakdown ``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` (the only
+    place a transcript records which prompt-caching TTL a turn used).
+
+    Five of the seven get a both-spellings assertion, same as the original four: the
+    alternate spelling (snake_case for a field the SDK emits camelCase, or vice
+    versa) is an unambiguous mechanical transform with no digit adjacent to a case
+    boundary, so deriving it is not a guess about what the SDK would actually send.
+    The two ``ephemeral_*`` fields get ONE assertion each, in the spelling the real
+    transcripts actually carry: their names have a digit glued to a letter
+    (``1h``, ``5m``), so a synthetic camelCase twin (``ephemeral1hInputTokens``?
+    ``ephemeralOneHourInputTokens``?) would be an invented spelling this codebase has
+    no evidence the SDK ever sends, not a verified case.
+
+    Mutation check (verified by running it): dropping the
+    ``("truncated", "by", "token", "cap")`` entry from
+    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST` makes both
+    ``truncatedByTokenCap`` and ``truncated_by_token_cap`` fail together - the same
+    one-tuple-covers-both-spellings property the original four fields have, holding
+    for a newly added entry too.
+    """
+    both_spellings = {
+        "maxOutputTokens": "max_output_tokens",
+        "estimated_tokens": "estimatedTokens",
+        "estimated_tokens_delta": "estimatedTokensDelta",
+        "output_tokens_details": "outputTokensDetails",
+        "truncatedByTokenCap": "truncated_by_token_cap",
+    }
+    for observed, derived in both_spellings.items():
+        assert scrub({observed: 5}) == {observed: 5}, f"{observed!r} should survive"
+        assert scrub({derived: 5}) == {derived: 5}, f"{derived!r} should survive"
+
+    for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
+        assert scrub({key: 5}) == {key: 5}, f"{key!r} should survive"
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_redacts_a_token_shaped_key_not_on_the_usage_allowlist() -> None:
+    """Negative control for the allowlist: ``access_tokens`` is not observed in this
+    codebase's own transcripts, but it is a plausible real key elsewhere (an OAuth
+    token-exchange response, a stored credentials cache) - and it is picked
+    deliberately because it shares the exact TWO-component ``("word", "tokens")``
+    shape as the allowlisted ``input_tokens``/``output_tokens`` (a plural noun ending
+    in ``tokens``, the same length), unlike ``refresh_token_expires_in`` (which the
+    generic secret-word check alone already catches via its singular ``token``
+    component, without exercising the allowlist boundary at all). If the allowlist
+    matched by SHAPE ("looks like a token count") rather than by exact enumerated
+    tuple, this key would slip through; it must not, because it actually names a
+    collection of live credentials, not a count.
+    """
+    assert scrub({"access_tokens": ["hunter2"]}) == {"access_tokens": "[scrubbed]"}
+    assert scrub({"accessTokens": ["hunter2"]}) == {"accessTokens": "[scrubbed]"}
+
+
+@pytest.mark.os_agnostic
 def test_scrub_key_pass_still_redacts_every_real_secret_key_shape() -> None:
     """The other half of the same fix: component-bounded matching must not have
     over-corrected into missing a real secret key. A bare secret word, and each as
