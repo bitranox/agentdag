@@ -184,6 +184,15 @@ Other model families reach the same port as an MCP server plus a per-vendor fiel
 agent-as-a-tool surfaces are dialects rather than one protocol, which is why the port is the boundary
 and the field map is per adapter.
 
+**Can it run on a subscription rather than a metered key?** For Claude, yes, and that is the only
+path implemented: a node authenticates from a subscription token file, or from a private per-node
+copy of the operator's own login. There is no API-key handling anywhere in the code. For Codex the
+billing is expected to be metered, which is one reason its budget is charged up front rather than
+measured as it goes. The policy table records per model row which of the two a row bills against, so
+a graph's cost model is readable before it runs. One question is genuinely open and worth knowing
+about: whether unattended use of a subscription token by an always-on server is permitted and
+survives rate limiting. The table keeps a metered row either way.
+
 Full comparison, including which side of each row is built, in
 [executors and models](executors-and-models.md).
 
@@ -294,11 +303,11 @@ Detail in [Claude Code integration](claude-code-integration.md).
 
 ## Where to go next
 
-| Question                                               | Document                                              |
-|--------------------------------------------------------|-------------------------------------------------------|
-| Why is it shaped this way at all                       | [why agentdag exists](why-agentdag.md)                |
-| What is a node, a record, a key, a replay              | [execution model](execution-model.md)                 |
-| How a model is actually driven, and which models       | [executors and models](executors-and-models.md)       |
-| What stops a node doing damage, today and later        | [safety and sandbox](safety-and-sandbox.md)           |
-| Hooks, knowledge, subscriptions, the self-improve loop | [Claude Code integration](claude-code-integration.md) |
-| Which commands exist and what they take                | [README](../README.md)                                |
+| Question                                           | Document                                              |
+|----------------------------------------------------|-------------------------------------------------------|
+| Why is it shaped this way at all                   | [why agentdag exists](why-agentdag.md)                |
+| What is a node, a record, a key, a replay          | [execution model](execution-model.md)                 |
+| How a model is actually driven, and which models   | [executors and models](executors-and-models.md)       |
+| What stops a node doing damage, today and later    | [safety and sandbox](safety-and-sandbox.md)           |
+| Hooks, knowledge, subagents, the self-improve loop | [Claude Code integration](claude-code-integration.md) |
+| Which commands exist and what they take            | [README](../README.md)                                |
