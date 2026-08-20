@@ -6,8 +6,19 @@ RESEARCH, re-verified while building this module): ``systemd-run --user --scope 
 suffix itself when ``--unit`` is given without one - so every later lookup (``systemctl --user
 is-active``, the cgroup path) has to use that SAME suffixed name, not the bare one the caller
 passed. This adapter appends it once, in :meth:`SystemdScope.start`, and returns a
-:class:`~agentdag.application.kernel.ports.ScopeHandle` whose ``unit`` already carries it, so
-:meth:`is_alive`/:meth:`kill` never have to guess.
+:class:`~agentdag.application.kernel.ports.ScopeHandle` whose ``unit`` already carries it.
+
+:meth:`is_alive` and :meth:`kill` also normalise :attr:`~agentdag.application.kernel.ports.
+ScopeHandle.unit` back onto the suffixed form (:func:`_with_scope_suffix`) before querying
+systemd, rather than trusting the handle already carries it: a handle a FRESH process
+reconstructs from a bare ``run_id`` alone (``application.kernel.cancel._handle_for``, used by
+``run cancel`` and the startup sweep) only ever has the BASE name :func:`~agentdag.application.
+kernel.cancel.scope_unit` returns, never having seen this module's own suffixing happen. Without
+normalising, ``systemctl --user is-active <base-name>`` resolves the bare name as a ``.service``
+that was never created and answers ``inactive`` for a scope that is very much still running
+(measured live: ``systemctl --user is-active agentdag-run-doesnotexist`` -> ``inactive``, exit
+4) - so a reconstructed handle would silently make :meth:`is_alive`/:meth:`kill` report "already
+gone" for a scope neither method ever actually queried.
 
 ``systemd-run --scope`` (without ``--no-block``) is SYNCHRONOUS: the ``systemd-run`` process
 itself stays alive as long as the scoped command runs, relaying its exit code. This adapter
@@ -48,6 +59,25 @@ _CGROUP_POLL_TIMEOUT_S = 10.0
 (design C8's cancel path budget; matched here since M3's real cancel command will reuse this)."""
 
 _CONFIRM_POLL_INTERVAL_S = 0.1
+
+
+def _with_scope_suffix(unit: str) -> str:
+    """Normalise ``unit`` onto the ``.scope``-suffixed form systemd actually uses.
+
+    A no-op for a handle :meth:`SystemdScope.start` returned (already suffixed there).
+    Load-bearing for a handle a FRESH process reconstructs from a bare ``run_id`` alone
+    (see the module docstring) - without this, :meth:`SystemdScope.is_alive`/:meth:`kill`
+    would query a ``.service`` unit that was never created instead of the real ``.scope``
+    unit, and report a live scope as already gone.
+
+    Args:
+        unit: A handle's ``unit`` - either already ``.scope``-suffixed, or the bare base
+            name :func:`~agentdag.application.kernel.cancel.scope_unit` returns.
+
+    Returns:
+        ``unit`` unchanged if already suffixed, else ``unit`` with ``.scope`` appended.
+    """
+    return unit if unit.endswith(".scope") else f"{unit}.scope"
 
 
 def _resolved(tool: str) -> str:
@@ -136,9 +166,15 @@ class SystemdScope:
         )
 
     def is_alive(self, handle: ScopeHandle) -> bool:
-        """Return whether ``systemctl --user is-active`` reports the unit ``active``."""
+        """Return whether ``systemctl --user is-active`` reports the unit ``active``.
+
+        ``handle.unit`` is normalised onto the ``.scope``-suffixed form first
+        (:func:`_with_scope_suffix`) so a handle RECONSTRUCTED by a fresh process (``run
+        cancel``, the startup sweep) from the bare unit base name is queried the same way
+        :meth:`start`'s own handle already is.
+        """
         result = subprocess.run(  # nosec B603  # noqa: S603 - a resolved executable and a fixed argument list, never a shell string
-            [_resolved("systemctl"), "--user", "is-active", handle.unit],
+            [_resolved("systemctl"), "--user", "is-active", _with_scope_suffix(handle.unit)],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -149,19 +185,23 @@ class SystemdScope:
     def kill(self, handle: ScopeHandle) -> bool:
         """Stop the unit, then poll its cgroup for empty or gone, up to :data:`_CGROUP_POLL_TIMEOUT_S`.
 
+        ``handle.unit`` is normalised the same way :meth:`is_alive` normalises it (see
+        there) before either the ``systemctl stop`` or the cgroup path is built from it.
+
         Returns:
             ``True`` once ``cgroup.procs`` is confirmed empty (or the cgroup directory
             is gone entirely - systemd removes it once the scope's last process exits),
             never trusting ``systemctl stop``'s own exit code alone.
         """
+        unit = _with_scope_suffix(handle.unit)
         subprocess.run(  # nosec B603  # noqa: S603 - a resolved executable and a fixed argument list, never a shell string
-            [_resolved("systemctl"), "--user", "stop", handle.unit],
+            [_resolved("systemctl"), "--user", "stop", unit],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             check=False,
         )
-        cgroup = _cgroup_dir(handle.unit)
+        cgroup = _cgroup_dir(unit)
         deadline = time.monotonic() + _CGROUP_POLL_TIMEOUT_S
         while time.monotonic() < deadline:
             if _cgroup_empty(cgroup):

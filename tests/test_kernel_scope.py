@@ -29,6 +29,8 @@ from agentdag.adapters.kernel import scope_none
 from agentdag.adapters.kernel.lock_file import pid_exists
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
+from agentdag.application.kernel.cancel import scope_unit
+from agentdag.application.kernel.ports import ScopeHandle
 from agentdag.composition.kernel import manager_state_is_live
 
 _SLEEP_ARGV = [sys.executable, "-c", "import time; time.sleep(30)"]
@@ -286,6 +288,39 @@ def test_systemdscope_starts_an_active_unit_and_kill_verifies_the_cgroup_empty(t
     cgroup_procs = _cgroup_procs_path(handle.unit)
     assert not cgroup_procs.is_file() or cgroup_procs.read_text(encoding="utf-8").strip() == ""
     assert scope.is_alive(handle) is False
+
+
+@pytest.mark.os_linux
+@pytest.mark.local_only
+@pytest.mark.skipif(_SYSTEMD_RUN_MISSING, reason="systemd-run not on PATH")
+def test_systemdscope_is_alive_and_kill_work_on_a_handle_reconstructed_from_the_bare_unit_name(
+    tmp_path: Path,
+) -> None:
+    """The bug this guards: ``run cancel``/the startup sweep never see the ``.scope``
+    suffix :meth:`SystemdScope.start` appends - a FRESH process (which never called
+    ``start`` itself) reconstructs a handle from the bare unit BASE name alone
+    (``application.kernel.cancel._handle_for``, built from :func:`scope_unit`). Before
+    the adapter normalised ``handle.unit`` back onto the suffixed form,
+    ``is_alive``/``kill`` on that reconstructed handle queried ``systemctl --user
+    is-active <base-name>``, which systemd resolves as a ``.service`` that was never
+    created and always answers ``inactive`` - so a scope that is very much still running
+    read as already gone, and neither ``run cancel`` nor the startup sweep ever actually
+    stopped it.
+    """
+    scope = SystemdScope()
+    base_unit = scope_unit("scope-reconstruct-test")
+    started = scope.start(unit=base_unit, argv=_SLEEP_ARGV, env=dict(os.environ), cwd=tmp_path)
+    time.sleep(_START_GRACE_S)
+    assert started.unit == f"{base_unit}.scope"  # control: start() really did suffix it
+
+    reconstructed = ScopeHandle(unit=base_unit, pid=0, log_path=tmp_path / "launch.log")
+
+    assert scope.is_alive(reconstructed) is True  # the bug: this read False before the fix
+
+    assert scope.kill(reconstructed) is True
+    cgroup_procs = _cgroup_procs_path(started.unit)
+    assert not cgroup_procs.is_file() or cgroup_procs.read_text(encoding="utf-8").strip() == ""
+    assert scope.is_alive(reconstructed) is False
 
 
 @pytest.mark.os_linux
