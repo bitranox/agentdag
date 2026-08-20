@@ -4,8 +4,8 @@
 ("run.cancel blocks for the node's whole deadline"): a synchronous call held open for
 up to ``run_limits.deadline_ceiling_s`` is the one verb an operator reaches for and the
 least likely to survive a proxy or a client timeout. So the shape here is the same two
-steps ``mcp-surface.md`` section 3.8 and ``2026-08-17-agentdag-design.md`` section 6
-("cancel") describe:
+steps ``mcp-surface.md`` section 3.8 and ``2026-08-17-agentdag-design.md`` section 3.4
+("Lifecycle", the ``cancel`` verb) describe:
 
 1. :func:`request_cancel` WRITES the cancel intent as a file under ``decisions/``
    (``decisions/_run.cancel.json``, the same write discipline
@@ -110,9 +110,16 @@ def _handle_for(run_dir: RunDir, run_id: str) -> ScopeHandle:
     """Reconstruct the :class:`~agentdag.application.kernel.ports.ScopeHandle` a kill needs.
 
     ``pid`` and ``log_path`` are never read by :meth:`Scope.is_alive`/:meth:`Scope.kill`
-    (both key off ``handle.unit`` alone - verified directly against both adapters) so
-    they carry harmless placeholders here rather than the real values a fresh process,
-    which never itself launched this unit, has no way to know.
+    (both key off ``handle.unit`` alone - verified directly against both adapters, by
+    reading their source) so they carry harmless placeholders here rather than the real
+    values a fresh process, which never itself launched this unit, has no way to know.
+    That is ALL this verified, though: which field each adapter reads, not that the
+    VALUE this function puts there is correct for every adapter. ``unit`` here is the
+    bare BASE name :func:`scope_unit` returns - never the ``.scope``-suffixed form
+    :meth:`~agentdag.adapters.kernel.scope_systemd.SystemdScope.start` appends - so
+    ``SystemdScope`` normalises it back onto that suffixed form itself
+    (``scope_systemd._with_scope_suffix``) before querying systemd; this function stays
+    adapter-agnostic and never needs to know which scope kind actually started the unit.
     """
     return ScopeHandle(unit=scope_unit(run_id), pid=0, log_path=run_dir.root / "launch.log")
 
@@ -187,7 +194,8 @@ def resolve_cancel(
       cross_process_capable` is ``False``) or may simply not have finished emptying the
       cgroup within its own poll budget - either way ``verified`` comes back ``False``
       with :attr:`CancelOutcome.reason` naming which;
-    * the JOURNAL WRITE needs this run's lock, which a still-alive coordinator may hold
+    * the JOURNAL WRITE needs this run's lock, which a still-alive coordinator may hold -
+      or a CONCURRENT ``run cancel`` racing this one, briefly, for its own journal write
       (only possible when the kill itself could not verify success, since a VERIFIED
       kill means the whole cgroup - coordinator included - is confirmed gone). When the
       lock cannot be taken, NOTHING is journaled here: the run stays ``cancelling``, and
@@ -223,7 +231,9 @@ def resolve_cancel(
         token = lock.acquire(run_dir.root, holder)
     except LockHeld:
         return CancelOutcome(
-            status=RunStatus.CANCELLING, verified=False, reason="a coordinator still holds the run lock"
+            status=RunStatus.CANCELLING,
+            verified=False,
+            reason="the run lock is held (a live coordinator, or a concurrent 'run cancel')",
         )
     try:
         still_unresolved = _already_resolved_verified(journal) is None
@@ -239,7 +249,7 @@ def _status_for(*, verified: bool) -> RunStatus:
     return RunStatus.CANCELLED if verified else RunStatus.CANCELLING
 
 
-def sweep_stale_scope(run_dir: RunDir, *, scope: Scope) -> None:
+def sweep_stale_scope(run_dir: RunDir, *, scope: Scope) -> bool:
     """Stop a scope left behind by a dead coordinator, verified, before a new one may start.
 
     Called before every relaunch (``run start``'s own fresh run_id included, for which
@@ -255,12 +265,25 @@ def sweep_stale_scope(run_dir: RunDir, *, scope: Scope) -> None:
     Args:
         run_dir: The run about to be started or resumed.
         scope: The scope kind this launch will use.
+
+    Returns:
+        ``True`` when there was nothing to sweep (this scope kind cannot verify a
+        cross-process handle at all, or the unit was already not alive) or the sweep's
+        own :meth:`~agentdag.application.kernel.ports.Scope.kill` confirmed the cgroup
+        empty. ``False`` when the unit WAS alive and ``kill`` could not confirm it
+        emptied within its own poll budget - the M2 crash probe's roughly 40-second
+        draining window - so a zombie sibling may still be running. A caller MUST NOT
+        proceed to start a fresh scope under the SAME unit name in that case:
+        ``systemd-run`` refuses a transient unit name already in use outright, and
+        failing here with a clear message beats that opaque collision surfacing several
+        calls later, deep inside the launch.
     """
     if not scope.cross_process_capable:
-        return  # nothing this scope kind can verify about a PRIOR invocation's own unit
+        return True  # nothing this scope kind can verify about a PRIOR invocation's own unit
     handle = _handle_for(run_dir, run_dir.root.name)
-    if scope.is_alive(handle):
-        scope.kill(handle)  # best-effort: blocks until verified empty, or its own poll budget elapses
+    if not scope.is_alive(handle):
+        return True
+    return scope.kill(handle)  # blocks until verified empty, or its own poll budget elapses
 
 
 def _kill(scope: Scope, run_dir: RunDir) -> tuple[bool, str]:

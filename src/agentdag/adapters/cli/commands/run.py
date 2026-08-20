@@ -627,6 +627,32 @@ def _open_run_dir(runs_dir: Path, run_id: str) -> FsRunDir:
         _fail(str(exc))
 
 
+def _fail_if_scope_unconfirmed(*, run_id: str, confirmed: bool) -> None:
+    """Exit if the startup sweep (:func:`~agentdag.application.kernel.cancel.sweep_stale_scope`)
+    could not confirm a stale scope stopped.
+
+    A relaunch REUSES this run's unit name, and ``systemd-run`` refuses a transient unit
+    name already in use outright - so proceeding to :func:`_launch_background` (or, for
+    the foreground path, straight into the coordinator) with an unconfirmed sweep would
+    fail late with that opaque collision, or dispatch a fresh coordinator alongside a
+    zombie sibling still touching the same worktrees. Failing here, with a clear message,
+    is the earlier and more legible of the two.
+
+    Args:
+        run_id: Named in the message, matching every other failure this module prints.
+        confirmed: :func:`~agentdag.application.kernel.cancel.sweep_stale_scope`'s own
+            return value - ``True`` means there is nothing left to worry about.
+
+    Raises:
+        SystemExit: :attr:`~agentdag.adapters.cli.exit_codes.ExitCode.GENERAL_ERROR` -
+            ``confirmed`` is ``False``.
+    """
+    if confirmed:
+        return
+    safe_console.echo(f"run {run_id} failed: a scope left behind by a dead coordinator did not confirm stopped")
+    raise SystemExit(ExitCode.GENERAL_ERROR)
+
+
 def _launch_background(
     scope: Scope, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path, run_id: str
 ) -> None:
@@ -688,7 +714,7 @@ def _run_foreground(
     # EXISTING run (resume, approve, or this in-process path of _coordinate itself) it
     # stops a scope a dead coordinator left draining before this launch dispatches
     # anything into the same worktrees, gate lock or credential store.
-    sweep_stale_scope(run_dir, scope=wiring.scope)
+    _fail_if_scope_unconfirmed(run_id=run_id, confirmed=sweep_stale_scope(run_dir, scope=wiring.scope))
     journal = wiring.journal_factory(run_dir.journal_path, run_dir.audit_path)
     try:
         return asyncio.run(
@@ -750,7 +776,7 @@ def _relaunch(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, reason: 
     # name must be stopped BEFORE scope.start() below - systemd refuses a transient unit
     # name already in use, and a fresh coordinator must never start while an old one's
     # children can still be touching the same worktrees.
-    sweep_stale_scope(run_dir, scope=wiring.scope)
+    _fail_if_scope_unconfirmed(run_id=run_id, confirmed=sweep_stale_scope(run_dir, scope=wiring.scope))
     argv = [sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir), "--reason", reason]
     _launch_background(
         wiring.scope, unit=scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id

@@ -273,8 +273,9 @@ def test_sweep_stale_scope_kills_a_scope_still_alive(tmp_path: Path) -> None:
     rd = run_dir(tmp_path)
     scope = FakeScope(cross_process_capable=True, alive=True, kill_returns=True)
 
-    sweep_stale_scope(rd, scope=scope)
+    result = sweep_stale_scope(rd, scope=scope)
 
+    assert result is True
     assert scope.kill_calls
     assert journal_of(rd).lines() == []  # housekeeping only, never journaled
 
@@ -284,8 +285,9 @@ def test_sweep_stale_scope_is_a_no_op_when_the_scope_is_already_gone(tmp_path: P
     rd = run_dir(tmp_path)
     scope = FakeScope(cross_process_capable=True, alive=False)
 
-    sweep_stale_scope(rd, scope=scope)
+    result = sweep_stale_scope(rd, scope=scope)
 
+    assert result is True
     assert scope.is_alive_calls
     assert not scope.kill_calls
 
@@ -296,7 +298,24 @@ def test_sweep_stale_scope_never_calls_a_scope_that_cannot_verify_cross_process(
     rd = run_dir(tmp_path)
     scope = FakeScope(cross_process_capable=False)
 
-    sweep_stale_scope(rd, scope=scope)
+    result = sweep_stale_scope(rd, scope=scope)
 
+    assert result is True
     assert not scope.is_alive_calls
     assert not scope.kill_calls
+
+
+@pytest.mark.os_agnostic
+def test_sweep_stale_scope_returns_false_when_the_kill_does_not_confirm(tmp_path: Path) -> None:
+    """The still-draining case (the M2 crash probe measured roughly 40s of executor
+    children outliving a killed coordinator): a caller must LEARN the sweep did not
+    confirm, rather than the result being silently dropped and a fresh coordinator
+    launched into a unit name that may still be occupied."""
+    rd = run_dir(tmp_path)
+    scope = FakeScope(cross_process_capable=True, alive=True, kill_returns=False)
+
+    result = sweep_stale_scope(rd, scope=scope)
+
+    assert result is False
+    assert scope.kill_calls
+    assert journal_of(rd).lines() == []  # still housekeeping only, never journaled

@@ -463,13 +463,19 @@ def test_run_cancel_refuses_a_done_run(cli_runner: CliRunner, tmp_path: Path) ->
 def test_run_resume_refuses_a_cancelling_or_a_cancelled_run(cli_runner: CliRunner, tmp_path: Path, verb: str) -> None:
     (tmp_path / "runs").mkdir()
     kill_result = verb == "cancelled"
-    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=kill_result)
+    # kill_result starts True so the INITIAL start below's own startup sweep (M3) confirms
+    # trivially - RecordingScope's is_alive_result is a blanket canned True regardless of
+    # whether anything was ever really started, so a False kill_result here would make
+    # that first `run start --foreground` itself fail before the run exists at all. Only
+    # the CANCEL call under test should see the canned verdict this parametrization is about.
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=True)
     obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
     started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
     match = re.search(r"run (\S+) suspended", started.output)
     assert match, started.output
     run_id = match.group(1)
     runs_arg = str(tmp_path / "runs")
+    scope.kill_result = kill_result
     cli_runner.invoke(cli_mod.cli, ["run", "cancel", run_id, "--runs", runs_arg], obj=obj)
 
     resumed = cli_runner.invoke(cli_mod.cli, ["run", "resume", run_id, "--runs", runs_arg, "--foreground"], obj=obj)
@@ -505,6 +511,57 @@ def test_run_resume_stops_a_scope_a_dead_coordinator_left_behind_before_relaunch
     assert f"run {run_id} suspended" in resumed.output
     assert len(scope.kill_calls) == 1
     assert scope.kill_calls[0].unit == scope_unit(run_id)
+
+
+@pytest.mark.os_agnostic
+def test_run_resume_foreground_fails_clearly_when_the_startup_sweep_cannot_confirm_stopped(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The still-draining case (the M2 crash probe's own ~40s window): a foreground
+    resume must not proceed into the coordinator while a scope a dead coordinator left
+    behind could not be confirmed stopped - it fails clearly instead."""
+    (tmp_path / "runs").mkdir()
+    # kill_result starts True so the INITIAL start's own startup sweep confirms trivially
+    # (see the comment on test_run_resume_refuses_a_cancelling_or_a_cancelled_run for why);
+    # only the RESUME below is meant to see the unconfirmed sweep under test.
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=True)
+    obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    scope.kill_result = False
+
+    resumed = cli_runner.invoke(cli_mod.cli, ["run", "resume", run_id, "--runs", runs_arg, "--foreground"], obj=obj)
+
+    assert resumed.exit_code == ExitCode.GENERAL_ERROR, resumed.output
+    assert f"run {run_id} failed" in resumed.output
+
+
+@pytest.mark.os_agnostic
+def test_run_resume_background_fails_clearly_when_the_startup_sweep_cannot_confirm_stopped(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """Same case as the foreground test above, through :func:`_relaunch`'s own BACKGROUND
+    path: it must never reach ``scope.start()`` under the SAME unit name a still-draining
+    scope occupies (``systemd-run`` would otherwise refuse the collision outright)."""
+    (tmp_path / "runs").mkdir()
+    scope = RecordingScope(cross_process_capable=True, is_alive_result=True, kill_result=True)
+    obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    match = re.search(r"run (\S+) suspended", started.output)
+    assert match, started.output
+    run_id = match.group(1)
+    runs_arg = str(tmp_path / "runs")
+    scope.kill_result = False
+    scope.calls.clear()  # only the resume below is under test
+
+    resumed = cli_runner.invoke(cli_mod.cli, ["run", "resume", run_id, "--runs", runs_arg], obj=obj)
+
+    assert resumed.exit_code == ExitCode.GENERAL_ERROR, resumed.output
+    assert f"run {run_id} failed" in resumed.output
+    assert not scope.calls  # never reached scope.start()
 
 
 @pytest.mark.os_agnostic
