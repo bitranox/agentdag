@@ -780,10 +780,12 @@ class ClaudeExecutor:
           turn's context size against a spend cap has no usable threshold: set the cap
           near what a node actually spends and no single turn's context ever reaches
           it (the node runs to completion, unbounded); set it below one turn's context
-          and every node dies on its first turn. Measured on the M2 attended runs
-          (``workflow/design/probes/m3-interrupt.md`` in RESEARCH): a 28-turn dispatch
-          charged 802,098 tokens total while its first turn alone was 26,029 - far more
-          than any single turn's context, and only explainable as a sum.
+          and every node dies on its first turn. Measured on the M2 attended runs,
+          from the run records themselves rather than a design probe doc (a run's
+          ``nodes/<node_id>/<hash>/record.json`` under ``/var/lib/agentdag/runs/<run-id>/`` -
+          run ``20260818T060025Z-21e810``, node ``w_migrate@1``, hash ``b47149d9``): a
+          28-turn dispatch charged 802,098 tokens total while its first turn alone was
+          26,029 - far more than any single turn's context, and only explainable as a sum.
 
         Args:
             running_total: This dispatch's cumulative spend so far, INCLUDING the turn
