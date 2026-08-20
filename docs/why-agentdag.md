@@ -79,10 +79,12 @@ with the project's settings and to tens of thousands with a full operator plugin
 those is why the executor asks for no setting sources: it removes the part that is optional, not the
 cost itself.
 
-What the SECOND node pays is not known. Every measurement available is a cold start that read
-nothing from cache, so whether nodes share a cached prefix, and how much of that 19,000 a later
-dispatch therefore skips, is an open question. Read the figure as the first node's cost and the
-ceiling for the rest.
+What the SECOND node pays is not measured, though the mechanism says it should be much less.
+Caching is a prefix match over the tools and the system prompt, and every node in a run sends the
+same tool set and the same brief as its system prompt, so the cacheable prefix is identical by
+construction. A prefix that hits is billed at roughly a tenth. But every measurement available is a
+cold start that read nothing from cache, so this is a reasoned expectation and not a number: read
+the 19,000 as the first node's cost and the ceiling for the rest.
 
 The part that does not depend on that answer is the shape: the price is attached to starting a node
 rather than to the size of the task it is given, so a node should carry enough work to be worth
@@ -145,9 +147,10 @@ Claude has already read", and when it finishes it "returns only the summary". It
 never enter the parent at all.
 
 So the parent does not accumulate the work. It accumulates one summary per dispatch, and each of
-those is re-read on every later turn the parent takes. That cost is real, but it is over summaries
-rather than over transcripts, which is a different order of magnitude, and prompt caching makes each
-re-read cheaper again without making it free.
+those is sent again on every later turn the parent takes, because the API is stateless and the whole
+conversation goes with every request. That cost is real, but it is over summaries rather than over
+transcripts, which is a different order of magnitude, and a cached re-read is billed at roughly a
+tenth rather than at nothing.
 
 Which leaves one way to get it wrong, and it is the one that actually happens: when the summary IS
 the content. Ask a subagent to research something and report, and it hands back its findings as
