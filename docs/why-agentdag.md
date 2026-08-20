@@ -69,7 +69,57 @@ task narrow enough that it does not drift. Resolving that tension is the whole d
 A design built around talking bandwidth instead of attention bandwidth reproduces the failure it set
 out to avoid, in a new costume. The constraint you dismiss is the one that shapes you.
 
-## 3. Accessible is not loaded
+## 3. What the tools available today ask you to build
+
+**Status:** survey of the field, with each tool's own documented default named.
+
+Almost every framework for putting several AI agents to work starts you in the same place: name the
+roles. You declare that you want a researcher, a writer and an editor. You give each one a job
+description. Then the framework arranges for them to talk to each other until something comes out
+the other end.
+
+That feels reasonable, because it is exactly how you would staff the job with people. It is also the
+wrong shape, and the cheapest way to see why is to look at what it costs.
+
+**Everyone is copied on everything.** In AutoGen's graph mode, every message goes to every agent by
+default. The graph you drew controls the order people speak in, not who hears what: in its own
+words, the execution graph does not control what messages an agent receives. Limiting who sees what
+is something you have to switch on.
+
+Imagine a meeting where nobody is allowed a private word. Every remark goes to all eight people in
+the room. And before anyone speaks, they silently re-read the entire transcript of the meeting from
+the beginning. People never work that way, because no one could. A model can be made to, every
+single turn, and you are billed for every word it re-reads.
+
+That is the money, in one sentence. A conversation between five agents does not cost five times what
+one agent costs. It grows roughly with the square of the conversation, because every new message is
+re-read by everybody on every turn that follows it. Teams get expensive fastest exactly when they
+start working well, because working well means saying more.
+
+**One whiteboard, several hands.** LangGraph's standard way of holding state accumulates every
+message into one shared object, which is the most widely copied pattern in the field and carries no
+warning in its own documentation. When it fans work out to run in parallel, those branches write
+back into that same shared state, and if two of them write the same thing the default behaviour
+silently keeps one and discards the other. CrewAI has the same shape: parallel steps sharing one
+mutable state object, documented, presented as a feature.
+
+Three people writing on one whiteboard at once. The last hand wins, the others are rubbed out, and
+nobody is told. You find out later, from work that quietly went missing.
+
+**The org chart, rebuilt in software.** CrewAI is the clearest case, because it is two things at
+once. Its Flows are a genuine dependency graph on the outside, sensibly ordered. But a step inside
+that graph can start a crew, and inside the crew you are back to roles and a mailbox and a meeting.
+The good structure is the wrapper; the meeting is what actually runs.
+
+None of this is anyone being careless. These are capable tools built by people who thought hard, and
+the role metaphor is genuinely the most natural way to explain multi-agent work to somebody new. It
+is a good explanation and a bad blueprint. It imports the one human constraint that does not apply,
+and it quietly drops the two that do: attention degrades long before the window is full, and a
+running agent cannot be interrupted or corrected mid-thought.
+
+So the question is not how to arrange the meeting better. It is what you build if you never hold one.
+
+## 4. Accessible is not loaded
 
 **Status:** rationale, stable. The retrieval mechanism it calls for is planned, not built; see
 [Claude Code integration](claude-code-integration.md).
@@ -87,7 +137,7 @@ The practical form of it is that the coordinator never gathers results as text. 
 produced to disk and returns a typed record naming it. The next node that needs the content reads the
 file. Nothing accumulates in a single growing context just because it passed through.
 
-## 4. What falls out is a DAG scheduler
+## 5. What falls out is a DAG scheduler
 
 **Status:** rationale, stable. The kernel that implements it has shipped.
 
@@ -120,7 +170,7 @@ own work, and an agent grading another agent inherits the same problem with an e
 check that decides anything is mechanical: run the tests, read the exit code. The gate is the step an
 agent cannot satisfy by asserting that it did the work.
 
-## 5. What survives from human organisations
+## 6. What survives from human organisations
 
 **Status:** rationale, stable.
 
@@ -132,7 +182,7 @@ Those are concurrency rules. Any system with parallel workers and shared state n
 the workers are people, threads or agents. Human organisations discovered them because human
 organisations are concurrent systems. Keep the rules, drop the hierarchy that happened to carry them.
 
-## 6. Graph as code, not a graph object
+## 7. Graph as code, not a graph object
 
 **Status:** built. Every shipped workflow is an ordinary Python program.
 
@@ -151,9 +201,9 @@ it is enforced rather than requested.
 
 The price is the point. Every model call is a node whose result is journaled, and the coordinator
 branches only on typed fields of those records. That is precisely the discipline that keeps the
-coordinator thin, so the cost of graph-as-code buys the property section 4 needs anyway.
+coordinator thin, so the cost of graph-as-code buys the property section 5 needs anyway.
 
-## 7. Why build it rather than adopt something
+## 8. Why build it rather than adopt something
 
 **Status:** decided 2026-08-17: rebuild.
 
@@ -179,7 +229,7 @@ assumed. What that costs and what it bought is [the execution model](execution-m
 
 - [Architecture overview](architecture-overview.md) turns these principles into a system you can look
   at.
-- [Execution model](execution-model.md) is section 4 and section 7 made concrete: nodes, records, the
+- [Execution model](execution-model.md) is section 5 and section 8 made concrete: nodes, records, the
   journal, and what happens when the machine dies mid-run.
 - [Safety and sandbox](safety-and-sandbox.md) is honest about the gap between what the design intends
   and what is enforced today.

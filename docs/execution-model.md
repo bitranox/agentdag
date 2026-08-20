@@ -44,6 +44,14 @@ neither an artefact nor any of its own declared typed fields is rewritten to a f
 "empty result" error. A node that says it succeeded and hands back nothing to branch on has, from the
 coordinator's point of view, produced nothing.
 
+**Know what that check does not reach.** It returns early on any artefact reference, and a work
+node's artefact is its own worktree, which the executor names on every outcome the run did not flag
+as an error. So the refusal is a real guard on a code node that returned nothing, and inert on a
+work node: an agent that did almost nothing in its worktree still returns a reference to it, and
+that is enough to pass. What catches a work node that did the wrong thing is the gate and the
+isolation scan, which is the reason the design puts a mechanical check after every agent rather than
+trusting the record alone.
+
 ## 3. The journal key: what makes a call the same call
 
 **Status:** built.

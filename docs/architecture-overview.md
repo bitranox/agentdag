@@ -141,9 +141,12 @@ is not parsed for structure and does not become the result.
 Code nodes build their record directly, with genuinely typed facts in it: a gate's record carries the
 exit code, an isolation scan's carries the list of paths that should not exist.
 
-One refusal is worth knowing about. A node that reports success while naming no artefact and no
-typed fact has produced nothing the coordinator can branch on, so its record is rewritten as a
-failure. Confidence with nothing attached to it is treated as an empty result, not a result.
+One refusal is worth knowing about, and so is its limit. A node that reports success while naming no
+artefact and no typed fact has produced nothing the coordinator can branch on, so its record is
+rewritten as a failure. But the check passes on any artefact reference at all, and a work node's
+artefact is its own worktree, which it names whenever the run was not flagged as an error. So the
+refusal catches a code node that returned nothing, and never catches an agent that did nothing. That
+is the reason a mechanical gate runs after every agent instead of the record being trusted.
 
 Detail in [the execution model](execution-model.md).
 
