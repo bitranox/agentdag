@@ -8,6 +8,7 @@ running at once can rebuild it under each other.
 Contents:
     * :data:`GATE_ENV_ALLOWLIST` - the only environment variables a gate process gets.
     * :func:`gate_env` - that allowlist intersected with an environment.
+    * :func:`withheld_names` - what the allowlist dropped, for the gate log's header.
     * :class:`MakeTestGate` - the port implementation.
 """
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-__all__ = ["GATE_ENV_ALLOWLIST", "MakeTestGate", "gate_env"]
+__all__ = ["GATE_ENV_ALLOWLIST", "MakeTestGate", "gate_env", "withheld_names"]
 
 _DEFAULT_LOCK_TIMEOUT_S = 3600.0
 """How long a gate call waits for the host-wide lock before giving up (M1 leftover): long
@@ -111,6 +112,25 @@ def gate_env(environ: Mapping[str, str]) -> dict[str, str]:
     return {key: environ[key] for key in GATE_ENV_ALLOWLIST if key in environ}
 
 
+def withheld_names(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the sorted names ``environ`` holds that :data:`GATE_ENV_ALLOWLIST` drops.
+
+    NAMES ONLY, never values: the whole point of the allowlist is that some of what it
+    drops is a credential, and this goes into a log file.
+
+    Args:
+        environ: The environment the gate was filtered from, normally :data:`os.environ`.
+
+    Returns:
+        Every name that did not survive the filter, sorted.
+
+    Example:
+        >>> withheld_names({"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-secret"})
+        ('ANTHROPIC_API_KEY',)
+    """
+    return tuple(sorted(key for key in environ if key not in GATE_ENV_ALLOWLIST))
+
+
 class MakeTestGate:
     """Run a project's test gate and report its exit code."""
 
@@ -138,9 +158,16 @@ class MakeTestGate:
         coordinator was started from (an operator's interactive shell under
         ``--foreground``, or a background scope) then stops changing what the gate sees.
 
+        The log opens with a header naming what the allowlist WITHHELD (names only, never
+        values). A gate that fails because a variable it needed was filtered out fails
+        inside the project's own tooling, with a message about that project - so the
+        allowlist is the last thing anyone suspects. Reading the failing gate log is
+        already the first move; the evidence belongs in the same file.
+
         Args:
             worktree: The working tree to run the gate in.
-            log: File the combined stdout and stderr are written to, owner-only.
+            log: File the header, then the combined stdout and stderr, are written to,
+                owner-only.
 
         Returns:
             The gate's exit code; ``0`` means the change passed.
@@ -164,8 +191,23 @@ class MakeTestGate:
                 )
         except Timeout as exc:
             raise RuntimeError(f"gate lock {self._lock} held for more than {self._timeout}s") from exc
-        _write_owner_only(log, proc.stdout + proc.stderr)
+        _write_owner_only(log, _log_header(os.environ) + proc.stdout + proc.stderr)
         return proc.returncode
+
+
+def _log_header(environ: Mapping[str, str]) -> str:
+    """Return the gate log's first lines: the command's environment, accounted for.
+
+    Args:
+        environ: The environment the gate was filtered from.
+
+    Returns:
+        Two lines - what the gate received, and what was withheld from it - then a blank
+        line, so the gate's own output starts on a line of its own.
+    """
+    kept = ", ".join(sorted(gate_env(environ)))
+    dropped = ", ".join(withheld_names(environ)) or "(nothing)"
+    return f"agentdag gate environment, passed: {kept}\nagentdag gate environment, withheld: {dropped}\n\n"
 
 
 def _write_owner_only(log: Path, text: str) -> None:

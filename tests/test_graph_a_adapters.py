@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agentdag.adapters.graph_a.gate_make import MakeTestGate, gate_env
+from agentdag.adapters.graph_a.gate_make import MakeTestGate, gate_env, withheld_names
 from agentdag.adapters.graph_a.git_cli import GitCli, clear_readonly_and_retry
 from agentdag.adapters.graph_a.store_fs import FsRunStore
 from agentdag.adapters.graph_a.work_claude_sdk import ClaudeSdkWork
@@ -277,6 +277,34 @@ def test_gate_env_is_exactly_the_allowlist_intersection(tmp_path: Path) -> None:
     for banned in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "VIRTUAL_ENV"):
         assert banned not in child_env
     assert not [key for key in child_env if any(word in key.upper() for word in ("TOKEN", "KEY", "SECRET"))]
+
+
+def test_gate_log_header_names_what_was_withheld_and_never_its_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A gate that fails for a variable the allowlist dropped fails inside the project's own
+    # tooling, so the allowlist is the last thing suspected. The log an operator already
+    # opens has to say what was withheld - by NAME, because some of what it drops is a
+    # credential and this file is written to disk.
+    monkeypatch.setenv("AGENTDAG_PROBE_TOKEN", "sk-ant-oat01-NOTAREALSECRET")
+    gate = MakeTestGate(lock=tmp_path / "l", command=(sys.executable, "-c", "print('gate output')"))
+    log = tmp_path / "g.log"
+
+    assert gate.run(tmp_path, log) == 0
+
+    text = log.read_text(encoding="utf-8")
+    assert "AGENTDAG_PROBE_TOKEN" in text.splitlines()[1]  # withheld, and named
+    assert "NOTAREALSECRET" not in text  # but never its value
+    assert "PATH" in text.splitlines()[0]  # control: the passed line lists what did get through
+    assert "gate output" in text  # and the gate's own output still follows the header
+
+
+def test_withheld_names_are_the_complement_of_the_allowlist() -> None:
+    # The pure half, with a control on each side: an allowlisted name is NOT reported as
+    # withheld, and a name nobody allowlisted is.
+    parent = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-secret", "XDG_RUNTIME_DIR": "/run/user/1000"}
+
+    assert withheld_names(parent) == ("ANTHROPIC_API_KEY", "XDG_RUNTIME_DIR")
 
 
 def test_gate_env_drops_a_secret_shaped_variable_the_parent_carries() -> None:
