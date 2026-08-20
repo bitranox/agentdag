@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.application.kernel.cancel import WHOLE_RUN_NODE_ID
 from agentdag.domain.kernel_errors import RunRefused
 from agentdag.domain.models import Decision, RunState, RunStatus
 
@@ -178,6 +179,22 @@ def test_node_dir_refuses_a_backslash_bearing_node_id(tmp_path: Path) -> None:
     rd = FsRunDir.create(tmp_path, "r1")
     with pytest.raises(ValueError):
         rd.node_dir("escape\\node", "71efdc61")
+
+
+def test_node_dir_and_write_decision_refuse_the_whole_run_cancel_sentinel_as_a_node_id(tmp_path: Path) -> None:
+    """A workflow declaring a node literally named ``"_run"`` must be refused: it would
+    otherwise collide with :data:`WHOLE_RUN_NODE_ID`, the sentinel a whole-run
+    :class:`~agentdag.domain.journal.CancelLine` uses, indistinguishable in the journal
+    from cancelling that one node."""
+    assert WHOLE_RUN_NODE_ID == "_run"  # control: this test is guarding the ACTUAL sentinel
+    rd = FsRunDir.create(tmp_path, "r1")
+    with pytest.raises(ValueError, match="reserved"):
+        rd.node_dir(WHOLE_RUN_NODE_ID, "71efdc61")
+    d = Decision(node_id=WHOLE_RUN_NODE_ID, decision="hold", by="me", token_id="local", payload_hash=HASH_ONE)
+    with pytest.raises(ValueError, match="reserved"):
+        rd.write_decision(d)
+    # Control: an ordinary node id shaped like the sentinel but not equal to it is fine.
+    rd.node_dir("_run_of_the_mill", "71efdc61")
 
 
 def test_write_decision_and_read_decision_refuse_a_traversal_node_id(tmp_path: Path) -> None:

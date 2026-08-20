@@ -26,6 +26,7 @@ import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from ...application.kernel.cancel import WHOLE_RUN_NODE_ID
 from ...application.kernel.ports import DecisionFileRef
 from ...domain.kernel_errors import RunRefused
 from ...domain.keys import hash8
@@ -136,7 +137,8 @@ class FsRunDir:
 
         Raises:
             ValueError: ``node_id`` contains ``/``, ``\\`` or ``..`` - a path
-                traversal attempt rather than a real node id.
+                traversal attempt rather than a real node id - or equals the
+                whole-run cancel sentinel (see :meth:`_validate_node_id`).
         """
         self._validate_node_id(node_id)
         return self._mkdir_owner_only(self.root / "nodes" / node_id / hash8)
@@ -323,7 +325,8 @@ class FsRunDir:
 
         Raises:
             ValueError: either half of ``decision`` could escape ``decisions/`` -
-                ``decision.node_id`` contains a path separator or ``..``, or
+                ``decision.node_id`` contains a path separator or ``..``, equals the
+                whole-run cancel sentinel (see :meth:`_validate_node_id`), or
                 ``decision.payload_hash`` does not shorten to eight hex characters.
             FileExistsError: this (node id, payload hash) already has a decision.
         """
@@ -435,11 +438,19 @@ class FsRunDir:
 
     @staticmethod
     def _validate_node_id(node_id: str) -> None:
-        """Refuse a ``node_id`` that could escape its directory (design 3.1's traversal guard).
+        """Refuse a ``node_id`` that could escape its directory, or collide with the
+        whole-run cancel sentinel (design 3.1's traversal guard; 3.4's cancel reservation).
 
         Raises:
-            ValueError: ``node_id`` contains ``/``, ``\\`` or ``..``.
+            ValueError: ``node_id`` contains ``/``, ``\\`` or ``..`` (a traversal
+                attempt), or equals :data:`~agentdag.application.kernel.cancel.
+                WHOLE_RUN_NODE_ID` - a workflow declaring a node literally named
+                ``"_run"`` would otherwise collide with the sentinel
+                :class:`~agentdag.domain.journal.CancelLine` reserves for a WHOLE-run
+                cancel, indistinguishable in the journal from cancelling that one node.
         """
+        if node_id == WHOLE_RUN_NODE_ID:
+            raise ValueError(f"node id {node_id!r} is reserved for a whole-run cancel")
         if "/" in node_id or "\\" in node_id or ".." in node_id:
             raise ValueError(f"unsafe node id: {node_id!r}")
 
