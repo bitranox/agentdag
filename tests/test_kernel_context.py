@@ -17,6 +17,7 @@ from agentdag.adapters.graph_a.git_cli import GitCli
 from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
@@ -130,6 +131,7 @@ def wire(
         git=GitCli(),
         scanner=scanner,
         policy=OneRowPolicy(),
+        sandbox=NoSandbox(),
         parallel=2,
     )
 

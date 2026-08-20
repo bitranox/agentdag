@@ -25,6 +25,7 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
@@ -306,6 +307,7 @@ def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_p
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),
+                sandbox=NoSandbox(),
                 parallel=1,
                 by="tester",
                 token_id="local",

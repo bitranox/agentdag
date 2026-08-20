@@ -22,6 +22,7 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
@@ -92,6 +93,7 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
+        sandbox=NoSandbox(),
         parallel=2,
     )
     return co, run_dir

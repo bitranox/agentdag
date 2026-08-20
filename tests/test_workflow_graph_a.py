@@ -24,6 +24,7 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.replay import build_replay_index
@@ -93,6 +94,7 @@ def launch_over(
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
+            sandbox=NoSandbox(),
             parallel=parallel,
             by="tester",
             token_id="local",
@@ -148,6 +150,7 @@ def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = 
         git=git if git is not None else GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
+        sandbox=NoSandbox(),
         parallel=1,
     )
 
@@ -481,6 +484,7 @@ def test_two_fleet_members_that_would_share_one_worktree_are_refused_before_any_
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),
+                sandbox=NoSandbox(),
                 parallel=1,
                 by="tester",
                 token_id="local",

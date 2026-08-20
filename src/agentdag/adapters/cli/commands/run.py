@@ -663,6 +663,7 @@ def _run_foreground(
                 git=wiring.git,
                 scanner=wiring.scanner,
                 policy=wiring.policy,
+                sandbox=wiring.sandbox,
                 parallel=wiring.parallel,
                 by=getpass.getuser(),
                 token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret

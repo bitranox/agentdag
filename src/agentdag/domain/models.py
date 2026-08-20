@@ -10,8 +10,8 @@ Contents:
       vocabularies, each a :class:`~enum.StrEnum`.
     * :class:`Budget`, :class:`Requirement` - per-node limits.
     * :class:`NodeSpec` - what the planner emits and the coordinator dispatches (2.1).
-    * :class:`Tokens`, :class:`NodeError`, :class:`KnowledgeUsed` - the small shapes a
-      result carries.
+    * :class:`Tokens`, :class:`NodeError`, :class:`KnowledgeUsed`, :class:`SandboxGuarantees` -
+      the small shapes a result carries.
     * :class:`NodeOutcome` - what a node body returns.
     * :class:`ResultRecord` - the only thing the coordinator branches on (2.2).
     * :class:`LockHolder`, :class:`RunState` - the run's own state.
@@ -45,6 +45,7 @@ __all__ = [
     "ResultRecord",
     "RunState",
     "RunStatus",
+    "SandboxGuarantees",
     "TierRole",
     "Tokens",
 ]
@@ -229,6 +230,42 @@ class KnowledgeUsed(BaseModel):
     content_hash: str
 
 
+class SandboxGuarantees(BaseModel):
+    """What a sandbox adapter actually enforces for one node - journaled per node (Task 19).
+
+    A port whose adapters differ silently in what they enforce is worse than no port: every
+    later claim about a run becomes ambiguous ("was that node contained?"). So a
+    :class:`~agentdag.application.kernel.sandbox.Sandbox` adapter DECLARES what it enforces
+    (:meth:`~agentdag.application.kernel.sandbox.Sandbox.guarantees`), the coordinator stamps
+    that declaration onto every dispatched node's :class:`ResultRecord`
+    (:meth:`~agentdag.application.kernel.context.Coordinator._dispatch`), and a run's own
+    records can answer the containment question without trusting the adapter's name alone.
+
+    Lives here in the domain, not in ``application/kernel/sandbox.py`` where
+    :class:`~agentdag.application.kernel.sandbox.Sandbox` itself is defined, because
+    :class:`ResultRecord` (domain) carries one and domain code may never import from the
+    application layer (the import-linter layer contract) - the same reason :class:`NodeError`
+    and :class:`Tokens` are domain models a port's adapter builds but never defines its own
+    copy of.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    adapter: str
+    """Which adapter produced this: ``"none"`` | ``"container"`` | ``"vm"``. Free text, like
+    :class:`ExecutorKind`'s own ``mcp:<server>/<tool>`` escape hatch - a later adapter names
+    itself here without a change to this model."""
+
+    filesystem: bool
+    """Whether the node is BLOCKED from reaching paths outside its declared mounts."""
+
+    network_egress: bool
+    """Whether the node's outbound network access is restricted to an allowlist."""
+
+    separate_uid: bool
+    """Whether the node runs as an operating-system user distinct from the coordinator's own."""
+
+
 class NodeOutcome(BaseModel):
     """What a node body hands back; the dispatcher completes it into a :class:`ResultRecord`."""
 
@@ -269,6 +306,36 @@ class ResultRecord(NodeOutcome):
     input_hash: str
     duration_s: float
     cost_usd: float | None = None
+    sandbox: SandboxGuarantees | None = None
+    """What sandbox boundary was actually in force for this node (Task 19), stamped by
+    :meth:`~agentdag.application.kernel.context.Coordinator._dispatch` from the wired
+    :class:`~agentdag.application.kernel.sandbox.Sandbox`'s own :meth:`~agentdag.application.
+    kernel.sandbox.Sandbox.guarantees`. Optional and omitted-when-absent (see
+    :meth:`_drop_absent_optional_objects`) so a pre-Task-19 journal line - every M2 run's own
+    records carry no such field - still round-trips and still validates against
+    ``result-record.schema.json``, which lists ``sandbox`` as an optional property, never a
+    required-but-nullable one."""
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_optional_objects(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Omit ``error``/``sandbox`` entirely when unset, instead of writing them out as ``null``.
+
+        Both fields are typed as an object only in their own schemas (no ``null`` in either
+        one's ``type`` list) and neither is in ``required``, so a record carrying neither must
+        not carry either KEY at all. This REPLACES (not extends)
+        :meth:`NodeOutcome._drop_absent_error`'s own ``@model_serializer`` for
+        :class:`ResultRecord` instances: pydantic uses exactly one model-level serializer per
+        class, the most-derived one in the MRO, so this method re-does that check for
+        ``error`` too rather than only adding ``sandbox``'s (verified directly: a bare
+        override with a DIFFERENT method name still shadows the parent's for every
+        :class:`ResultRecord` dump, since pydantic looks up the decorator by class, not by
+        method name).
+        """
+        data = handler(self)
+        for key in ("error", "sandbox"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class LockHolder(BaseModel):

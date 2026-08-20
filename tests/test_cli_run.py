@@ -29,6 +29,7 @@ from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
@@ -118,6 +119,7 @@ def services_with(
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
         scope=scope if scope is not None else NoScope(),
+        sandbox=NoSandbox(),
         parallel=2,
     )
 

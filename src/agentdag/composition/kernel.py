@@ -26,6 +26,7 @@ from ..adapters.kernel.isolation_scan import IsolationScanner
 from ..adapters.kernel.journal_jsonl import JsonlJournal
 from ..adapters.kernel.lock_file import FileRunLock
 from ..adapters.kernel.policy_yaml import load_policy
+from ..adapters.kernel.sandbox_none import NoSandbox
 from ..adapters.kernel.scope_none import NoScope
 from ..adapters.kernel.scope_systemd import SystemdScope
 from ..application.kernel.ports import KernelWiring
@@ -81,6 +82,7 @@ def wire_kernel(
         scanner=IsolationScanner(),
         policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),
         scope=_choose_scope(),
+        sandbox=NoSandbox(),
         parallel=parallel,
     )
 

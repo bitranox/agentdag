@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..graph_a_ports import GatePort, GitPort
     from .dispatch import Body, Dispatcher
     from .ports import Clock, Executor, IsolationScanner, Policy, RunDir
+    from .sandbox import Sandbox
 
 __all__ = ["BranchRef", "Coordinator", "HasDedupKey"]
 
@@ -82,6 +83,9 @@ class Coordinator:
         git: Every git operation a workflow performs.
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: Resolves a spec to a model row, and carries the executor limits.
+        sandbox: What isolation boundary every dispatched node runs under (Task 19); its
+            :meth:`~.sandbox.Sandbox.guarantees` is stamped onto every node's record by
+            :meth:`_dispatch`, whatever primitive dispatched it.
         parallel: How many map branches may run at once, across the WHOLE run - the
             semaphore behind it is built once here and shared by every :meth:`map`
             call, so two maps running at the same time still admit ``parallel``
@@ -99,7 +103,7 @@ class Coordinator:
     )
     """The prompt a work node runs under when the workflow does not name its own."""
 
-    # Twelve keyword-only parameters because the coordinator IS its wiring: every seam a
+    # Thirteen keyword-only parameters because the coordinator IS its wiring: every seam a
     # workflow can reach is injected here, and bundling them into a record would only
     # rename the same list. PLR0913 is off for this package by pyproject's per-file-ignores.
     def __init__(
@@ -116,6 +120,7 @@ class Coordinator:
         git: GitPort,
         scanner: IsolationScanner,
         policy: Policy,
+        sandbox: Sandbox,
         parallel: int,
     ) -> None:
         """Bind one run's wiring; ``tokens_by_row`` starts empty."""
@@ -130,6 +135,7 @@ class Coordinator:
         self.git = git
         self.scanner = scanner
         self.policy = policy
+        self.sandbox = sandbox
         self.parallel = parallel
         # Run-wide, not per-map: `parallel` is what this HOST may run at once (worktrees,
         # the shared bmk tool env, the executor's own concurrency), so a second concurrent
@@ -682,6 +688,19 @@ class Coordinator:
         dispatched spec's write set is recorded in :attr:`declared_write_sets`
         BEFORE the body runs - :meth:`scan` reads that map, never re-derives it.
 
+        Also the ONE place :attr:`sandbox`'s guarantees are stamped onto a record (Task 19):
+        every primitive routes through here, so every node - a work node dispatched through
+        an :class:`~.ports.Executor` and a code node (gate, scan, reduce, ...) that never
+        touches :attr:`sandbox` at all - carries the SAME declaration, because there is
+        exactly one :class:`~.sandbox.Sandbox` wired per run. Stamped onto the record
+        returned to the CALLER, after :meth:`~agentdag.application.kernel.dispatch.
+        Dispatcher.dispatch` has already written ``record.json`` and appended the journal's
+        ``result`` line - so a replayed (served) node's returned record reflects THIS
+        launch's wired sandbox, not necessarily the one the original dispatch ran under, and
+        neither ``record.json`` nor the journal line carries ``sandbox`` yet. Threading the
+        declaration into what actually gets persisted is follow-up work, not this task's -
+        see Task 19's report.
+
         Args:
             spec: The node being dispatched.
             brief: The node's brief.
@@ -690,12 +709,12 @@ class Coordinator:
 
         Returns:
             The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
-            returned, already charged.
+            returned, already charged, with :attr:`sandbox`'s guarantees stamped on.
         """
         self.declared_write_sets[spec.node_id] = tuple(spec.write_set)
         record = await self.dispatcher.dispatch(spec, brief=brief, input_obj=input_obj, body=body)
         self._charge(record)
-        return record
+        return record.model_copy(update={"sandbox": self.sandbox.guarantees()})
 
     def _charge(self, record: ResultRecord) -> None:
         """Add a record's charged tokens to the run's per-row totals.

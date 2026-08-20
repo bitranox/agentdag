@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from ..graph_a_ports import GatePort, GitPort
     from ..workflows import WorkflowDef
     from .ports import Clock, Executor, IsolationScanner, Journal, Policy, RunDir, RunLock
+    from .sandbox import Sandbox
 
 __all__ = ["RunOutcome", "run_coordinator"]
 
@@ -94,6 +95,7 @@ async def run_coordinator(
     git: GitPort,
     scanner: IsolationScanner,
     policy: Policy,
+    sandbox: Sandbox,
     parallel: int,
     by: str,
     token_id: str,
@@ -117,6 +119,8 @@ async def run_coordinator(
         git: Every git operation the workflow performs.
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: The tier policy; its version is recorded on the run.
+        sandbox: What isolation boundary every node this launch dispatches runs under
+            (Task 19); its declaration is stamped onto every dispatched node's record.
         parallel: How many map branches may run at once.
         by: Who launched this; recorded on the opening journal line and, on a first
             start only, as the run's owner.
@@ -164,6 +168,7 @@ async def run_coordinator(
             git=git,
             scanner=scanner,
             policy=policy,
+            sandbox=sandbox,
             parallel=parallel,
         )
         co.fold_decisions()

@@ -158,6 +158,36 @@
       "pattern": "^v2:sha256:[0-9a-f]{64}$",
       "description": "The journal key this record was dispatched under: v2:sha256(prefix_hash + NUL + canonical(spec)) per design 3.2. Rendered here as 'v2:sha256:<64 hex chars>'; the exact separator/encoding is an implementation choice the design leaves open."
     },
+    "sandbox": {
+      "type": "object",
+      "description": "What sandbox boundary was actually in force for this node (Task 19), stamped by the coordinator from the wired Sandbox adapter's own declaration. Absent on any record from before this field existed (the M2 runs' own journals carry none) - optional, never a required-but-nullable property, so those still validate.",
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which adapter produced this: \"none\" | \"container\" | \"vm\" - free text, not a closed enum, so a later adapter needs no schema change to name itself."
+        },
+        "filesystem": {
+          "type": "boolean",
+          "description": "Whether the node is blocked from reaching paths outside its declared mounts."
+        },
+        "network_egress": {
+          "type": "boolean",
+          "description": "Whether the node's outbound network access is restricted to an allowlist."
+        },
+        "separate_uid": {
+          "type": "boolean",
+          "description": "Whether the node runs as an operating-system user distinct from the coordinator's own."
+        }
+      },
+      "required": [
+        "adapter",
+        "filesystem",
+        "network_egress",
+        "separate_uid"
+      ],
+      "additionalProperties": false
+    },
     "error": {
       "type": "object",
       "description": "Present when status is failed, blocked, needs_context, refused or cancelled.",
@@ -236,6 +266,12 @@
       "executor_used": "claude",
       "model_used": "sonnet",
       "effort_used": "medium",
+      "sandbox": {
+        "adapter": "none",
+        "filesystem": false,
+        "network_egress": false,
+        "separate_uid": false
+      },
       "knowledge_used": [
         {
           "dataset": "docs:pci-ids",
