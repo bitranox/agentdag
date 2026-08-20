@@ -64,6 +64,11 @@ def _resolved(tool: str) -> str:
 class SystemdScope:
     """Scope port over ``systemd-run --user --scope``: a real cgroup per run, Linux only."""
 
+    cross_process_capable = True
+    """:meth:`is_alive`/:meth:`kill` query systemd/the cgroup filesystem BY UNIT NAME
+    alone, never this instance's own :attr:`_processes` - so a handle reconstructed in a
+    FRESH process (``run cancel``, the startup sweep) gets a real, truthful answer."""
+
     def __init__(self) -> None:
         """Start with no tracked processes; :meth:`confirm` polls the SAME instance's own."""
         self._processes: dict[str, subprocess.Popen[bytes]] = {}

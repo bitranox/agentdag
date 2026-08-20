@@ -320,6 +320,16 @@ class ExecutorRequest:
     enforce at the turn seam (design 7, M3). Defaults to ``None`` so every call site and
     test fixture that predates this field still constructs without naming it."""
 
+    deadline_s: float | None = None
+    """This node's own wall-clock deadline (``NodeSpec.deadline_s``, already clamped to
+    ``Policy.deadline_ceiling_s`` by :meth:`~agentdag.application.kernel.context.Coordinator.work`),
+    or ``None`` for a call site that predates this field (every test fixture built before
+    M3). A DIFFERENT unit and a DIFFERENT ceiling from :attr:`token_cap`: this is ELAPSED
+    WALL-CLOCK SECONDS since the dispatch started, checked at the same turn seam the token
+    cap is (design 7, M3; ``workflow/design/probes/m3-interrupt.md`` in RESEARCH) - never
+    conflate the two comparisons, which is exactly the mistake Task 20 already made once
+    with a single-quantity turn seam."""
+
 
 class Executor(Protocol):
     """Runs one node's dispatch against a prepared request and reports its outcome."""
@@ -352,6 +362,14 @@ class Policy(Protocol):
     max_turns: int
     deny_bash: tuple[str, ...]
     tokens_per_row: Mapping[str, int]
+    deadline_ceiling_s: float
+    """The largest ``deadline_s`` any node may declare (``RunLimits.deadline_ceiling_s``,
+    design 2.3's run-limit clamp, rule 4). :meth:`Coordinator.work
+    <agentdag.application.kernel.context.Coordinator.work>` clamps every dispatched
+    node's ``spec.deadline_s`` to this ceiling before it reaches
+    :class:`ExecutorRequest`; the clamp is silent (no journal line), matching the same
+    "out of scope, M2" note on the other three run-limit clamps this codebase's own
+    ``domain.policy`` module already carries."""
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve ``spec``'s tier role (and any explicit model) to the row and executor to use."""
@@ -368,6 +386,20 @@ class IsolationScanner(Protocol):
 
 class Scope(Protocol):
     """Starts, probes and kills the OS-level unit a node's executor runs under."""
+
+    cross_process_capable: bool
+    """Whether :meth:`is_alive`/:meth:`kill` give a TRUTHFUL answer for a
+    :class:`ScopeHandle` RECONSTRUCTED in a different process than the one that started
+    it (design 3.4, M3's ``run cancel``/startup sweep, both of which build a handle from
+    a bare ``run_id`` in a fresh CLI invocation, never the coordinator's own process).
+    ``True`` for a :class:`Scope` backed by OS-level, cross-process-queryable state (a
+    systemd unit, its cgroup); ``False`` for one whose liveness lives only in this
+    INSTANCE's own memory - such an implementation's :meth:`is_alive`/:meth:`kill` on an
+    untracked handle report a harmless-looking default (``False``/``True``) that is
+    correct for "this instance never started it" but WRONG, unverified, for "some OTHER
+    process's coordinator might still be running it" - a caller checks this flag FIRST
+    and never trusts either method's return for a cross-process handle when it is
+    ``False``."""
 
     def start(self, *, unit: str, argv: Sequence[str], env: Mapping[str, str], cwd: Path) -> ScopeHandle:
         """Start ``argv`` under a new scope named ``unit`` and return its handle.

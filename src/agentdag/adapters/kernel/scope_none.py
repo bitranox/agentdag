@@ -56,6 +56,13 @@ _POSIX = sys.platform != "win32"
 class NoScope:
     """Scope port over a plain child process (``subprocess.Popen``): no cgroup, no unit."""
 
+    cross_process_capable = False
+    """:meth:`is_alive`/:meth:`kill` key off THIS INSTANCE's own :attr:`_processes` dict,
+    which is always empty in a fresh process - a handle reconstructed there (``run
+    cancel``, the startup sweep) is ALWAYS reported "not alive"/"already gone", whether or
+    not some OTHER process's coordinator is still running. A caller must never treat
+    either method's return as verification for a cross-process handle under this scope."""
+
     def __init__(self) -> None:
         """Start with no tracked processes."""
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
