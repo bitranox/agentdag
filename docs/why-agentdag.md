@@ -79,12 +79,14 @@ with the project's settings and to tens of thousands with a full operator plugin
 those is why the executor asks for no setting sources: it removes the part that is optional, not the
 cost itself.
 
-What the SECOND node pays is not measured, though the mechanism says it should be much less.
-Caching is a prefix match over the tools and the system prompt, and every node in a run sends the
-same tool set and the same brief as its system prompt, so the cacheable prefix is identical by
-construction. A prefix that hits is billed at roughly a tenth. But every measurement available is a
-cold start that read nothing from cache, so this is a reasoned expectation and not a number: read
-the 19,000 as the first node's cost and the ceiling for the rest.
+What the SECOND node pays is not measured, though the mechanism suggests much less. Caching is a
+prefix match over the tools and the system prompt. In the shipped graph every node sends the same
+tool set and the same brief as its system prompt, and its working directory is a separate option
+rather than prompt text, so the prefix should be stable from one node to the next and a hit is
+billed at roughly a tenth. A workflow that gave each node a different brief would lose that.
+
+None of which is a measurement: every probe available is a cold start that read nothing from cache.
+Read the 19,000 as the first node's cost and the ceiling for the rest.
 
 The part that does not depend on that answer is the shape: the price is attached to starting a node
 rather than to the size of the task it is given, so a node should carry enough work to be worth
