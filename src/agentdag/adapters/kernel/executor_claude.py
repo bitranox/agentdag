@@ -639,12 +639,24 @@ class ClaudeExecutor:
         ``cap_hit`` is set, no further :meth:`_on_turn` call is made even if more
         ``AssistantMessage``s arrive before the stream actually stops - avoids a second,
         redundant ``interrupt()`` call on an already-interrupted client.
+
+        ``running_total`` is this dispatch's cumulative SPEND so far - every
+        ``AssistantMessage.usage`` seen this dispatch, :func:`input_total` plus
+        ``output_tokens`` each, added up turn by turn - kept here (not inside
+        :meth:`_on_turn`, which has no state of its own across calls: this class is a
+        frozen dataclass) because it is the loop that owns "one more turn arrived".
+        This is the SAME unit :func:`outcome_from_usage` and :meth:`_budget_outcome`
+        use to build ``charged_tokens`` (also input_total + output_tokens, just of a
+        single terminal usage snapshot rather than summed turn by turn) - see
+        :meth:`_on_turn`'s own docstring for why a per-turn figure alone can never
+        serve as a spend cap.
         """
         options = self._options_for(request)
         transcript_path = request.node_dir / "transcript.jsonl"
         first_turn_input = 0
         seen_first_turn = False
         cap_hit = False
+        running_total = 0
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
             async for message in client.receive_response():
@@ -654,7 +666,8 @@ class ClaudeExecutor:
                     if not seen_first_turn:
                         first_turn_input = input_total(usage)
                         seen_first_turn = True
-                    if not cap_hit and await self._on_turn(usage, client, request.token_cap):
+                    running_total += input_total(usage) + int(usage.get("output_tokens", 0))
+                    if not cap_hit and await self._on_turn(running_total, client, request.token_cap):
                         cap_hit = True
                 if isinstance(message, ResultMessage):
                     if cap_hit:
@@ -743,35 +756,55 @@ class ClaudeExecutor:
             outcome = outcome.model_copy(update={"effort_used": request.effort})
         return outcome
 
-    async def _on_turn(self, usage: dict[str, Any], client: _Interruptible, cap: int | None) -> bool:
-        """Per-``AssistantMessage`` hook point: stop the dispatch once this turn passes ``cap``.
+    async def _on_turn(self, running_total: int, client: _Interruptible, cap: int | None) -> bool:
+        """Per-``AssistantMessage`` hook point: stop the dispatch once its RUNNING SPEND passes ``cap``.
 
-        Compares THIS turn's own :func:`input_total` - "what the model just saw"
-        (design 3.8), the same call site the context-ceiling handover trigger will
-        reuse - directly against ``cap``, never a sum across turns: under prompt
-        caching each turn's usage already reflects the conversation's cumulative size
-        (``cache_read_input_tokens`` re-reads everything cached so far), so summing
-        successive turns would double- and triple-count the same cached context and
-        trip the cap on a node that never actually grew past it.
+        Compares ``running_total`` - :meth:`_run`'s running sum of every turn's own
+        :func:`input_total` plus ``output_tokens`` seen so far this dispatch - against
+        ``cap``. Two different readings of a turn's usage exist and this cap needs the
+        SUM, never a single turn's own figure alone:
+
+        * A single ``AssistantMessage.usage``'s own :func:`input_total` is the
+          CONTEXT SIZE at that turn - "what the model just saw" (design 3.8) - bounded
+          by the model's context window. That figure belongs to design 3.8's separate,
+          later context-ceiling mechanism (``handover_at_tokens``), which will read a
+          turn's own ``input_total`` directly and NOT sum it, because a context ceiling
+          asks "is the window full right now", a question a running sum cannot answer
+          (it would trip on a long dispatch whose window is nowhere near full).
+        * A per-node cap, in contrast, is a SPEND budget, and spend is charged per
+          request: every turn re-charges its whole input again (prompt caching
+          discounts the cost of a cache read, not the TOKEN COUNT this module sums), so
+          a dispatch's true spend is the SUM across turns - exactly what the terminal
+          ``ResultMessage.usage`` already reports and what :func:`outcome_from_usage`
+          and :meth:`_budget_outcome` record as ``charged_tokens``. Comparing a single
+          turn's context size against a spend cap has no usable threshold: set the cap
+          near what a node actually spends and no single turn's context ever reaches
+          it (the node runs to completion, unbounded); set it below one turn's context
+          and every node dies on its first turn. Measured on the M2 attended runs
+          (``workflow/design/probes/m3-interrupt.md`` in RESEARCH): a 28-turn dispatch
+          charged 802,098 tokens total while its first turn alone was 26,029 - far more
+          than any single turn's context, and only explainable as a sum.
 
         Args:
-            usage: This turn's ``AssistantMessage.usage``.
+            running_total: This dispatch's cumulative spend so far, INCLUDING the turn
+                that just arrived - see :meth:`_run`.
             client: The live client this dispatch is running on - needed to call
                 ``interrupt()``; M2's docstring on this method already flagged the
                 signature would have to change for exactly this.
             cap: ``request.token_cap`` - this node's own cap for the resolved row, or
                 ``None`` when the node declares no cap for it, in which case nothing is
                 enforced (mirrors :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`'s
-                same "no cap declared, nothing checked" rule on the run-level call site).
+                same "no cap declared, nothing checked" rule on the run-level call site,
+                and the same SPEND unit - see that method's docstring).
 
         Returns:
-            Whether this turn passed ``cap`` and ``client.interrupt()`` was called.
-            :meth:`_run` uses this to stamp the record ``BUDGET_EXCEEDED`` itself,
-            regardless of which of the two shapes the (now-interrupted) dispatch's own
-            terminal message reports - the probe measured that message never says
-            "interrupted" and gets it backwards in both directions.
+            Whether ``running_total`` passed ``cap`` and ``client.interrupt()`` was
+            called. :meth:`_run` uses this to stamp the record ``BUDGET_EXCEEDED``
+            itself, regardless of which of the two shapes the (now-interrupted)
+            dispatch's own terminal message reports - the probe measured that message
+            never says "interrupted" and gets it backwards in both directions.
         """
-        if cap is None or input_total(usage) <= cap:
+        if cap is None or running_total <= cap:
             return False
         await client.interrupt()
         return True

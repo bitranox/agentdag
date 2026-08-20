@@ -243,6 +243,17 @@ class Coordinator:
         been allowed to start once its cap alone would tip the row over, because the
         coordinator has no way to promise it will not use the whole of what it declared.
 
+        Both sides of the comparison are the SAME unit: a dispatch's total SPEND (input
+        total plus output tokens, summed across its whole turn stream), never a single
+        turn's context size. ``tokens_by_row`` is built by summing each recorded
+        ``charged_tokens`` (:func:`~agentdag.adapters.kernel.executor_claude.outcome_from_usage`
+        and :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._budget_outcome`
+        both compute that as one dispatch's input-plus-output total), and ``node_cap``
+        is ``request.token_cap`` - the same figure
+        :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._on_turn` enforces
+        against its own running sum of that dispatch's turns (see that method's
+        docstring for why a per-turn context figure could not serve here instead).
+
         Args:
             row: The resolved model row alias (``ResolvedRow.alias``).
             node_cap: This node's own cap for ``row`` (``NodeSpec.budget.tokens.get(row)``),

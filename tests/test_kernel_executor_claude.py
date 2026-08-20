@@ -418,6 +418,20 @@ def _turn(usage_input: int) -> AssistantMessage:
     return AssistantMessage(content=[], model="sonnet", usage={"input_tokens": usage_input})
 
 
+def _turn_usage(input_tokens: int, *, output_tokens: int = 0, cache_read_input_tokens: int = 0) -> AssistantMessage:
+    """Build an ``AssistantMessage`` whose usage carries BOTH input and output tokens.
+
+    Unlike :func:`_turn` (input-only, for tests that only need :func:`input_total`),
+    this is for tests that exercise :meth:`ClaudeExecutor._run`'s running-total sum,
+    which is ``input_total(usage) + output_tokens`` per turn - the same two fields
+    :func:`outcome_from_usage` sums into ``charged_tokens``.
+    """
+    usage: dict[str, Any] = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    if cache_read_input_tokens:
+        usage["cache_read_input_tokens"] = cache_read_input_tokens
+    return AssistantMessage(content=[], model="sonnet", usage=usage)
+
+
 def _result(*, is_error: bool, subtype: str, num_turns: int, usage_input: int = 0) -> ResultMessage:
     """Build a minimal terminal ``ResultMessage`` with a fixed shape for these tests."""
     return ResultMessage(
@@ -498,28 +512,29 @@ class FakeStreamClient:
 
 
 @pytest.mark.os_agnostic
-def test_on_turn_interrupts_once_this_turn_s_own_total_passes_the_cap_never_a_running_sum(
+def test_on_turn_interrupts_once_the_running_total_passes_the_cap(
     tmp_path: Path,
 ) -> None:
-    """Compares EACH turn's own ``input_total`` against ``cap`` directly, never a sum
-    across turns: under prompt caching a turn's usage already reflects the
-    conversation's cumulative size, so summing successive turns would double-count
-    the same cached context. 100 then 250 must cross a cap of 200 on the SECOND
-    call alone (250 > 200), not because 100 + 250 does.
+    """Compares the RUNNING TOTAL - :meth:`ClaudeExecutor._run`'s cumulative sum of
+    every turn's own spend so far - against ``cap``, not a single turn's figure alone
+    (that is the regression this fix round closed: see
+    ``test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_single_turn_does``
+    for the end-to-end proof). A running total of 100 stays under a cap of 200; the
+    NEXT turn pushes it to 350, which crosses.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
     client = _RecordingInterruptClient()
 
-    first = asyncio.run(executor._on_turn({"input_tokens": 100}, client, 200))  # pyright: ignore[reportPrivateUsage]
+    first = asyncio.run(executor._on_turn(100, client, 200))  # pyright: ignore[reportPrivateUsage]
     assert first is False
     assert client.interrupt_calls == 0
-    second = asyncio.run(executor._on_turn({"input_tokens": 250}, client, 200))  # pyright: ignore[reportPrivateUsage]
+    second = asyncio.run(executor._on_turn(350, client, 200))  # pyright: ignore[reportPrivateUsage]
     assert second is True
     assert client.interrupt_calls == 1
-    # No cap declared for this row at all: never enforced, whatever the usage.
-    third = asyncio.run(executor._on_turn({"input_tokens": 10_000}, client, None))  # pyright: ignore[reportPrivateUsage]
+    # No cap declared for this row at all: never enforced, whatever the running total.
+    third = asyncio.run(executor._on_turn(10_000, client, None))  # pyright: ignore[reportPrivateUsage]
     assert third is False
     assert client.interrupt_calls == 1
 
@@ -546,9 +561,92 @@ def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_
     FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
     outcome2 = asyncio.run(executor.run(_request(tmp_path, token_cap=10_000)))
     assert outcome2.status == "done"
+
+
+@pytest.mark.os_agnostic
+def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_single_turn_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression proof for this fix round: three turns of 80 input tokens each,
+    NONE of which alone reaches a cap of 200, whose RUNNING TOTAL (80, then 160, then
+    240) crosses it on the third. Against the pre-fix code - which compared each
+    turn's own ``input_total`` to ``cap`` and never summed - this cap could never
+    fire here: 80 <= 200 on every single turn, so the dispatch would run to
+    completion having spent 240, thirty over its own declared cap.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn(80), _turn(80), _turn(80)]
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=200)))
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.type == "budget_exceeded"
+    instance = FakeStreamClient.instances[0]
+    assert instance.interrupt_calls == 1
+    assert instance.turns_yielded == 3  # crossed only once the third turn's own usage landed
+
+    # Control: the same per-turn shape, but a cap above the eventual total (240) -
+    # never interrupted, runs to completion.
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
+    outcome2 = asyncio.run(executor.run(_request(tmp_path, token_cap=1_000)))
+    assert outcome2.status == "done"
     control_instance = FakeStreamClient.instances[0]
     assert control_instance.interrupt_calls == 0
     assert control_instance.turns_yielded == 3
+
+
+@pytest.mark.os_agnostic
+def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unit-pinning proof: two turns whose own totals (input_total + output_tokens)
+    sum to 120, replayed against a terminal ``ResultMessage.usage`` ALSO totalling 120
+    (mirroring the real SDK - the probe measured the terminal usage is the cumulative
+    session total, not one call's snapshot). At cap=120 the running total lands
+    exactly ON the cap and must NOT interrupt (``_on_turn`` uses ``<=``); the dispatch
+    then completes normally and ``outcome.charged_tokens`` - built from the SAME
+    terminal usage by :func:`outcome_from_usage` - reports the identical 120. Drop the
+    cap to 119 (one below the total) and the SAME running total now crosses it,
+    landing ``_budget_outcome`` instead - which reports that SAME 120 too. Either way
+    the number the cap compared and the number the record charged are the same
+    figure: the two are not drifting apart in different units.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [
+        _turn_usage(40, output_tokens=5),  # contributes 45
+        _turn_usage(60, output_tokens=5, cache_read_input_tokens=10),  # contributes 75
+    ]  # running total after both turns: 120
+    terminal = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=2,
+        session_id="s1",
+        usage={"input_tokens": 115, "output_tokens": 5},  # same 120 total, terminal-usage shape
+        result="ok",
+    )
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+
+    FakeStreamClient.configure(turns, terminal)
+    at_cap = asyncio.run(executor.run(_request(tmp_path, token_cap=120)))
+    assert at_cap.status == "done"  # running_total (120) <= cap (120): never interrupted
+    assert at_cap.charged_tokens == {"sonnet": 120}
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+    FakeStreamClient.configure(turns, terminal)
+    one_under = asyncio.run(executor.run(_request(tmp_path, token_cap=119)))
+    assert one_under.status == "failed"
+    assert one_under.error is not None
+    assert one_under.error.type == "budget_exceeded"
+    assert one_under.charged_tokens == {"sonnet": 120}  # the SAME figure, via the interrupted path
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
 
 
 @pytest.mark.os_agnostic
