@@ -5,10 +5,9 @@ produced on something mechanical, and branches only on typed records, never on p
 The coordinator holds records and state and never content, which is what keeps it thin enough to run
 a long graph without losing the plot.
 
-The project is mid-build. These documents describe the system as it is intended to work, and every
-chapter and section opens with a status line saying whether the paragraphs under it describe code
-that exists, code that half exists, or a plan. A section that is only partly built ends with what is
-missing.
+The project is mid-build, and these documents describe the system as it is intended to work rather
+than only the part of it that exists today. Where a mechanism is designed but not built, the text
+says so in place, usually as a "Not yet" note at the end of the section that describes it.
 
 ## Where to start
 

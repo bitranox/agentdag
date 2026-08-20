@@ -1,8 +1,5 @@
 # Architecture overview
 
-**Status:** mixed. The core and the Claude arm are built; the sandbox, the spend cap, the second
-executor and the network face are at various distances. Every section below says which.
-
 This is the bird's eye view. It answers each question once, briefly, and points at the document that
 carries the detail. For the reasoning behind the shape, read [why agentdag exists](why-agentdag.md)
 first; for the commands themselves, the [README](../README.md) is the reference and this document
@@ -11,8 +8,6 @@ deliberately does not restate it.
 ---
 
 ## The system in one picture
-
-**Status:** core and south face built; north face is a CLI today, a server later.
 
 agentdag is one program with three faces. Users come in at the north face, models go out at the
 south face, and the core in between is a deterministic scheduler that holds records and state but
@@ -75,8 +70,6 @@ including every step that decides anything, is ordinary code.
 
 ## 1. How a run is issued and launched
 
-**Status:** built, CLI only.
-
 A run starts with `agentdag run start`, naming a workflow and passing its arguments. The CLI
 validates those arguments against the workflow's own typed argument model, mints a run id, creates
 the run directory, and then either drives the coordinator in-process or launches it detached and
@@ -100,8 +93,6 @@ observe runs; they never submit graphs, because graphs are authored and reviewed
 
 ## 2. How the user's request and task reach a node
 
-**Status:** built.
-
 Two channels, and they carry different kinds of thing.
 
 Workflow arguments are typed and validated at the CLI boundary: which repositories, which brief file,
@@ -117,8 +108,6 @@ That "nothing else" is deliberate and it is stronger than it sounds. See section
 
 ## 3. How information passes between nodes
 
-**Status:** built.
-
 Not by talking. Nodes never message each other, and there is no shared conversation they all append
 to.
 
@@ -131,8 +120,6 @@ This is the "records, not content" rule from [why agentdag exists](why-agentdag.
 keeps the one context every node passes through from filling up with everything every node said.
 
 ## 4. How results come back
-
-**Status:** built.
 
 The executor streams the agent's messages, writes them to a transcript, and builds the record from
 the structured metadata the run reports: turn count, error flag, token usage. The model's free text
@@ -152,8 +139,6 @@ Detail in [the execution model](execution-model.md).
 
 ## 5. How the graph's shape is decided, and altered while it runs
 
-**Status:** built for data-driven shape; the planner node is designed and deliberately deferred.
-
 A workflow is an ordinary Python program that calls the coordinator's primitives as functions. There
 is no graph object compiled up front and then walked. That means the shape can depend on data the run
 discovers: the fleet migration does not know how many branches it has until a discovery step reads
@@ -171,8 +156,6 @@ that data exists, re-planning means a program branching on typed fields, which c
 sounds like it does.
 
 ## 6. What runs a node: Claude, Codex, other models
-
-**Status:** Claude built; Codex planned; other model families planned behind the same port.
 
 There is one executor port and adapters behind it. Today one adapter exists. A Claude node is a child
 process running the same Claude Code binary a person runs interactively, driven headlessly through
@@ -201,8 +184,6 @@ Full comparison, including which side of each row is built, in
 
 ## 7. What a node may touch, and what stops it
 
-**Status:** partial. Enforcement is real but limited, and the limits are measured, not guessed.
-
 A node works in its own worktree. It declares a write set. Two tool hooks refuse edits that resolve
 outside its isolation root and refuse a list of forbidden shell commands. After the node finishes, a
 scan compares the whole run tree before and after and fails the branch on anything it wrote that
@@ -219,8 +200,6 @@ their variants. The write-set check happens after the write, not instead of it.
 [Safety and sandbox](safety-and-sandbox.md) is the honest, complete version.
 
 ## 8. Crash, resume and human approval
-
-**Status:** built.
 
 Every dispatch is identified by a content hash over what makes the call what it is: the node's
 identity fields, its brief, its assembled input, and the results of everything it depends on. The
@@ -241,8 +220,6 @@ Detail in [the execution model](execution-model.md).
 
 ## 9. Cost and limits
 
-**Status:** partial. Measurement is built; enforcement is not.
-
 Token usage is measured per turn and per node and accumulated per model row across the run, and it is
 in the record and the run summary. A turn ceiling per node exists.
 
@@ -260,8 +237,6 @@ for folding many small items into one dispatch when they would not.
 
 ## 10. Sandbox mode
 
-**Status:** port only. One adapter, and it declares that it isolates nothing.
-
 Nodes run behind a sandbox port. Today exactly one adapter is wired, and its guarantees are three
 booleans, all false: no filesystem boundary, no egress control, no separate user. Those booleans are
 stamped onto every node's record, so the isolation a piece of work ran under is a journaled fact
@@ -278,9 +253,6 @@ A separate operating system user per node is not the answer either: it costs mor
 for the filesystem half and delivers nothing at all for the network half.
 
 ## 11. Claude Code, subagents and the self-improve loop
-
-**Status:** partial. The isolation is built; knowledge grants and the self-improve graph are
-planned.
 
 A dispatched node does not inherit your Claude Code setup. Not your hooks, not your CLAUDE.md
 cascade, not your skills, not your plugins. The executor asks for no setting sources at all and gives

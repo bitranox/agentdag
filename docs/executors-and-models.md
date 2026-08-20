@@ -1,14 +1,10 @@
 # Executors and models
 
-**Status:** the Claude arm is built; the Codex arm is planned; other families reach the same port
-later. This document is the south face: what actually happens when the coordinator dispatches a node
-to a model.
+This is the south face: what actually happens when the coordinator dispatches a node to a model.
 
 ---
 
 ## 1. One port, several arms
-
-**Status:** built, one adapter wired.
 
 There is a single executor port. An adapter behind it takes a request naming the node's directory,
 its working directory, its brief, its prompt, its model and effort, its turn ceiling, its isolation
@@ -21,8 +17,6 @@ That is a feature of the design and not an implementation shortcut: the steps th
 the ones that are not models.
 
 ## 2. A Claude node
-
-**Status:** built.
 
 A Claude node is a child process running the same Claude Code binary a person runs interactively,
 started headlessly through the official Agent SDK and spoken to over a streaming JSON protocol on
@@ -44,8 +38,6 @@ is in the brief. The model's prose reply is written to a transcript and is not p
 the record is built from what the run reports about itself.
 
 ## 3. Credentials, and whether a subscription works
-
-**Status:** built for Claude. Yes for a subscription; the metered path is not implemented.
 
 Two credential sources, chosen once per invocation and printed when a run starts.
 
@@ -71,8 +63,6 @@ either way, so the answer changes which row a graph uses rather than whether the
 
 ## 4. Environment: an allowlist, not a filter
 
-**Status:** built.
-
 The node's environment is built from a named allowlist: the path, locale, temporary directory, proxy
 and certificate variables, and the platform variables Windows needs. Everything else the coordinator
 inherited is explicitly blanked rather than merely omitted, because the SDK merges the environment it
@@ -86,8 +76,6 @@ looks like a secret. Naming what may pass is the only version of this that works
 The test gate has its own, separate allowlist, deliberately narrower.
 
 ## 5. Codex, the second arm
-
-**Status:** planned. Measured against its real surface, not assumed.
 
 A Codex node is one `codex mcp-server` process per node, spoken to over MCP on standard input and
 output. Its surface is known from probing rather than assumption, and it reaches parity on most of
@@ -112,7 +100,8 @@ loads the operator's own skills and tools unasked, which is both a cost and a co
 
 ## 6. Parity, side by side
 
-**Status:** left column built, right column planned.
+The Claude column is what the shipped adapter does. The Codex column is what its surface offers and
+what an adapter would therefore do.
 
 | What the coordinator needs | Claude, via the Agent SDK                                | Codex, via MCP                                                     |
 |----------------------------|----------------------------------------------------------|--------------------------------------------------------------------|
@@ -141,8 +130,6 @@ Four rules hold whatever is in the right-hand column, and they are what make add
 
 ## 7. Why Claude is not reached through MCP too
 
-**Status:** settled design decision.
-
 It would be tidier to have one transport for every model. The reason not to is specific rather than
 stylistic.
 
@@ -161,8 +148,6 @@ This reopens if the Claude login and the coordinator ever have to live on differ
 the wrapper is a remote executor, which is an added row rather than a change of direction.
 
 ## 8. Other models
-
-**Status:** planned. The shape exists; no adapter does.
 
 Two paths, and they are not equivalent.
 

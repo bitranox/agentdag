@@ -1,8 +1,5 @@
 # Why agentdag exists
 
-**Status:** design rationale. The mechanisms it argues for are built out over the milestones that
-follow; see [the documentation index](README.md) for where each one stands.
-
 agentdag coordinates teams of AI agents. Every structural choice in it follows from one question:
 what are a language model's real limits, as opposed to the limits the word "team" quietly imports
 from human organisations.
@@ -16,12 +13,24 @@ organised and degrades for reasons nobody can see.
 
 ## 1. A model is not a person
 
-**Status:** rationale. The two named effects below, lost-in-the-middle and context rot, are cited
-from general knowledge rather than checked against the papers. The argument does not rest on the
-citation: anyone can watch attention degrade on their own workload without one.
+Put the two side by side. The last column is the one that matters, because a team's shape is nothing
+more than the accumulated answer to these limits.
 
-Five constraints actually bind a language model working as part of a system. None of them is the one
-an org chart is designed around.
+| Limit                        | A person                                                 | A language model                                                                                                         | What it does to the team                                                                                                                               |
+|------------------------------|----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| How much it can hold at once | about four to seven things, and no training changes that | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle |
+| Learning a new area          | days to weeks, and it sticks afterwards                  | seconds to read whatever you hand it, and none of it sticks                                                              | knowledge lives in a store both can reach, never in one head and never pasted into every prompt                                                        |
+| Memory between sessions      | continuous; yesterday is still there                     | nothing survives the dispatch                                                                                            | anything that must outlive a step is written down, or it did not happen                                                                                |
+| Being interrupted            | tap them on the shoulder                                 | not possible; a message lands only when it next pauses to use a tool                                                     | order is decided before the run starts, not corrected while it runs                                                                                    |
+| Knowing it is wrong          | unreliable, but it can feel unsure and say so            | confidently wrong, and asking it does not help                                                                           | the check that decides anything is a program with an exit code, never another agent                                                                    |
+| Cost of one question         | two minutes of work costs two minutes                    | a two-minute task costs nearly what a two-hour one costs, because the fixed startup dominates                            | a node carries work worth the startup, or small items get batched into a single dispatch                                                               |
+| Talking to each other        | cheap, and it is how the work actually coordinates       | every word is re-read by everybody on every later turn                                                                   | pass typed records, not conversation                                                                                                                   |
+
+The human figures are the ordinary ones from general knowledge rather than anything measured here,
+and nothing turns on the exact number. What matters is which way each row runs, and that almost
+every one of them runs the opposite way from the intuition a team metaphor imports.
+
+Five constraints do the work in that table. None of them is the one an org chart is designed around.
 
 **A finite context window whose attention degrades before it fills.** This is the constraint that
 surprises people, because it is not a capacity limit in the way a disk is. A model does not work
@@ -29,7 +38,9 @@ perfectly up to the last token and then stop. It gets worse gradually, and it ge
 particular shape: it loses the middle. Give it twenty things to hold and it will answer confidently
 about the first few and the last few. The literature calls this lost-in-the-middle, and pairs it with
 context rot, the slower decline in quality as a window fills even when nothing has been dropped.
-That is the mechanism the design has to survive.
+Both terms are used here from general knowledge rather than checked against the papers, and the
+argument does not rest on the citation: anyone can watch attention degrade on their own workload
+without one. That is the mechanism the design has to survive.
 
 **No state except on disk.** A model holds nothing between one dispatch and the next. Whatever must
 survive has to be written down somewhere a later process can read.
@@ -47,8 +58,6 @@ On this machine that overhead runs to tens of thousands of tokens before the wor
 small items dispatched separately spend more on greetings than on work.
 
 ## 2. Why the human org chart does not transfer
-
-**Status:** rationale, stable.
 
 Hierarchy in a human organisation answers span of control. One person can direct only a few people,
 can hold only so much in their head, and transferring what they know to someone else is slow and
@@ -72,11 +81,6 @@ out to avoid, in a new costume. The constraint you dismiss is the one that shape
 
 ## 3. What the tools available today ask you to build
 
-**Status:** a survey, and the dates matter. The CrewAI structure below is checked against that
-project's current documentation. The two behavioural defaults are as our August 2026 sweep found
-them, and they are dated in the text rather than stated flat, because a default can change in a
-release without anyone announcing it and this document cannot watch three projects for you.
-
 Almost every framework for putting several AI agents to work starts you in the same place: name the
 roles. You declare that you want a researcher, a writer and an editor. You give each one a job
 description. Then the framework arranges for them to talk to each other until something comes out
@@ -84,6 +88,11 @@ the other end.
 
 That feels reasonable, because it is exactly how you would staff the job with people. It is also the
 wrong shape, and the cheapest way to see why is to look at what it costs.
+
+Two of the three observations below carry a date. That is deliberate: a framework's default can
+change in a release without anyone announcing it, this document cannot watch three projects on your
+behalf, and a dated claim that has since moved reads as out of date rather than as wrong. The
+CrewAI structure is checked against that project's current documentation and so is stated flat.
 
 **Everyone is copied on everything.** In August 2026, AutoGen's graph mode sent every message to
 every agent by default. The graph you drew controlled the order people spoke in, not who heard what:
@@ -128,9 +137,6 @@ So the question is not how to arrange the meeting better. It is what you build i
 
 ## 4. Accessible is not loaded
 
-**Status:** rationale, stable. The retrieval mechanism it calls for is planned, not built; see
-[Claude Code integration](claude-code-integration.md).
-
 The resolution is one distinction. Knowledge available to every node, without restriction, is the
 genuine advantage a model team has over a human one. But available means retrievable, not delivered.
 A node gets three things: its task, the slice it certainly needs, and a path to everything else.
@@ -145,8 +151,6 @@ produced to disk and returns a typed record naming it. The next node that needs 
 file. Nothing accumulates in a single growing context just because it passed through.
 
 ## 5. What falls out is a DAG scheduler
-
-**Status:** rationale, stable. The kernel that implements it has shipped.
 
 Take the five constraints seriously and the shape is not a hierarchy and not a peer team. It is a
 dependency scheduler, and its ancestors are Make, Bazel and MapReduce rather than any org chart.
@@ -179,8 +183,6 @@ agent cannot satisfy by asserting that it did the work.
 
 ## 6. What survives from human organisations
 
-**Status:** rationale, stable.
-
 Three things, and they are worth keeping because they do not come from human limits at all.
 
 Clear ownership. One writer per resource. Conflicts resolved in one place.
@@ -190,8 +192,6 @@ the workers are people, threads or agents. Human organisations discovered them b
 organisations are concurrent systems. Keep the rules, drop the hierarchy that happened to carry them.
 
 ## 7. Graph as code, not a graph object
-
-**Status:** built. Every shipped workflow is an ordinary Python program.
 
 A graph can be expressed two ways: as data compiled once and then walked, or as a program that calls
 the primitives as functions. agentdag is the second, for three reasons in order of weight.
@@ -211,8 +211,6 @@ branches only on typed fields of those records. That is precisely the discipline
 coordinator thin, so the cost of graph-as-code buys the property section 5 needs anyway.
 
 ## 8. Why build it rather than adopt something
-
-**Status:** the reasoning the current shape rests on.
 
 The number that decides this is runs per quarter. A coordinator used a handful of times a quarter
 repays only a small build, so the build stays small, and the baseline graph that sits beside the

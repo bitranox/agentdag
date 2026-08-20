@@ -1,14 +1,11 @@
 # Execution model
 
-**Status:** built except where a section says otherwise. This is the core the rest of the system
-hangs off: what a node is, what it returns, how that is recorded, and what happens when the machine
-dies in the middle.
+This is the core the rest of the system hangs off: what a node is, what it returns, how that is
+recorded, and what happens when the machine dies in the middle.
 
 ---
 
 ## 1. A node
-
-**Status:** built.
 
 A node is one dispatched unit of work. It carries an identifier, a kind, the executor and model tier
 it wants, the knowledge datasets it may reach, the paths it declares it will write, the resources it
@@ -23,8 +20,6 @@ The vocabulary being closed is the point. A coordinator that branches on free te
 whatever a model felt like writing.
 
 ## 2. A record is the only thing the coordinator sees
-
-**Status:** built.
 
 Every node, whatever ran it, returns the same shape: a status from a closed set, references to
 artefacts it wrote, a map of key facts, the names of the fields in that map that are meant to be
@@ -54,8 +49,6 @@ trusting the record alone.
 
 ## 3. The journal key: what makes a call the same call
 
-**Status:** built.
-
 Each dispatch is identified by a content hash. Everything that makes the call what it is goes in: the
 node's identity fields, the hash of its brief, the hash of its assembled input, and, chained in
 order, the record hashes of everything it depends on.
@@ -79,8 +72,6 @@ collision.
 
 ## 4. The journal
 
-**Status:** built.
-
 Two files, both append-only, both owner-readable only. Every line is one JSON object with sorted keys
 and an ISO-8601 UTC timestamp. The audit copy is written and flushed first, then the journal, each
 with its own open, write, flush and sync. That ordering gives one guarantee and only one: the journal
@@ -91,8 +82,6 @@ decision, and a run summary. Nothing else is state. There is a `state.json` besi
 convenience, but it is derived, and the journal is what a replay reads.
 
 ## 5. Replay, the crash window, and what resumable actually buys
-
-**Status:** built.
 
 Folding the journal in one pass gives everything a relaunch needs: the results already recorded, the
 keys that have a started line and no result, the decisions already made, and the exact sequence of
@@ -133,8 +122,6 @@ again as a new run. The retry path is a later milestone.
 
 ## 6. Suspend and resume: a human decision as control flow
 
-**Status:** built.
-
 An approve node does not block. It writes its payload, and if no decision exists for that exact
 payload it raises a suspension, which the driver treats as control flow rather than an error: the
 run's status becomes suspended, the cursor records which node is waiting, and the process exits.
@@ -159,8 +146,6 @@ person looks.
 
 ## 7. Side effects: stage, apply, and doing it once
 
-**Status:** built.
-
 External effects are split in two. A `stage` node writes an intent describing what should happen and
 performs nothing. An `apply` node performs intents, each guarded by a marker file named for the
 intent's deduplication key and touched only after the effect succeeded.
@@ -176,8 +161,6 @@ If it moved since the person approved it, nothing happens. That is where "the hu
 exact thing" is actually cashed out.
 
 ## 8. The primitives
-
-**Status:** mixed. The ones the shipped graph uses are built; the rest are specified.
 
 | Primitive | What it is                                                | Status              |
 |-----------|-----------------------------------------------------------|---------------------|
@@ -203,8 +186,6 @@ A judging `reduce` is a mistake worth naming. A fold that decides something by w
 `synth`, which is a model node with a record; `reduce` is arithmetic.
 
 ## 9. Parallelism, and the rule for when it is allowed
-
-**Status:** built, bounded by one run-wide limit.
 
 `map` is the only fan-out. Its branches run concurrently under a single semaphore created once per
 run, so two maps running at the same time still admit the configured number of branches between them
@@ -244,8 +225,6 @@ either yet. One lock, enforced directly, is what exists.
 
 ## 10. The run lifecycle
 
-**Status:** partial.
-
 A run is running, and ends suspended, done or failed. Suspended means an approve node is waiting and
 the process exited on purpose. Failed means the workflow raised. Done means it returned, and the
 launch appends a run summary.
@@ -260,8 +239,6 @@ launched; see
 [safety and sandbox](safety-and-sandbox.md).
 
 ## 11. The tier policy
-
-**Status:** built for resolution; the ceilings it declares are not enforced yet.
 
 Which model runs a node is data, not code. A policy file lists model rows, each with an alias, the
 executor that runs it, a cost rank, the roles it can serve, the efforts it allows, its prices, and
@@ -282,8 +259,6 @@ reported on. Enforcing them is a later milestone.
 higher row, is described in the policy shape and is not implemented.
 
 ## 12. The context ceiling and the handover
-
-**Status:** planned. Designed in full, not built.
 
 "One contained task per node" bounds a node's context structurally, but it does not bound it over
 time. A long node grows its own context turn by turn until attention degrades, which is the failure

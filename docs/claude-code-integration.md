@@ -1,8 +1,5 @@
 # Claude Code integration
 
-**Status:** partial. The isolation of a dispatched node is built. The network face, the
-knowledge grants and the self-improve graph are planned.
-
 This document answers the two questions people ask once they realise agentdag drives the same tool
 they use interactively: does a dispatched node get my setup, and how does this relate to the agents
 Claude Code already runs for me.
@@ -10,8 +7,6 @@ Claude Code already runs for me.
 ---
 
 ## 1. Two tiers, one journal format
-
-**Status:** the headless tier is built; the shared format is the design's intent.
 
 Claude Code's own in-session workflow tool and this program are two tiers of the same idea, and they
 share a journal format on purpose.
@@ -24,8 +19,6 @@ This program is the headless tier and is where the primitives are actually imple
 tool is not a second implementation of them.
 
 ## 2. Claude Code as a client
-
-**Status:** planned. Today the surface is a command-line tool.
 
 The intended relationship is that Claude Code reaches agentdag as a client rather than containing it:
 a server behind a bearer token exposing the same verbs the CLI has, so a session can start a run,
@@ -40,8 +33,6 @@ is built behind that surface rather than instead of it.
 
 ## 3. What a dispatched node inherits from your setup
 
-**Status:** built. The answer is: nothing.
-
 Not your hooks. Not your CLAUDE.md cascade, at any level. Not your skills. Not your plugins. Not your
 environment variables, beyond a named allowlist of the ones a process needs to function at all.
 
@@ -53,8 +44,6 @@ If you have been assuming that a dispatched node behaves like your session becau
 binary, this is the paragraph to remember.
 
 ## 4. Why it is built that way
-
-**Status:** rationale for the above.
 
 Two reasons, and they point the same way.
 
@@ -74,8 +63,6 @@ installed this week.
 
 ## 5. What a node gets instead
 
-**Status:** built.
-
 Its brief, as its system prompt. A fixed short first instruction. A small tool set. Its own worktree.
 Its model and effort, resolved from the tier policy rather than chosen by the node. And two hooks of
 agentdag's own, which refuse edits outside its isolation root and refuse a configured list of shell
@@ -83,8 +70,6 @@ command shapes. Those, and what they do not catch, are in
 [safety and sandbox](safety-and-sandbox.md).
 
 ## 6. Knowledge, and the grant that is coming
-
-**Status:** planned. The principle is in force; the mechanism is not built.
 
 The other half of "accessible is not loaded" is the retrieval path, and it is the half that does not
 exist yet.
@@ -99,8 +84,6 @@ A node today is well contained and under-informed. The intended balance is well 
 ask.
 
 ## 7. How this compares with a Claude Code subagent
-
-**Status:** comparison of what exists on both sides today.
 
 |                                        | A Claude Code subagent | An agentdag node                          |
 |----------------------------------------|------------------------|-------------------------------------------|
@@ -118,8 +101,6 @@ provable afterwards.
 
 ## 8. The self-improve and memory loop
 
-**Status:** planned as a graph. Runs today as a subagent fan-out.
-
 The memory consolidation pass that keeps this knowledge tree tidy is already a directed graph in
 everything but name: it maps over levels and facts, folds the results, reviews them, and applies
 changes through the memory engine's own scripts, which are mechanical checks and therefore natural
@@ -136,8 +117,6 @@ forgiving place to be learning what the coordinator gets wrong. The fleet migrat
 because its blast radius is a directory of throwaway clones.
 
 ## 9. Getting told when something needs you
-
-**Status:** planned. The sink comes first, the push channel later.
 
 A suspended run is only useful if someone finds out. The design emits a typed event when a run
 suspends, finishes, fails or crashes, from the coordinator, the approval timer or the server, and

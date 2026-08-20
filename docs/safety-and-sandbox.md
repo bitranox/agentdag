@@ -1,9 +1,5 @@
 # Safety and sandbox
 
-**Status:** partial. Real mechanisms, real limits, and the limits are measured rather than
-guessed. The sandbox port declares that it isolates nothing; the containment layer
-behind it is wanted and not yet designed.
-
 The headline first, because everything else in this document is a detail beside it: **a node is not
 contained today**. It runs as the same operating system user as the coordinator, with no sandbox and
 no separate account, so its shell can read anything that user can read and can make outbound network
@@ -15,8 +11,6 @@ writes, because a safety claim that only lives in prose is the kind that gets be
 ---
 
 ## 1. The one boundary that is real: the scratch-clone rule
-
-**Status:** built.
 
 A run never writes to a real repository. The real ones are read exactly once, into bare mirrors, and
 those mirrors are the only push targets a run will accept. A target anywhere else stops the run
@@ -31,8 +25,6 @@ anywhere it can name. What the rule guarantees is that the obvious accident, the
 because pushing is what you do after committing, cannot land anywhere that matters.
 
 ## 2. Tool hooks: what they stop, and what they demonstrably do not
-
-**Status:** built, with known and measured gaps.
 
 Every dispatched agent node gets two hooks that run before a tool call.
 
@@ -53,8 +45,6 @@ So the denylist is a speed bump on the exact shapes it names. Treat it as one.
 
 ## 3. The backstop: scanning what actually changed
 
-**Status:** built, with one limit under parallelism.
-
 Because a hook is a claim, something outside the node checks afterwards. A scan takes a content
 manifest of the whole run tree before and after a node runs and reports every path that appeared,
 changed or vanished and that no declared write set covers. A branch whose scan finds anything fails.
@@ -70,8 +60,6 @@ concurrency. Closing the first case needs a process boundary, which is section 7
 
 ## 4. One writer, one lock
 
-**Status:** built.
-
 At most one live coordinator per run directory. The lock is a file created exclusively, holding
 enough to identify its holder: host, boot identifier, process id, and that process's start time.
 
@@ -86,8 +74,6 @@ host-wide lock for every run in the system, because the build tool environment i
 whole machine and two gates would rebuild it under each other.
 
 ## 5. Teardown: what a cancel can actually reap
-
-**Status:** partial. Depends on how the coordinator was launched, and that difference is real.
 
 | Launch                           | What a kill reaches                                             |
 |----------------------------------|-----------------------------------------------------------------|
@@ -107,8 +93,6 @@ error, are a later milestone.
 
 ## 6. Things that look like access control and are not
 
-**Status:** built as recorded facts, not as controls.
-
 A decision record carries who recorded it and under which token. Those fields record what the
 recording process said about itself. Any process running as the same operating system user can write
 a decision file, so the run directory's own permissions are the actual control, and the fields are
@@ -124,8 +108,6 @@ Files the system writes are owner-only where it matters: the journal, its audit 
 credential copy.
 
 ## 7. The sandbox port, today
-
-**Status:** port only. Written and reviewed, not on the default branch yet.
 
 Nodes run behind a sandbox port with two halves. One is a declaration made once per run: what
 isolation this run's nodes have, as three booleans for filesystem, network egress and separate user.
@@ -147,9 +129,6 @@ request's environment cannot be settled before an adapter needs it. So today the
 only through its declaration.
 
 ## 8. What the sandbox could become
-
-**Status:** wanted, and not yet designed. The implementation is parked and the hard part is open.
-This section describes a goal, not a plan.
 
 **A container per node** is the shape everyone means: its own home, its own mounts, and, the part
 that matters most, its own network namespace with egress denied by default and allowed only to the
@@ -179,8 +158,6 @@ costs more than a container for the filesystem half of the problem, and it deliv
 for the network half, which is the half that matters.
 
 ## 9. How to run it sensibly in the meantime
-
-**Status:** current advice, not a mechanism.
 
 Point runs at scratch mirrors, which the shipped graph enforces anyway. Run the coordinator as a user
 that does not have anything you would mind an agent reading. Keep the run directory's permissions
