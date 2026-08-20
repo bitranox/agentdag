@@ -80,14 +80,19 @@ loads:
 The 170 arm is a bare child with no tools; no working node comes near it. What the arms establish is
 the RATIO between them, which is why the executor asks for no setting sources.
 
-### A dispatch can be stopped mid-tool, in under a tenth of a second
+### A dispatch was stopped mid-tool in under a tenth of a second, once
 
-**Probe corpus 2026-08-20.** An interrupt issued three seconds into a ninety-second Bash call ended the
-stream 0.088 s later, and the tool's own process was dead afterwards, its last output unchanged six
-seconds on. At a turn boundary the same interrupt took 0.551 s.
+**Probe corpus 2026-08-20.** An interrupt issued three seconds into a ninety-second Bash call ended
+the stream 0.088 s later, and the tool's own process was dead afterwards, its last output unchanged
+six seconds on. At a turn boundary the same interrupt took 0.551 s.
 
-**Does not establish:** anything one agent can do to another. This is the process holding the SDK
-client stopping its own child. A message between two agents is not preemptive.
+**Does not establish** three things, and the third is the one a reader will meet. Nothing about what
+one agent can do to another: this is the process holding the SDK client stopping its own child, and
+a message between two agents is not preemptive. Nothing about typical latency: both figures are
+single observations on an idle host. And nothing about a process TREE - the tool interrupted here
+was one bash script with no children, while a real node's tool call is a build spawning a test
+runner spawning more. Whether an interrupt reaps descendants is the same question that separates a
+process-group kill from a single-pid kill in the scope adapter, and it is untested.
 
 ### The tool hooks deny what they are specified to deny, and miss what was predicted
 
@@ -143,9 +148,9 @@ taken from a reviewer's citation without re-opening it.
 
 ## 4. Load-bearing and NOT measured
 
-These are the assumptions the design rests on that nothing has tested. They are listed because a
-reader deciding whether to trust the system should see them, and because the list is short enough to
-act on.
+These are assumptions the design rests on that nothing has tested. The list is what surfaced during
+one pass of documentation work, not the output of a deliberate audit of the design's premises, so
+read it as a floor rather than the set. Nobody has gone looking for the rest.
 
 - **Whether the coordinator survives the failure it is designed around, in production.** Crash and
   resume are proven by tests that kill a run between two journal lines. No real run has crashed on
