@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.domain.kernel_errors import SpecRejected
@@ -54,21 +55,29 @@ def test_shipped_policy_loads_and_is_versioned_by_content() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_the_node_granularity_floor_is_a_sub_minute_fraction() -> None:
-    """The floor is half a minute, and the field can hold a fraction of a minute at all.
+def test_the_node_granularity_floor_is_counted_in_tokens_not_minutes() -> None:
+    """The floor is 260,000 tokens, and the superseded minutes key is refused rather than ignored.
 
-    Two assertions with two different jobs. The first pins the shipped value. The second pins
-    the TYPE independently of that value, so it still bites if the shipped figure is re-derived:
-    pydantic refuses a fractional scalar for an ``int`` field rather than truncating it, so a
-    whole-minute ``min_node_minutes`` cannot carry a sub-minute floor at all.
+    Two assertions with two different jobs. The first pins the shipped value. The second pins the
+    UNIT independently of that value, so it still bites if the figure is re-derived: ``Thresholds``
+    forbids extra keys, so a table carrying the superseded ``min_node_minutes`` ALONGSIDE a valid
+    ``min_node_tokens`` still raises. Supplying both is what isolates the mechanism: with only the
+    stale key the model would reject it for the required field being absent instead, and the
+    assertion would pass without ever exercising the extra-key rule it is named for.
     """
     p = load_policy(shipped())
-    assert p.thresholds.min_node_minutes == 0.5
+    assert p.thresholds.min_node_tokens == 260_000
 
-    other_fraction = Thresholds.model_validate(
-        {"min_node_minutes": 0.75, "reduce_tree_fanin": 12, "journal_max_lines": 5000, "max_continuations": 3}
-    )
-    assert other_fraction.min_node_minutes == 0.75
+    with pytest.raises(ValidationError):
+        Thresholds.model_validate(
+            {
+                "min_node_tokens": 260_000,
+                "min_node_minutes": 0.5,
+                "reduce_tree_fanin": 12,
+                "journal_max_lines": 5000,
+                "max_continuations": 3,
+            }
+        )
 
 
 @pytest.mark.os_agnostic
