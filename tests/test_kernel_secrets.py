@@ -119,11 +119,12 @@ def test_transcript_and_record_never_carry_a_planted_secret_after_scrub(tmp_path
 @pytest.mark.os_agnostic
 def test_scrub_key_pass_is_selective_not_a_blanket_redaction() -> None:
     """Mutation check for the KEY pass: the SAME non-token-shaped value is redacted
-    only when its own key matches ``SECRET_KEY_RE`` - proving the KEY pass depends on
-    the key, not just on some value being present (a blanket redaction would catch
-    both branches, or neither). ``PLANTED`` (``sk-ant-oat01-...``) is deliberately NOT
-    used here: since the VALUE pass added by this fix round would also catch its
-    SHAPE regardless of key, it cannot isolate the KEY pass on its own any more - see
+    only when its own key matches :data:`~agentdag.domain.scrub.SECRET_KEY_COMPONENTS`
+    - proving the KEY pass depends on the key, not just on some value being present (a
+    blanket redaction would catch both branches, or neither). ``PLANTED``
+    (``sk-ant-oat01-...``) is deliberately NOT used here: since the VALUE pass added
+    by this fix round would also catch its SHAPE regardless of key, it cannot isolate
+    the KEY pass on its own any more - see
     ``test_append_transcript_redacts_a_secret_shaped_value_under_a_non_secret_key``
     below for that mechanism's own control.
     """
@@ -133,25 +134,41 @@ def test_scrub_key_pass_is_selective_not_a_blanket_redaction() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_scrub_key_pass_no_longer_redacts_usage_token_counts() -> None:
-    """The bug this fix round closed: ``SECRET_KEY_RE`` used to match ``token`` as a
+def test_scrub_key_pass_usage_token_counts_survive_in_both_spellings() -> None:
+    """The bug the FIRST fix round closed: the KEY pass used to match ``token`` as a
     bare substring anywhere in a key, so every usage-accounting field the kernel
-    executor streams - ``input_tokens``, ``output_tokens``,
-    ``cache_creation_input_tokens``, ``cache_read_input_tokens`` - had its own
-    INTEGER replaced by ``"[scrubbed]"`` in every archived ``transcript.jsonl``,
-    permanently destroying the per-turn audit trail a reviewer needs to reconstruct a
-    dispatch's spend. Mutation check: reverting ``SECRET_KEY_RE`` to
-    ``re.compile(r"(?i)token|secret|password|authorization|credential")`` (the
-    pre-fix pattern) makes this assertion fail - verified by hand against that exact
-    pattern before this fix landed.
+    executor streams had its own INTEGER replaced by ``"[scrubbed]"`` in every
+    archived ``transcript.jsonl``, permanently destroying the per-turn audit trail a
+    reviewer needs to reconstruct a dispatch's spend. That fix round's OWN regression
+    (closed by this round): it recognised only the snake_case spelling of those four
+    fields, so a streamed SDK message using the camelCase spelling
+    (``inputTokens`` etc. - which real transcripts under ``/var/lib/agentdag/runs``
+    actually carry) fell back through the component check unprotected from THIS
+    direction too, i.e. would have been wrongly redacted by a camelCase-blind
+    allowlist. Both spellings of all four fields must survive.
+
+    Mutation check (verified by running it): dropping the
+    ``("cache", "read", "input", "tokens")`` entry from
+    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST` makes BOTH
+    ``cache_read_input_tokens`` and ``cacheReadInputTokens`` fail this test at once -
+    one allowlist entry protects both spellings simultaneously, because
+    :func:`~agentdag.domain.scrub._key_components` lowercases and splits both
+    spellings down to the identical ``("cache", "read", "input", "tokens")`` tuple.
     """
-    usage = {
+    usage_snake = {
         "input_tokens": 12,
         "output_tokens": 34,
         "cache_creation_input_tokens": 56,
         "cache_read_input_tokens": 78,
     }
-    assert scrub({"usage": usage}) == {"usage": usage}  # all four integers survive untouched
+    usage_camel = {
+        "inputTokens": 12,
+        "outputTokens": 34,
+        "cacheCreationInputTokens": 56,
+        "cacheReadInputTokens": 78,
+    }
+    assert scrub({"usage": usage_snake}) == {"usage": usage_snake}  # all four integers survive untouched
+    assert scrub({"usage": usage_camel}) == {"usage": usage_camel}  # same fields, camelCase spelling
 
 
 @pytest.mark.os_agnostic
@@ -162,6 +179,85 @@ def test_scrub_key_pass_still_redacts_every_real_secret_key_shape() -> None:
     """
     for key in ("token", "api_token", "auth_token", "secret", "password", "authorization", "credential"):
         assert scrub({key: "hunter2"}) == {key: "[scrubbed]"}, f"{key!r} should still redact"
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_redacts_camelcase_secret_keys_and_their_snake_case_twins() -> None:
+    """The regression this round fixes: commit 53e81a1 made the KEY pass recognise
+    only snake_case component boundaries (a bare non-alphanumeric split), reasoning
+    that every real key in this codebase's JSON messages is snake_case. Measured
+    against every archived ``transcript.jsonl`` under ``/var/lib/agentdag/runs``, that
+    premise was false - the streamed SDK payloads carry camelCase keys throughout
+    (``inputTokens``, ``apiKeySource``, ``costUSD``, ...). Under the shipped
+    component-bounded-on-separators-only regex, ``{"apiToken": "hunter2"}`` was NOT
+    redacted (no separator between ``api`` and ``Token`` for the boundary check to
+    bite on), while its snake_case twin ``{"api_token": "hunter2"}`` still was - a
+    secret-shape-independent leak for any camelCase-keyed bearer token, session
+    token, or access token the SDK happens to emit.
+
+    Mutation check (verified by hand): reverting :func:`~agentdag.domain.scrub._key_components`
+    to split on non-alphanumeric separators only makes every ``...Token`` assertion
+    below fail (the key is treated as a single unsplit component, e.g.
+    ``"apitoken"``, which contains no standalone ``"token"`` component), while the
+    ``..._token`` snake_case counterparts keep passing - reproducing exactly the
+    asymmetry reported against the shipped code.
+    """
+    camel_and_snake_pairs = (
+        ("apiToken", "api_token"),
+        ("authToken", "auth_token"),
+        ("accessToken", "access_token"),
+        ("sessionToken", "session_token"),
+    )
+    for camel_key, snake_key in camel_and_snake_pairs:
+        assert scrub({camel_key: "hunter2"}) == {camel_key: "[scrubbed]"}, f"{camel_key!r} should redact"
+        assert scrub({snake_key: "hunter2"}) == {snake_key: "[scrubbed]"}, f"{snake_key!r} should redact"
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_redacts_an_acronym_leading_secret_key() -> None:
+    """The case a naive camelCase splitter gets wrong: a key that OPENS with an
+    acronym run (``APIToken``, ``OAuthToken``) has no lower-to-upper boundary before
+    its first letter, so a splitter that only inserts a boundary before every
+    uppercase letter would shatter the acronym itself (``APIToken`` -> ``A``, ``P``,
+    ``I``, ``Token``) instead of keeping it as one component and only splitting where
+    the acronym ends. Either way the ``token``/``secret`` component must still be
+    isolated and redacted.
+
+    Mutation check (verified by running it): dropping the acronym-to-word boundary
+    pass (:data:`~agentdag.domain.scrub._ACRONYM_TO_WORD_BOUNDARY_RE`) and keeping
+    only the lower/digit-to-upper pass makes ``APIToken`` and ``APISecret`` fail this
+    test: with no lowercase letter anywhere before ``Token``/``Secret``, the
+    lower-to-upper pass alone never fires and the whole key stays one glued component
+    (``"apitoken"``), which does not equal the word ``"token"``. ``OAuthToken`` alone
+    would NOT catch this regression - it has its own internal lowercase-to-uppercase
+    transition (``...Auth`` -> ``Token``) that the lower-to-upper pass catches on its
+    own - which is exactly why an acronym-PREFIXED case is required here.
+    """
+    for key in ("APIToken", "OAuthToken", "APISecret"):
+        assert scrub({key: "hunter2"}) == {key: "[scrubbed]"}, f"{key!r} should redact"
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_redacts_nested_secret_keys_in_dicts_and_lists() -> None:
+    """A real transcript line nests secret-keyed fields inside ``tool_input`` dicts
+    and, for a tool that takes a list argument, inside list elements too - the KEY
+    pass must reach both, camelCase and snake_case alike, at any depth.
+    """
+    nested = {
+        "type": "AssistantMessage",
+        "tool_input": {
+            "headers": [
+                {"Authorization": "Bearer hunter2", "note": "keep me"},
+                {"apiToken": "hunter2"},
+            ],
+            "auth_token": "hunter2",
+        },
+    }
+    result = scrub(nested)
+    assert result["tool_input"]["headers"][0]["Authorization"] == "[scrubbed]"
+    assert result["tool_input"]["headers"][0]["note"] == "keep me"
+    assert result["tool_input"]["headers"][1]["apiToken"] == "[scrubbed]"
+    assert result["tool_input"]["auth_token"] == "[scrubbed]"
 
 
 @pytest.mark.os_agnostic
