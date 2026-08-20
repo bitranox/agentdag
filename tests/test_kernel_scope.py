@@ -31,13 +31,6 @@ from agentdag.composition.kernel import manager_state_is_live
 
 _SLEEP_ARGV = [sys.executable, "-c", "import time; time.sleep(30)"]
 _FAIL_ARGV = [sys.executable, "-c", "import sys; print('boom: bad argv', file=sys.stderr); sys.exit(3)"]
-_IGNORE_SIGTERM_ARGV = [
-    sys.executable,
-    "-c",
-    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
-]
-"""Ignores SIGTERM so ``NoScope.kill`` must escalate to SIGKILL (a real process cannot
-ignore that one) - the only way to reach its ``Popen.wait`` call at all."""
 _SPAWNS_A_CHILD_ARGV = [
     sys.executable,
     "-c",
@@ -149,35 +142,45 @@ def test_noscope_confirm_reports_the_captured_stderr_for_an_early_failure(tmp_pa
 
 
 @pytest.mark.os_agnostic
-def test_noscope_kill_returns_false_when_the_process_outlives_sigkill(tmp_path: Path) -> None:
+def test_noscope_kill_returns_false_when_the_process_outlives_the_final_signal(tmp_path: Path) -> None:
     """``kill`` catches ``Popen.wait``'s ``TimeoutExpired`` and returns ``False`` (fix round 1).
 
-    A real process cannot outlive a genuine SIGKILL, so this proves the EXCEPTION-HANDLING
-    contract, not a truly unkillable process: the SIGKILL is sent for real (the process
-    really dies), but ``Popen.wait`` is patched on this ONE instance - a true external edge
-    (subprocess reaping is a kernel-timing detail this test cannot otherwise force) - to
-    raise ``TimeoutExpired`` regardless, simulating "still not reaped within the grace
-    window" deterministically. Before the fix, that exception propagated uncaught instead
-    of ``kill`` returning its documented ``bool``.
+    A real process cannot outlive a genuine ``SIGKILL`` (nor a ``TerminateProcess``), so this
+    proves the EXCEPTION-HANDLING contract, not a truly unkillable process. The signals are
+    sent for real against a real child, and two methods are patched on this ONE instance - a
+    true external edge, because subprocess reaping is kernel timing no test can otherwise
+    force: ``poll`` reports "still running" so ``kill`` cannot take its early exits, and
+    ``wait`` raises ``TimeoutExpired`` so it reaches the branch under test. Patching both is
+    what makes this deterministic on EVERY platform: it used to lean on a child that ignores
+    ``SIGTERM``, which Windows has no equivalent for - ``terminate()`` there is
+    ``TerminateProcess`` and cannot be ignored, so the child died inside the grace window and
+    ``kill`` returned ``True`` long before the branch this test is named for. Before the fix,
+    the exception propagated uncaught instead of ``kill`` returning its documented ``bool``.
     """
     scope = NoScope()
-    handle = scope.start(unit="agentdag-noscope-outlives-sigkill", argv=_IGNORE_SIGTERM_ARGV, env={}, cwd=tmp_path)
+    handle = scope.start(unit="agentdag-noscope-outlives-signal", argv=_SLEEP_ARGV, env={}, cwd=tmp_path)
     time.sleep(_START_GRACE_S)
     # White-box: NoScope exposes no public accessor for the Popen it tracks, and forcing
-    # kill()'s TimeoutExpired branch needs the REAL object to patch .wait on (see below) -
+    # kill()'s TimeoutExpired branch needs the REAL object to patch on (see above) -
     # remove this ignore if a public accessor is ever added for another reason.
     proc = scope._processes[handle.unit]  # pyright: ignore[reportPrivateUsage]
-    real_wait = proc.wait
+    real_poll, real_wait = proc.poll, proc.wait
+
+    def _still_running() -> int | None:
+        return None
 
     def _wait_still_expired(timeout: float | None = None) -> int:
-        raise subprocess.TimeoutExpired(cmd=_IGNORE_SIGTERM_ARGV, timeout=timeout or 0.0)
+        raise subprocess.TimeoutExpired(cmd=_SLEEP_ARGV, timeout=timeout or 0.0)
 
+    proc.poll = _still_running  # type: ignore[method-assign]
     proc.wait = _wait_still_expired  # type: ignore[method-assign]
     try:
         assert scope.kill(handle) is False
     finally:
-        proc.wait = real_wait  # type: ignore[method-assign]
+        proc.poll, proc.wait = real_poll, real_wait  # type: ignore[method-assign]
         real_wait()  # actually reap the (genuinely dead) process so no zombie is left behind
+
+    assert not _pid_exists(handle.pid)  # the signals really were delivered, patches aside
 
 
 @pytest.mark.parametrize(
@@ -238,7 +241,33 @@ def test_systemdscope_confirm_reports_the_captured_stderr_for_an_early_failure(t
 
 
 def _pid_exists(pid: int) -> bool:
-    """Return whether a process with ``pid`` currently exists (POSIX liveness probe)."""
+    """Return whether a process with ``pid`` currently exists, on either platform.
+
+    Out-of-band on purpose: the adapter's own ``is_alive`` reads its ``Popen``, so a test
+    that only asked the adapter could not tell "the OS process is gone" from "the object
+    thinks so". The probe differs per platform, and neither form works on the other:
+
+    * POSIX: signal 0 exists precisely to ask this question without delivering anything.
+    * Windows: there is no signal 0. ``os.kill(pid, 0)`` there calls ``TerminateProcess``
+      on the handle, which would KILL a live process instead of reporting on it, and it
+      succeeds for a process that has already exited while any handle to it is still open
+      (``Popen`` holds one), so it answers "alive" for a dead pid. The liveness question is
+      asked the way the lock adapter asks it in production instead - ``tasklist``, which
+      lists running processes only.
+    """
+    if sys.platform == "win32":
+        # Suppressions below: a resolved executable and a fixed argument list, never a shell
+        # string - the same call the lock adapter makes in production.
+        listed = subprocess.run(  # nosec B603  # noqa: S603
+            [shutil.which("tasklist") or "tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+        return f'"{pid}"' in listed.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -12,7 +12,7 @@ dependencies = [
     "btx_lib_mail>=1.5.2",
     "pydantic>=2.13.4",
     "orjson>=3.12.0",
-    "claude-agent-sdk>=0.2.139",
+    "claude-agent-sdk>=0.2.142",
     "filelock>=3.32.3",
     "pyyaml>=6.0.3",
 ]
@@ -69,7 +69,7 @@ dev = [
   "textual>=8.2.8",
   "import-linter>=2.13",
   "rtoml>=0.13.0",
-  "httpx2>=2.10.0",
+  "httpx2>=2.12.0",
   # Transitive CVE pins
   "click>=8.4.2",                # CVE-2026-7246
   "jaraco-context>=6.1.2",       # CVE-2025-23949
