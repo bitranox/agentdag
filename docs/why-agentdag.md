@@ -20,7 +20,7 @@ more than the accumulated answer to these limits.
 |------------------------------|---------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full                              | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle     |
 | Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up                                | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
-| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                                                          | anything that must outlive a step is written down, or it did not happen                                                                                    |
+| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that remembers none of the last one                                                | anything that must outlive a step is written down, or it did not happen                                                                                    |
 | Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                              | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
 | Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                                      | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
 | Cost of one question         | two minutes of work costs two minutes                                                                         | a large fixed cost before any work: tens of thousands of tokens for the first node, about a tenth of that for each one after it that shares its brief | give a node enough work to be worth starting, and keep the brief identical across a fan-out so the prefix stays cached                                     |
@@ -202,22 +202,80 @@ it would prevent.
 
 So the question is not how to arrange the meeting better. It is what you build if you never hold one.
 
-## 4. Accessible is not loaded
+## 4. Capability is loaded, a corpus is retrieved
 
-The resolution is one distinction. Knowledge available to every node, without restriction, is the
-genuine advantage a model team has over a human one. But available means retrievable, not delivered.
-A node gets three things: its task, the slice it certainly needs, and a path to everything else.
-Today the first two are wired and the third is a field on the node spec that nothing reads; a node's
-reach is its own tools over its own tree.
+The resolution is one distinction, and the phrase "give every agent everything" is what hides it. Two
+different things travel under it. One is standing capability: the settings, tools, skills, hooks,
+accumulated memory and instruction cascade an operator's own session runs with. The other is bulk
+content: a repository, a corpus, the twenty documents somebody might need to read. They behave in
+opposite ways, so the design answers them separately.
 
-This is not a novel idea so much as one already implemented three times over in the surrounding
-tooling: a skill is an index line with its body fetched on demand; a stored fact is a pointer with
-its body fetched on demand; a semantic index sits above both. agentdag inherits the same principle
-rather than inventing another.
+**A node gets the operator's whole environment.** Settings, tools, skills, self-learning memory,
+hooks, the CLAUDE.md cascade: the same set the operator's own session carries, because that set IS
+the capability. The skills are how a task gets done properly rather than plausibly, and the memory is
+the accumulated record of which traps this machine has already fallen into. A node without them is not
+a leaner agent, it is a worse one doing the same work, rediscovering by hand what the store already
+knows. There is no version of "as capable as the operator" that withholds what makes the operator
+capable.
 
-The practical form of it is that the coordinator never gathers results as text. A node writes what it
-produced to disk and returns a typed record naming it. The next node that needs the content reads the
-file. Nothing accumulates in a single growing context just because it passed through.
+**The cost objection is weaker than it looks, and caching is why.** Loading the cascade is not cheap:
+in the probe that measured it, the arm loading the full operator set sent 38,790 input tokens of
+startup against 170 for an arm with no settings and no tools, and it is the ratio between the arms
+that carries rather than either end. But that price is paid once. The cascade is an identical prefix
+on every node in a run, the same text in the same order with nothing per-node in it, so the first node
+pays it in full and every node after it sends the same COUNT and reads almost all of it back from
+cache at roughly a tenth of the price. Sixteen nodes at 38,790 apiece is a run carrying over 620,000
+tokens of startup, which is true as a token count and largely fictional as a bill. It still binds a
+budget cap, which counts tokens and cannot see the discount. It barely touches what the run costs.
+
+That last step is an inference, and worth flagging as one. The caching measured here was two
+dispatches with no cascade loaded at all, where the second read 26,159 of its 26,161 input tokens back
+from cache. A cascade is prefix text of exactly the kind that match is over, so it should cache the
+same way, but nobody has watched it do so. If the inference is wrong the trade collapses, which makes
+it the first thing to measure once a node loads a cascade at all.
+
+**A corpus is still retrieved, never delivered.** Standing capability is small, identical across nodes
+and cacheable. A body of work content is none of the three: every node needs a different slice, so
+none of it caches, and handing a node twenty documents it might need is the reliable way to make it
+wander, by constraint one. So the mechanism for bulk knowledge stays what it was. A node gets its
+task, the slice it certainly needs, and a path to everything else, and it fetches what its brief
+names. This is not a novel idea so much as one already implemented three times over in the surrounding
+tooling: a skill is an index line with its body fetched on demand; a stored fact is a pointer with its
+body fetched on demand; a semantic index sits above both. It is also why loading the whole environment
+is not the thing section 2 warns against: that environment is mostly index lines, and the bodies
+behind them stay on disk until something asks for one.
+
+Four things have to hold for a node to run under the operator's environment, and none of them is
+optional.
+
+**The resolved cascade is part of what identifies a call.** Its hash joins the journal key, or replay
+stops being replay: the same brief under a memory store that has since grown would be served from the
+journal as though nothing had changed. The key already counts the knowledge grant among its identity
+fields and carries a format version for exactly this kind of addition.
+
+**Hooks split by lifecycle.** PreToolUse and PostToolUse are the ones worth inheriting, because they
+are the operator's own guard rails on individual tool calls. SessionStart and Stop must not load: a
+Stop hook written for an interactive session expects a person to answer it, and a headless node that
+meets one hangs instead of finishing.
+
+**Memory is read by every node and written by one.** N nodes writing the store at once is the
+several-hands-one-whiteboard failure from section 3, reproduced in the one place whose entire value is
+that it accumulates. Reads are free and parallel; writes go through a single node, which is section
+6's one-writer rule applied to the store rather than to the tree.
+
+**The executor's own isolation hooks bind on top, not instead.** Denying a write outside the isolation
+root and denying a listed Bash command are what make a node containable at all, and they are the
+executor's guarantee rather than the operator's preference. An inherited hook set adds to them and
+must not be able to replace them.
+
+None of that is shipped. Both executors ask for no setting sources today, so what a node actually gets
+is its brief and its tools, and the knowledge grant is a field on the node spec that nothing resolves
+into content. The four requirements are conditions on the change rather than descriptions of it.
+
+The practical form of the distinction is that the coordinator never gathers results as text. A node
+writes what it produced to disk and returns a typed record naming it. The next node that needs the
+content reads the file. Nothing accumulates in a single growing context just because it passed
+through.
 
 ## 5. What falls out is a DAG scheduler
 
@@ -243,9 +301,14 @@ sets, and the isolation scan deliberately excuses a write into any declared regi
 sibling's. It is a discipline the shipped graph keeps, not a mechanism it is held to.
 
 Where branches do share something mutable, either order them at plan time or serialise at the
-resource itself, which is what the test gate does with a host-wide file lock. What is not available
-is a lock built out of messages to a running agent: by constraint three a message arrives only at
-its next tool call, so it cannot be relied on to land before the write it would prevent.
+resource itself rather than around everything that touches it. The test gate is the case in point:
+the build environment every gate shares is guarded by the build tool that owns it, held shared for as
+long as a gate is running and taken exclusively only while it is being upgraded, so gates run
+concurrently and only the upgrade ever waits. A lock around the gate instead is strictly blunter: it
+serialises whole test runs to protect a resource that already guards itself, and the concurrency
+setting then bounds the agent nodes and not the gates. What is not available is a lock built out of
+messages to a running agent: by constraint three a message arrives only at its next tool call, so it
+cannot be relied on to land before the write it would prevent.
 
 **Misclassify in the safe direction.** Running a parallel task serially is merely slow. Running a
 serial task in parallel is destructive: divergent decisions, wasted dispatches, work that has to be

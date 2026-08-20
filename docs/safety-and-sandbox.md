@@ -70,9 +70,10 @@ stops a recycled process id from looking like the original holder. Releasing is 
 file still names the releasing process, so a lock someone else has since taken is never released by
 the wrong owner.
 
-Shared resources outside the run directory are handled at the resource. The test gate takes one
-host-wide lock for every run in the system, because the build tool environment is shared across the
-whole machine and two gates would rebuild it under each other.
+Shared resources outside the run directory are handled at the resource, not the coordinator. The
+test gate is the example: bmk (>= 3.17.0) holds its own lock around its shared tool environment for
+as long as it runs, taken exclusively only while upgrading that environment, so gates from different
+runs wait on each other for the provisioning rather than for the whole gate.
 
 ## 5. Teardown: what a cancel can actually reap
 

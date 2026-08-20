@@ -92,11 +92,17 @@ class Escalation(BaseModel):
 
 
 class Thresholds(BaseModel):
-    """The three named thresholds of design 3.5, as policy-table data, not code constants."""
+    """The three named thresholds of design 3.5, as policy-table data, not code constants.
+
+    ``min_node_minutes`` is a FRACTION of a minute, hence ``float``: it is the per-dispatch
+    startup cost divided by the acceptable overhead fraction and by throughput, and those
+    measured inputs put it well under one minute, so a whole-minute type cannot express it.
+    The other three count whole things (nodes, lines, handovers) and stay ``int``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    min_node_minutes: int
+    min_node_minutes: float
     reduce_tree_fanin: int
     journal_max_lines: int
     max_continuations: int

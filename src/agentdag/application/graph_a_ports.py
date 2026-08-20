@@ -72,7 +72,7 @@ class GatePort(Protocol):
     """The mechanical verification step: something the agent cannot talk its way past."""
 
     def run(self, worktree: Path, log: Path) -> int:
-        """Run the gate under the host-wide lock; return its exit code."""
+        """Run the gate; return its exit code."""
         ...
 
 

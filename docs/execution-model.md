@@ -228,14 +228,17 @@ workflow author handing two branches the same declared path. This is the general
 coordinator's properties today: conventions where a durable-execution platform would have
 mechanisms.
 
-Serialisation for a shared resource is done at the resource, not by the scheduler. The test gate is
-the example: every gate run in the system takes one host-wide lock, because the build tool
-environment is shared across the machine and two gates would rebuild it under each other. So the
-parallel setting bounds agent nodes, not gates.
+Serialisation for a shared resource is bmk's job now, not the scheduler's. The test gate is the
+example: bmk (>= 3.17.0) holds its own lock around its shared tool environment for as long as it
+runs, and takes that lock exclusively only while upgrading the environment, so two gates that both
+need it provisioned wait on each other for the provisioning, not for the whole gate. The kernel
+itself does not serialise gate runs, so the parallel setting bounds gate runs the same way it bounds
+the agent nodes in the same branch.
 
 **Not yet:** a general resource registry. Node specifications can already declare what they require
 and the policy table can already describe resources with capacities and probes, but nothing consumes
-either yet. One lock, enforced directly, is what exists.
+either yet, and the gate no longer enforces a lock of its own either: what protects its shared
+environment now lives inside bmk.
 
 ## 10. The run lifecycle
 

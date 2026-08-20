@@ -78,7 +78,15 @@ loads:
 | the full operator set  | 38,790             |
 
 The 170 arm is a bare child with no tools; no working node comes near it. What the arms establish is
-the RATIO between them, which is why the executor asks for no setting sources.
+the RATIO between them.
+
+**Does not establish** what a cascade costs a RUN. These are three first dispatches, and a cascade is
+an identical prefix on every node after the first, so the per-node price and the per-run price come
+apart. "A later node in the same run reads its startup from cache" above measures a second dispatch
+reading 26,159 of 26,161 input tokens from cache; if a cascade caches the same way, a 16-node run
+sends 16 x 38,790 and pays a small fraction of it. Nobody has measured a cached cascade, so that is
+an inference, and the figure binds a token cap either way, since a cap counts tokens and cannot see
+the discount.
 
 ### A dispatch was stopped mid-tool in under a tenth of a second, once
 
@@ -178,18 +186,18 @@ Kept deliberately. Each of these was written down as fact, by someone who had a 
 wrong. The pattern is worth more than the individual entries: every one failed in the direction of
 claiming more mechanism, more enforcement, or more generality than existed.
 
-| Was believed                                                                     | What is true                                                                               | How it surfaced                         |
-|----------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|-----------------------------------------|
-| The sandbox port ships, declaring its guarantees on every record                 | No sandbox exists on the default branch, and no record carries an isolation field          | A checker read the branch               |
-| A dispatch costs tens of thousands of tokens, because of the instruction cascade | A cascade-free dispatch still costs tens of thousands; the cascade is what varies          | A probe was read properly               |
-| A dispatch costs about 170 tokens                                                | That is a bare child with no tools; no working node is that cheap                          | The first correction over-corrected     |
-| Everything downstream reads the map manifest                                     | Nothing reads it; the shipped graph folds branch records in memory                         | A checker grepped for a reader          |
-| A running agent cannot be interrupted                                            | It cannot be PREEMPTED by a message; the client holding it can stop it mid-tool            | The interrupt probe                     |
-| Verification is never another agent                                              | Self-assessment is what fails; an independent judge is a designed mechanism                | Read against the plans                  |
-| There is no runtime lock to reach for                                            | Every gate takes a host-wide file lock for exactly that purpose                            | A checker read the gate                 |
-| The state file and the crash window are how a resume recognises a crash          | Nothing reads either; the next launch simply finds no result for a key                     | A checker grepped for consumers         |
-| An effect either has not happened or is marked                                   | There is a third state: performed but unmarked, which is the whole reason for the re-check | A checker read the two non-atomic steps |
-| The parent accumulates its subagents' work                                       | It accumulates one summary per dispatch; the work never enters its context                 | The documentation said so               |
+| Was believed                                                                     | What is true                                                                                                                                                             | How it surfaced                                                             |
+|----------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|
+| The sandbox port ships, declaring its guarantees on every record                 | No sandbox exists on the default branch, and no record carries an isolation field                                                                                        | A checker read the branch                                                   |
+| A dispatch costs tens of thousands of tokens, because of the instruction cascade | A cascade-free dispatch still costs tens of thousands; the cascade is what varies                                                                                        | A probe was read properly                                                   |
+| A dispatch costs about 170 tokens                                                | That is a bare child with no tools; no working node is that cheap                                                                                                        | The first correction over-corrected                                         |
+| Everything downstream reads the map manifest                                     | Nothing reads it; the shipped graph folds branch records in memory                                                                                                       | A checker grepped for a reader                                              |
+| A running agent cannot be interrupted                                            | It cannot be PREEMPTED by a message; the client holding it can stop it mid-tool                                                                                          | The interrupt probe                                                         |
+| Verification is never another agent                                              | Self-assessment is what fails; an independent judge is a designed mechanism                                                                                              | Read against the plans                                                      |
+| There is no runtime lock to reach for                                            | The gate held a host-wide file lock for exactly that purpose; bmk (>= 3.17.0) now guards its own shared tool environment instead, and the gate serialises nothing itself | A checker read the gate, then a later refactor moved the guarantee into bmk |
+| The state file and the crash window are how a resume recognises a crash          | Nothing reads either; the next launch simply finds no result for a key                                                                                                   | A checker grepped for consumers                                             |
+| An effect either has not happened or is marked                                   | There is a third state: performed but unmarked, which is the whole reason for the re-check                                                                               | A checker read the two non-atomic steps                                     |
+| The parent accumulates its subagents' work                                       | It accumulates one summary per dispatch; the work never enters its context                                                                                               | The documentation said so                                                   |
 
 ---
 

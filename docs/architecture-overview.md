@@ -110,7 +110,7 @@ it also gets, and only this, is agentdag's own two hooks, a turn ceiling, a priv
 directory holding its own credential, and an environment allowlist: the machinery that bounds it,
 never content.
 
-That "nothing else" is deliberate and it is stronger than it sounds. See section 11.
+That "nothing else" is stronger than it sounds, and what it costs is section 11.
 
 ## 3. How information passes between nodes
 
@@ -269,16 +269,20 @@ cascade, not your skills, not your plugins. The executor asks for no setting sou
 the node its own configuration directory and a true environment allowlist, blanking everything else
 rather than omitting it.
 
-That is deliberate on two counts. It is the "accessible is not loaded" rule made concrete: a node is
-told what to do by its brief, and pulls what it needs rather than starting under everything the
-operator happens to have installed. And it is a cost decision, because loading a full operator plugin
-set into every dispatch multiplies what each node pays before it does anything.
+The hooks a node runs are agentdag's own, enforcing its isolation root and its command denylist.
 
-What a node gets instead of your hooks is agentdag's own, enforcing its isolation root and its
-command denylist.
+**Not yet:** the operator's own environment as the node's standing capability. The settings, tools,
+skills, self-learning memory, tool-call hooks and CLAUDE.md cascade a session carries are what make
+that session capable, so a node without them does the same work worse rather than leaner. The cost
+objection is weaker than it looks: that cascade is an identical prefix on every node in a run, so the
+first node pays for it and every node after it reads almost all of it back from cache at roughly a
+tenth of the price. Four conditions come with it and none is optional: session-lifecycle hooks stay
+out, the memory store is read by every node and written by one, the resolved cascade joins the
+dispatch key, and the executor's own two hooks bind on top of anything inherited rather than instead
+of it.
 
-**Not yet:** the retrieval half of the same rule, as knowledge grants naming which datasets a node may
-reach, which waits on work in the semantic index that has not shipped. And the self-improve and
+**Not yet:** the retrieval path for bulk knowledge, as knowledge grants naming which datasets a node
+may reach, which waits on work in the semantic index that has not shipped. And the self-improve and
 memory-consolidation loop expressed as a graph of its own, which today runs as a subagent fan-out and
 already demonstrates what a coordinator would fix about it: a parallel writer clobbering a sibling's
 target, no journal, no resume, no cap.

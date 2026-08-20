@@ -174,15 +174,18 @@ escalation:
 # the drift signal every run logs for it and what "off" reads as.
 thresholds:
   # break-even node size below which a node's own dispatch overhead dominates its work (3.4, 3.5).
-  # The 10-minute default predates this deployment's own measurement: the S0 probe
-  # (probes/s0-dispatch-cost.md) found an ISOLATED SDK child at setting_sources=[] pays only 170
-  # first-turn input tokens, not the ~60k measured on in-session subagents that load the whole
-  # CLAUDE.md and plugin cascade - roughly an order of magnitude lower. That does not by itself
-  # replace this default: the 170-token figure needs a throughput (tokens/minute per row) to turn
-  # into a minutes floor, and no such throughput has been measured, so the ~1.1-minute figure that
-  # arithmetic implies rests on an ASSUMED throughput and is not adopted as data here. The default
-  # stands until a measured per-row throughput exists (design 3.5).
-  min_node_minutes: 10
+  # Derived as startup / f / throughput from three inputs: a per-dispatch startup of ~26,034
+  # first-turn input tokens, an acceptable overhead fraction f of 0.10 (the point 3.5 calls "no
+  # room left to split"), and a throughput of 448,012 to 750,636 tokens/minute. Startup and
+  # throughput are MEASURED over six work nodes (probes/m2-kernel.md); the band that follows is
+  # 0.35 to 0.58 minutes and this is its median. Full derivation, with a provenance tier per
+  # input and the two sensitivities: min-node-minutes-derivation.md.
+  # Equivalently ~260,000 total tokens, which is the steadier statement of the same floor - a
+  # dispatch's token count does not move with cache state, its wall-clock minutes do.
+  # Startup scales with the brief and the enabled tool set, so a change to either moves this
+  # floor in direct proportion and it must be re-derived from one measurement of the new
+  # configuration, never by adding probes together.
+  min_node_minutes: 0.5
   # fan-in ceiling for a reduce/synth tree before a node's citation coverage degrades (3.4, 3.5).
   reduce_tree_fanin: 12
   # journal line count that is a SIGNAL, not a trigger, until real runs exist to measure against

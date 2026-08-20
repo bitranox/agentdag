@@ -3,8 +3,8 @@
 The coordinator is a deterministic program, not a compiled graph object: it calls the
 ports as ordinary functions and branches ONLY on typed records, never on prose an agent
 produced. The map step is the parallel part (one branch per repository, bounded by a
-semaphore); the gate inside it is serialised by the gate adapter's own lock because the
-shared tool environment is host-wide.
+semaphore); the gate inside it is bounded by that same semaphore, the same as every
+other step in the branch.
 
 This is the M1 baseline and it deliberately LACKS the properties later milestones add:
 no journal, so a crash mid-run cannot be resumed; no token cap; no unattended approve.
@@ -221,7 +221,7 @@ async def run_graph(
                 head = await asyncio.to_thread(git.head_sha, worktree)
                 row = Tally(repo=origin, status="work-failed", head_sha=head, test_rc=None, work=result)
             else:
-                # g_test@i, serialised against every other branch by the gate's own lock
+                # g_test@i, bounded by the outer semaphore like every other step in this branch
                 rc = await asyncio.to_thread(gate.run, worktree, store.log(f"{name}.test.log"))
                 # read AFTER the gate, so the sha staged for the push is the one the gate saw
                 head = await asyncio.to_thread(git.head_sha, worktree)
