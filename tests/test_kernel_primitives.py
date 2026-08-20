@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,15 +22,23 @@ from agentdag.adapters.graph_a.git_cli import GitCli
 from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
+from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
+from agentdag.application.kernel.approve import (
+    DEADLINE_REASON,
+    SYSTEM_IDENTITY,
+    TIMER_TOKEN_ID,
+    DeadlineOutcome,
+    apply_due_default,
+)
 from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.summary import append_run_summary
 from agentdag.domain.graph_a import PushIntent
-from agentdag.domain.journal import RunSummaryLine
-from agentdag.domain.kernel_errors import RunRefused, SpecRejected, Suspended
+from agentdag.domain.journal import ApproveDecisionLine, RunSummaryLine
+from agentdag.domain.kernel_errors import LockHeld, RunRefused, SpecRejected, Suspended
 from agentdag.domain.keys import content_hash, hash8
 from agentdag.domain.models import (
     ApproveOption,
@@ -42,6 +51,8 @@ from agentdag.domain.models import (
     NodeSpec,
     NodeStatus,
     ResultRecord,
+    RunState,
+    RunStatus,
 )
 
 if TYPE_CHECKING:
@@ -338,10 +349,16 @@ def approved(
     p: ApprovePayload,
     *,
     verdict: str = "approve",
+    by: str = "me",
     token_id: str = "local",  # noqa: S107 - a token IDENTITY, not a secret
 ) -> Decision:
-    """Build a decision bound to ``p``: the pair (node id, payload hash) IS its identity."""
-    return Decision(node_id=node_id, decision=verdict, by="me", token_id=token_id, payload_hash=payload_hash_of(p))
+    """Build a decision bound to ``p``: the pair (node id, payload hash) IS its identity.
+
+    ``by`` is the decider's IDENTITY and ``token_id`` the agent that applied it; a
+    decision the SYSTEM applied carries the reserved identity, which is what the run
+    summary reads to tell an unattended default from a human answer.
+    """
+    return Decision(node_id=node_id, decision=verdict, by=by, token_id=token_id, payload_hash=payload_hash_of(p))
 
 
 @pytest.mark.os_agnostic
@@ -472,9 +489,11 @@ def test_human_interactions_counts_decisions_not_nodes(tmp_path: Path) -> None:
 @pytest.mark.os_agnostic
 def test_a_system_decision_is_not_a_human_interaction(tmp_path: Path) -> None:
     # The control for the test above: it must be able to report a number OTHER than the
-    # decision count, or "counts decisions" is not what it proves.
+    # decision count, or "counts decisions" is not what it proves. Built the way the
+    # deadline owner actually builds one (Task 22) - the reserved `by` identity, and a
+    # `token_id` naming the agent that applied it - rather than a hand-written sentinel.
     co, rd = coordinator(tmp_path)
-    rd.write_decision(approved("a", payload(), token_id="system"))
+    rd.write_decision(approved("a", payload(), by=SYSTEM_IDENTITY, token_id=TIMER_TOKEN_ID))
     co.fold_decisions()
 
     append_run_summary(co, replay_seconds=None)
@@ -520,3 +539,273 @@ def test_fold_decisions_skips_an_already_folded_pair_by_filename_before_parsing_
 
     result = asyncio.run(co3.approve(code("a", Kind.APPROVE), payload=payload()))
     assert result.decision == "approve"
+
+
+# ---------------------------------------------------------------------------------
+# Task 22: the approve deadline's owner. A suspended run's coordinator has EXITED, so
+# the default at decide_by is applied by a later, separate pass (agentdag run
+# apply-deadlines, driven by the user timer under deploy/). The property that must not
+# be got wrong is the RACE: a human decision and this pass arriving for the SAME (node,
+# payload hash) - exactly one wins, the loser is REFUSED, and the journal says which.
+# ---------------------------------------------------------------------------------
+
+
+class FixedClock:
+    """A :class:`~agentdag.application.kernel.ports.Clock` pinned to one instant.
+
+    The deadline pass reads a clock for exactly one question - has the payload's own
+    ``decide_by`` passed - so pinning it is how a test asks that question both ways
+    without waiting a day for the shipped 24-hour default.
+    """
+
+    def __init__(self, now: datetime) -> None:
+        """Bind the instant every :meth:`now` call returns."""
+        self._now = now
+
+    def now(self) -> datetime:
+        """Return the pinned instant."""
+        return self._now
+
+
+_DECIDE_BY = datetime(2026, 8, 18, 9, 0, 0, tzinfo=timezone.utc)
+"""The instant ``payload()`` above puts in its ``decide_by`` field, as a datetime."""
+
+_BEFORE = _DECIDE_BY - timedelta(seconds=1)
+_AFTER = _DECIDE_BY + timedelta(seconds=1)
+
+
+def publish_payload(rd: FsRunDir, p: ApprovePayload) -> str:
+    """Write ``p`` where a suspended run's coordinator would have, and return its content hash.
+
+    Byte-identical to what ``Coordinator.approve``'s suspend path writes (the same
+    ``model_dump_json(indent=1)`` at the same content-addressed path), so a test can set
+    up a payload the coordinator itself would REFUSE to offer - an external-effect
+    default - and still have the deadline pass find exactly the shape it reads on disk.
+    """
+    text = p.model_dump_json(indent=1)
+    digest = content_hash(text)
+    rd.write_atomic(f"nodes/{p.node_id}/{hash8(digest)}/payload.json", text)
+    return digest
+
+
+def suspended_on(
+    rd: FsRunDir, payload_hash: str, *, node_id: str = "a", status: RunStatus = RunStatus.SUSPENDED
+) -> None:
+    """Write the ``state.json`` a run suspended on ``(node_id, payload_hash)`` carries.
+
+    ``status`` is a parameter because one negative test needs a state file that is NOT
+    suspended while still naming a cursor and a payload hash - the only shape in which
+    the status check is the single thing standing between the pass and applying a
+    default, so a single mutation of that check can actually be seen.
+    """
+    rd.write_state(
+        RunState(
+            run_id="r1",
+            workflow="t",
+            args={},
+            owner="tester",
+            status=status,
+            cursor=node_id,
+            cursor_payload_hash=payload_hash,
+            policy_version="sha256:test",
+        )
+    )
+
+
+def apply_default(rd: FsRunDir, *, now: datetime) -> DeadlineOutcome:
+    """Run one deadline pass over ``rd`` with the REAL lock adapter and a pinned clock."""
+    return apply_due_default(rd, lock=FileRunLock(), clock=FixedClock(now), holder=current_holder())
+
+
+@pytest.mark.os_agnostic
+def test_the_default_is_applied_once_decide_by_has_passed_and_folds_as_a_system_decision(tmp_path: Path) -> None:
+    """The positive control for every refusal below, driven through the real suspend path."""
+    co, rd = coordinator(tmp_path)
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload()))
+    suspended_on(rd, payload_hash_of(payload()))
+
+    outcome = apply_default(rd, now=_AFTER)
+
+    assert outcome.applied is True
+    assert outcome.decision == "hold"  # the payload's own default, never a second guess
+    assert outcome.node_id == "a"
+    assert outcome.reason == ""
+    written = rd.read_decision("a", payload_hash_of(payload()))
+    assert written is not None
+    assert (written.decision, written.by, written.token_id, written.reason) == (
+        "hold",
+        SYSTEM_IDENTITY,
+        TIMER_TOKEN_ID,
+        DEADLINE_REASON,
+    )
+
+    co2, _ = coordinator(tmp_path, rd=rd)
+    co2.fold_decisions()
+    folded = [line for line in co2.dispatcher.journal.lines() if isinstance(line, ApproveDecisionLine)]
+
+    assert len(folded) == 1
+    assert (folded[0].by, folded[0].reason, folded[0].decision) == (SYSTEM_IDENTITY, DEADLINE_REASON, "hold")
+    assert asyncio.run(co2.approve(code("a", Kind.APPROVE), payload=payload())).decision == "hold"
+
+
+@pytest.mark.os_agnostic
+def test_a_default_applied_by_the_deadline_owner_is_not_a_human_interaction(tmp_path: Path) -> None:
+    """The run summary counts people, so it must read the decision's IDENTITY, not its token id.
+
+    The deadline owner's ``token_id`` names the TIMER (so a journal reader can tell which
+    system applied a default), which is exactly why the count cannot be keyed on that
+    field - this is the test that binds the two modules' choice of sentinel together.
+    """
+    co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+    assert apply_default(rd, now=_AFTER).applied is True
+    co.fold_decisions()
+
+    append_run_summary(co, replay_seconds=None)
+
+    summary = co.dispatcher.journal.lines()[-1]
+    assert isinstance(summary, RunSummaryLine)
+    assert summary.human_interactions == 0
+
+
+@pytest.mark.os_agnostic
+def test_a_human_decision_already_recorded_refuses_the_deadline_default(tmp_path: Path) -> None:
+    """The race, human first: the pass loses on the decision file's atomic link, and says so."""
+    co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+    rd.write_decision(approved("a", payload(), verdict="approve"))
+
+    outcome = apply_default(rd, now=_AFTER)
+
+    assert outcome.applied is False
+    assert "already has a decision" in outcome.reason
+    assert outcome.awaiting_decision is True
+    standing = rd.read_decision("a", digest)
+    assert standing is not None
+    assert (standing.decision, standing.by) == ("approve", "me")  # the human's answer stands untouched
+    co.fold_decisions()
+    folded = [line for line in co.dispatcher.journal.lines() if isinstance(line, ApproveDecisionLine)]
+    assert len(folded) == 1  # exactly one decision was recorded for this payload, not two
+
+
+@pytest.mark.os_agnostic
+def test_a_human_answering_after_the_deadline_default_is_refused_write_once(tmp_path: Path) -> None:
+    """The race the other way round: the same one-winner rule, whoever gets there first."""
+    co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+    assert apply_default(rd, now=_AFTER).applied is True
+
+    with pytest.raises(FileExistsError):
+        rd.write_decision(approved("a", payload(), verdict="approve"))
+
+    standing = rd.read_decision("a", digest)
+    assert standing is not None
+    assert (standing.decision, standing.by) == ("hold", SYSTEM_IDENTITY)
+    co.fold_decisions()
+    assert len([line for line in co.dispatcher.journal.lines() if isinstance(line, ApproveDecisionLine)]) == 1
+
+
+@pytest.mark.os_agnostic
+def test_no_default_is_applied_before_the_payloads_own_decide_by(tmp_path: Path) -> None:
+    """One second short of the deadline is not the deadline - and the reason names when it is."""
+    _co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+
+    outcome = apply_default(rd, now=_BEFORE)
+
+    assert outcome.applied is False
+    assert "not due until" in outcome.reason
+    assert payload().decide_by in outcome.reason
+    assert rd.read_decision("a", digest) is None
+    assert rd.decision_files() == []
+
+
+@pytest.mark.os_agnostic
+def test_no_default_is_applied_while_another_process_holds_the_run_lock(tmp_path: Path) -> None:
+    """A held lock is evidence a coordinator is working this run, which is not 'unattended'."""
+    _co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+    lock = FileRunLock()
+    token = lock.acquire(rd.root, current_holder())  # this very process: genuinely alive
+
+    try:
+        with pytest.raises(LockHeld):
+            lock.acquire(rd.root, current_holder())  # control: the lock really is held
+        outcome = apply_due_default(rd, lock=lock, clock=FixedClock(_AFTER), holder=current_holder())
+    finally:
+        lock.release(token)
+
+    assert outcome.applied is False
+    assert "lock" in outcome.reason
+    assert rd.read_decision("a", digest) is None
+
+
+@pytest.mark.os_agnostic
+def test_no_default_is_applied_to_a_run_that_is_not_suspended(tmp_path: Path) -> None:
+    """A cursor without a suspend is not a question: only a SUSPENDED run is waiting on one.
+
+    The state file here names a cursor and a payload hash while reading ``running``, which
+    is a shape the kernel never writes - deliberately, so the status check is the only
+    thing between this run and an applied default rather than one of two guards that
+    would cover for each other.
+    """
+    _co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest, status=RunStatus.RUNNING)
+
+    outcome = apply_default(rd, now=_AFTER)
+
+    assert outcome.applied is False
+    assert "not suspended" in outcome.reason
+    assert outcome.awaiting_decision is False  # a periodic sweep stays quiet about these
+    assert rd.read_decision("a", digest) is None
+
+
+@pytest.mark.os_agnostic
+def test_no_default_is_applied_when_the_payload_on_disk_is_not_the_one_state_json_names(tmp_path: Path) -> None:
+    """A hand-edited payload must not talk the pass into applying a default nobody was offered."""
+    _co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload())
+    suspended_on(rd, digest)
+    tampered = payload(text="push? (edited by hand after the suspend)")
+    rd.write_atomic(f"nodes/a/{hash8(digest)}/payload.json", tampered.model_dump_json(indent=1))
+
+    outcome = apply_default(rd, now=_AFTER)
+
+    assert outcome.applied is False
+    assert "does not match state.json" in outcome.reason
+    assert rd.read_decision("a", digest) is None
+
+
+@pytest.mark.os_agnostic
+def test_no_default_is_applied_when_the_default_carries_an_external_effect(tmp_path: Path) -> None:
+    """Design 2.4's rule, checked where it cashes out: at the moment of unattended application.
+
+    ``Coordinator.approve`` refuses such a payload before it is ever written, so this
+    writes one straight to disk - the state a hand-placed file, or a rule that changed
+    after the suspend, would leave behind.
+    """
+    _co, rd = coordinator(tmp_path)
+    digest = publish_payload(rd, payload(default="approve"))
+    suspended_on(rd, digest)
+
+    outcome = apply_default(rd, now=_AFTER)
+
+    assert outcome.applied is False
+    assert "does not name a no-effect option" in outcome.reason
+    assert rd.read_decision("a", digest) is None
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_a_default_naming_no_option_at_all(tmp_path: Path) -> None:
+    """The other half of design 2.4's rule: a default that names nothing is not a default."""
+    co, _ = coordinator(tmp_path)
+
+    with pytest.raises(SpecRejected, match="no-effect option"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(default="not-an-option")))

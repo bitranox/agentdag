@@ -1,0 +1,38 @@
+# agentdag: design 3.4's approve DEADLINE OWNER.
+#
+# A suspended approve node's coordinator has EXITED, so it cannot apply the payload's
+# default at decide_by itself, and leaving that to whichever client happens to be
+# watching is not an authority. This one-shot service is the owner: it applies the
+# default of every run past its decide_by and relaunches each run it decided.
+#
+# Nothing in agentdag installs this file - installing a unit is the operator's decision.
+# Install it as the ACCOUNT THAT OWNS THE RUNS DIRECTORY, as a --user unit, never as a
+# system unit and never as root: a run directory is created owner-only (0700), and the
+# decision this writes must be written by the same account that owns the run.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/agentdag-approve-timer.service ~/.config/systemd/user/
+#   cp deploy/agentdag-approve-timer.timer   ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/agentdag-approve-timer.service   # check ExecStart
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agentdag-approve-timer.timer
+#
+# Then verify it as that user, not just that the unit loads:
+#
+#   systemctl --user start agentdag-approve-timer.service
+#   systemctl --user status agentdag-approve-timer.service   # Result=success
+#   journalctl --user -u agentdag-approve-timer.service -n 20
+#
+# ExecStart must be an ABSOLUTE path (systemd resolves no PATH lookup of its own).
+# The path below is where "uv tool install agentdag" and "pipx install agentdag" put it;
+# adjust it to wherever "command -v agentdag" reports for this account. The command reads
+# the runs directory from the account's own agentdag config (kernel.runs_dir); add
+# "--runs <DIR>" here to point it somewhere else.
+
+[Unit]
+Description=agentdag: apply the default of every approve node past its decide_by
+Documentation=https://github.com/bitranox/agentdag
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/agentdag run apply-deadlines

@@ -1,0 +1,27 @@
+# agentdag: the schedule for agentdag-approve-timer.service (design 3.4's deadline owner).
+# See that file for what it does and how to install both. Enable THIS unit, not the
+# service: the service is one-shot and the timer is what runs it.
+#
+#   systemctl --user enable --now agentdag-approve-timer.timer
+#   systemctl --user list-timers agentdag-approve-timer.timer
+#
+# The interval is the granularity of a decide_by, not a deadline of its own: a default is
+# applied on the first tick AFTER the payload's own decide_by, never before it, so
+# lengthening this only makes a default land later, and never makes one land early.
+#
+# Persistent=true so a machine that was asleep or off across a decide_by applies the
+# default on the next boot instead of skipping the tick it missed.
+
+[Unit]
+Description=agentdag: apply approve defaults past their decide_by, every 5 minutes
+Documentation=https://github.com/bitranox/agentdag
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=true
+Unit=agentdag-approve-timer.service
+
+[Install]
+WantedBy=timers.target

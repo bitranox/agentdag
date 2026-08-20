@@ -20,10 +20,11 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from ...domain.journal import ApproveDecisionLine
-from ...domain.kernel_errors import KernelError, SpecRejected, Suspended
+from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scan import diff_manifests, stray_paths
+from .approve import validate_default
 from .ports import ExecutorRequest, stamp
 
 if TYPE_CHECKING:
@@ -640,7 +641,7 @@ class Coordinator:
             Suspended: no decision is recorded yet for this (node id, payload hash);
                 the exception carries the hash, so a caller knows WHICH payload to ask about.
         """
-        _validate_default(payload)
+        validate_default(payload)
         payload_text = payload.model_dump_json(indent=1)
         payload_hash = content_hash(payload_text)
 
@@ -830,19 +831,6 @@ class Coordinator:
         """
         for row_name, charged in record.charged_tokens.items():
             self.tokens_by_row[row_name] = self.tokens_by_row.get(row_name, 0) + charged
-
-
-def _validate_default(payload: ApprovePayload) -> None:
-    """Refuse a payload whose default option is not ``effect == "none"`` (design 2.4).
-
-    Raises:
-        SpecRejected: ``payload.default`` names no option in ``payload.options``, or
-            names one whose effect is ``"external"``.
-    """
-    options_by_id = {option.id: option for option in payload.options}
-    default_option = options_by_id.get(payload.default)
-    if default_option is None or default_option.effect != "none":
-        raise SpecRejected(f"approve default {payload.default!r} does not name a no-effect option")
 
 
 def _branch_record(map_id: str, index: int, outcome: ResultRecord | BaseException) -> ResultRecord:

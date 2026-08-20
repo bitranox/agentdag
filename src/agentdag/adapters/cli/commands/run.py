@@ -1,6 +1,7 @@
 """``agentdag run``: start, inspect, resume, approve and cancel a kernel coordinator run.
 
-Six verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` added M3):
+Seven verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` and
+``apply-deadlines`` added M3):
 
 ``agentdag run start WORKFLOW [--arg key=value]... [--runs DIR] [--parallel N] [--policy FILE] [--foreground]``
     Validate WORKFLOW's arguments, mint a run id, create the run directory, and either
@@ -27,6 +28,12 @@ Six verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` added M3):
     that half to a later ``run cancel`` retry, or the startup sweep on the run's next
     relaunch attempt.
 
+``agentdag run apply-deadlines [--runs DIR] [--no-relaunch] [--foreground]``
+    Design 3.4's DEADLINE OWNER, run periodically by the user timer under ``deploy/``:
+    apply the payload default of every run suspended past its ``decide_by``, and
+    relaunch each run it decided. Sweeps every run in ``--runs``, so one run it cannot
+    act on never stops it serving the others.
+
 ``agentdag run _coordinate RUN_ID --runs DIR [--reason ...]``
     Hidden: the foreground path over an EXISTING run directory, invoked as the child
     process a background :attr:`~agentdag.application.kernel.ports.Scope` starts - never
@@ -52,7 +59,8 @@ Contents:
     * :func:`cli_run` - the ``run`` group.
     * :func:`cli_run_start`, :func:`cli_run_status`, :func:`cli_run_records`,
       :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_cancel`,
-      :func:`cli_run_coordinate` - the six verbs, plus the hidden relaunch entry point.
+      :func:`cli_run_apply_deadlines`, :func:`cli_run_coordinate` - the seven verbs,
+      plus the hidden relaunch entry point.
 """
 
 from __future__ import annotations
@@ -76,6 +84,7 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import current_holder
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
+from agentdag.application.kernel.approve import apply_due_default
 from agentdag.application.kernel.cancel import request_cancel, resolve_cancel, scope_unit, sweep_stale_scope
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
@@ -98,12 +107,14 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from agentdag.adapters.kernel.executor_claude import CredentialSource
+    from agentdag.application.kernel.approve import DeadlineOutcome
     from agentdag.application.kernel.ports import KernelWiring, Scope
     from agentdag.application.kernel.run import RunOutcome
     from agentdag.application.workflows import WorkflowDef
 
 __all__ = [
     "cli_run",
+    "cli_run_apply_deadlines",
     "cli_run_approve",
     "cli_run_cancel",
     "cli_run_coordinate",
@@ -417,6 +428,49 @@ def cli_run_approve(
     if no_relaunch:
         return
     _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason="decision", foreground=foreground)
+
+
+@click.command("apply-deadlines", context_settings=CLICK_CONTEXT_SETTINGS)
+@_RUNS_OPTION
+@option("--no-relaunch", is_flag=True, default=False, help="Record the defaults but do not relaunch the runs.")
+@_FOREGROUND_OPTION
+@click.pass_context
+def cli_run_apply_deadlines(
+    ctx: click.Context, *, runs_option: Path | None, no_relaunch: bool, foreground: bool
+) -> None:
+    """Apply the default of every run suspended past its decide_by, then relaunch each one.
+
+    Design 3.4's DEADLINE OWNER, meant to be run periodically by the user timer under
+    ``deploy/`` - never by the exited coordinator, which cannot, and never by whichever
+    client happens to be watching, which is not an authority. Safe to run at any time and
+    as often as the operator likes: a run with nothing due is left exactly as it was.
+
+    Relaunches ONLY the runs whose default this invocation actually recorded, taken from
+    what :func:`~agentdag.application.kernel.approve.apply_due_default` reported rather
+    than from a fresh "which runs are decided" query, which would also sweep up a run
+    somebody deliberately decided with ``run approve --no-relaunch``.
+
+    Raises:
+        SystemExit: :attr:`~agentdag.adapters.cli.exit_codes.ExitCode.GENERAL_ERROR` -
+            at least one relaunch failed. Every OTHER run was still served, and each
+            failed one keeps its recorded decision, so the recovery is ``run resume``.
+    """
+    config = get_cli_context(ctx).config
+    runs_dir = _resolve_runs_dir(config, runs_option)
+    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    applied = 0
+    failed_relaunches = 0
+    for run_dir in _each_run_dir(runs_dir):
+        outcome = apply_due_default(run_dir, lock=wiring.lock, clock=wiring.clock, holder=current_holder())
+        _echo_deadline_outcome(outcome)
+        if not outcome.applied:
+            continue
+        applied += 1
+        if not no_relaunch:
+            failed_relaunches += _relaunch_after_default(ctx, run_dir=run_dir, runs_dir=runs_dir, foreground=foreground)
+    safe_console.echo(f"applied {applied} default decision(s)")
+    if failed_relaunches:
+        raise SystemExit(ExitCode.GENERAL_ERROR)
 
 
 @click.command("_coordinate", context_settings=CLICK_CONTEXT_SETTINGS, hidden=True)
@@ -834,10 +888,84 @@ def _decision_for(
     )
 
 
+def _each_run_dir(runs_dir: Path) -> list[FsRunDir]:
+    """Every run directory under ``runs_dir``, in id order.
+
+    Holding a ``state.json`` IS the test for "this is a run directory": it is the file
+    every run has from its first moment (``run start`` pre-writes it before deciding
+    foreground vs. background), and testing for it skips whatever else an operator has
+    put beside the runs without this having to guess at name shapes.
+
+    Args:
+        runs_dir: The directory holding every run.
+
+    Returns:
+        One :class:`~agentdag.adapters.kernel.run_store_fs.FsRunDir` per run, sorted by id
+        so a sweep visits them in the same order on every pass.
+
+    Raises:
+        SystemExit: :attr:`~agentdag.adapters.cli.exit_codes.ExitCode.INVALID_ARGUMENT` -
+            ``runs_dir`` does not exist.
+    """
+    if not runs_dir.is_dir():
+        _fail(f"runs dir does not exist: {runs_dir}")
+    runs = sorted(runs_dir.iterdir())
+    return [FsRunDir.open(runs_dir, path.name) for path in runs if (path / "state.json").is_file()]
+
+
+def _echo_deadline_outcome(outcome: DeadlineOutcome) -> None:
+    """Print what one run's deadline pass did, or why it did nothing.
+
+    Silent about a run that is not waiting on a decision at all
+    (:attr:`~agentdag.application.kernel.approve.DeadlineOutcome.awaiting_decision`), which
+    is the ordinary state of most runs in a runs directory - a periodic sweep that
+    announced every finished run would bury the lines that matter under its own noise.
+
+    The reason text is scrubbed: it can quote an exception raised while reading a run's own
+    files, and an exception's text is not safe by construction - the console is a sink like
+    any file, exactly as :func:`_run_foreground` already treats it.
+    """
+    if outcome.applied:
+        safe_console.echo(f"run {outcome.run_id}: applied default {outcome.decision!r} at {outcome.node_id}")
+        return
+    if not outcome.awaiting_decision:
+        return
+    safe_console.echo(f"run {outcome.run_id}: no default applied ({cast('str', scrub(outcome.reason))})")
+
+
+def _relaunch_after_default(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, foreground: bool) -> int:
+    """Relaunch ONE run whose default this pass recorded; report a failure without ending the pass.
+
+    :func:`_relaunch` reports a failed launch by raising ``SystemExit``
+    (:func:`_launch_background`, :func:`_fail_if_scope_unconfirmed`), which is right for a
+    single-run verb and wrong for a sweep: one run whose scope will not start must not stop
+    the deadline owner from serving the others, on this pass or on every later one. So the
+    exit is caught HERE, per run, and turned into a counted failure the command reports at
+    the end.
+
+    Args:
+        ctx: The click context, forwarded to :func:`_relaunch`.
+        run_dir: The run to relaunch.
+        runs_dir: Where its ``_coordinate`` argv points.
+        foreground: Drive the coordinator in-process instead of a background scope.
+
+    Returns:
+        ``0`` when the relaunch was made, ``1`` when it failed - the count the caller sums.
+    """
+    run_id = run_dir.root.name
+    try:
+        _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason="decision", foreground=foreground)
+    except SystemExit:
+        safe_console.echo(f"run {run_id}: the default is recorded but the relaunch failed; 'run resume' retries it")
+        return 1
+    return 0
+
+
 cli_run.add_command(cli_run_start)
 cli_run.add_command(cli_run_status)
 cli_run.add_command(cli_run_records)
 cli_run.add_command(cli_run_resume)
 cli_run.add_command(cli_run_approve)
 cli_run.add_command(cli_run_cancel)
+cli_run.add_command(cli_run_apply_deadlines)
 cli_run.add_command(cli_run_coordinate)

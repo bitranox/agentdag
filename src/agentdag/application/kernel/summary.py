@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from ...domain.journal import RunSummaryLine
 from ...domain.keys import hash8
+from .approve import SYSTEM_IDENTITY
 from .ports import stamp
 
 if TYPE_CHECKING:
@@ -169,14 +170,24 @@ def _human_interactions(co: Coordinator) -> int:
         co: The coordinator whose dispatcher's replay index is read.
 
     Returns:
-        How many of those decisions were not the ``"system"`` sentinel token id.
+        How many of those decisions carry a ``by`` other than
+        :data:`~agentdag.application.kernel.approve.SYSTEM_IDENTITY`.
     """
     return sum(1 for decision in co.dispatcher.index.decisions.values() if _by_a_human(decision))
 
 
 def _by_a_human(decision: ApproveDecisionLine) -> bool:
-    """Return whether a folded decision was made by a person, not the system default."""
-    return decision.token_id != "system"  # nosec B105  # noqa: S105 - a token_id VALUE, not a secret
+    """Return whether a folded decision was made by a person, not applied by the system.
+
+    Read from ``by``, the decision's IDENTITY, and never from ``token_id``, which names
+    the AGENT that applied it: the deadline owner records
+    :data:`~agentdag.application.kernel.approve.TIMER_TOKEN_ID` there so a journal reader
+    can tell which system applied a default, and a count keyed on that field would report
+    every unattended default as a human interaction. ``by`` is the field
+    ``journal-line.schema.json`` itself reserves for this ("'system' when the deadline
+    owner applied the payload's default").
+    """
+    return decision.by != SYSTEM_IDENTITY
 
 
 def _brief_lengths(run_dir: RunDir, results: Sequence[ResultLine]) -> dict[str, int]:

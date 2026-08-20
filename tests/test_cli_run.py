@@ -12,9 +12,12 @@ shipped adapter, exactly as ``tests/kernel_fakes.py`` already builds it for the
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -31,17 +34,18 @@ from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.adapters.kernel.scope_none import NoScope
+from agentdag.application.kernel.approve import DEADLINE_REASON, SYSTEM_IDENTITY, TIMER_TOKEN_ID
 from agentdag.application.kernel.cancel import scope_unit
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
+from agentdag.domain.keys import hash8
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from pathlib import Path
 
-    from click.testing import CliRunner
+    from click.testing import CliRunner, Result
 
-    from agentdag.application.kernel.ports import Scope
+    from agentdag.application.kernel.ports import Clock, Scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +123,7 @@ def services_with(
     *,
     scope: Scope | None = None,
     wire_calls: list[Mapping[str, object]] | None = None,
+    clock: Clock | None = None,
 ) -> Callable[[], AppServices]:
     """Return a services factory whose ``wire_kernel`` hands back a fixed wiring over real adapters.
 
@@ -127,11 +132,14 @@ def services_with(
     ``wire_calls``, if given, is appended one dict of kwargs per ``wire_kernel`` call -
     for a test asserting what ``_build_wiring`` (fix round 1) resolved ``--parallel``/
     ``--policy`` to, across BOTH times ``run start --foreground`` calls it.
+    ``clock`` defaults to a real :class:`UtcClock`; pass a :class:`MovableClock` for a
+    test about ``decide_by``, which is a day out from the run's own start and can only
+    be reached by moving the clock the whole run reads (Task 22).
     """
     wiring = KernelWiring(
         journal_factory=JsonlJournal,
         lock=FileRunLock(),
-        clock=UtcClock(),
+        clock=clock if clock is not None else UtcClock(),
         executors={"claude": executor},
         gate_port=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
         git=GitCli(),
@@ -636,3 +644,236 @@ def test_run_start_foreground_uses_its_own_parallel_and_policy_for_both_wiring_b
     assert len(calls) == 2, calls  # the state pre-write's own build, then _run_foreground's
     assert all(call["parallel"] == 3 for call in calls), calls
     assert all(call["policy_path"] == alt_policy for call in calls), calls
+
+
+# ---------------------------------------------------------------------------------
+# Task 22: the approve deadline's owner, end to end. `agentdag run apply-deadlines`
+# applies the payload's default once its decide_by has passed and relaunches the run;
+# a human answering the same payload at the same moment is refused, not overwritten.
+# ---------------------------------------------------------------------------------
+
+
+class MovableClock:
+    """A :class:`~agentdag.application.kernel.ports.Clock` a test moves between invocations.
+
+    The whole wiring reads one clock, so pinning it also pins the ``run_started`` line
+    ``graph-a``'s ``decide_by`` is derived from - which is how a test reaches a deadline a
+    day out without waiting for it, and how it proves that deadline does not MOVE when the
+    clock does.
+    """
+
+    def __init__(self, now: datetime) -> None:
+        """Bind the first instant; assign :attr:`at` to move it."""
+        self.at = now
+
+    def now(self) -> datetime:
+        """Return the instant currently set."""
+        return self.at
+
+
+_T0 = datetime(2026, 8, 18, 9, 0, 0, tzinfo=timezone.utc)
+"""The instant a deadline test's run starts at; graph-a derives its decide_by from it."""
+
+
+def started_run(cli_runner: CliRunner, tmp_path: Path, obj: Callable[[], AppServices]) -> str:
+    """Start a run that suspends at the push list, and return its id."""
+    (tmp_path / "runs").mkdir()
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    assert started.exit_code == 0, started.output
+    match = re.search(r"run (\S+) suspended at a_push_list", started.output)
+    assert match, started.output
+    return match.group(1)
+
+
+def cursor_hash(tmp_path: Path, run_id: str) -> str:
+    """Read the payload hash ``state.json`` says the run is suspended on."""
+    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "suspended"
+    return str(state["cursor_payload_hash"])
+
+
+def decide_by_of(tmp_path: Path, run_id: str) -> datetime:
+    """Read the deadline off the suspended payload itself.
+
+    Read, never recomputed from the workflow's own interval constant: that constant is
+    exactly what these tests must not hold a second copy of, and reading the field is also
+    what the deadline owner does.
+    """
+    payload_path = next((tmp_path / "runs" / run_id / "nodes" / "a_push_list").glob("*/payload.json"))
+    return datetime.fromisoformat(json.loads(payload_path.read_text(encoding="utf-8"))["decide_by"])
+
+
+@pytest.mark.os_agnostic
+def test_apply_deadlines_applies_the_default_relaunches_and_binds_it_to_the_unchanged_payload(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The deadline owner's whole job, and the identity property that makes it safe to repeat.
+
+    The decision is bound to the payload hash the suspend recorded, and the run reaches
+    ``done`` in ONE relaunch. Both would fail if ``decide_by`` were derived from the clock
+    rather than from the run's own ``run_started`` line: this pass runs with the clock a
+    day and a second ahead of the start, so a clock-derived deadline would give the
+    relaunch a payload with a DIFFERENT hash - a new question, which re-dispatches the
+    approve node and suspends again instead of applying the answer just recorded.
+    """
+    clock = MovableClock(_T0)
+    obj = services_with(CommittingExecutor(), tmp_path, clock=clock)
+    run_id = started_run(cli_runner, tmp_path, obj)
+    runs_arg = str(tmp_path / "runs")
+    suspended_hash = cursor_hash(tmp_path, run_id)
+    origin = tmp_path / "scratch" / "origin" / "a.git"
+    before = git("rev-parse", "main", cwd=origin)
+    clock.at = decide_by_of(tmp_path, run_id) + timedelta(seconds=1)
+
+    applied = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg, "--foreground"], obj=obj)
+
+    assert applied.exit_code == 0, applied.output
+    assert f"run {run_id}: applied default 'hold' at a_push_list" in applied.output
+    assert "applied 1 default decision(s)" in applied.output
+    assert f"run {run_id} done" in applied.output  # the relaunch this pass made, to completion
+    decisions = sorted((tmp_path / "runs" / run_id / "decisions").glob("*.json"))
+    assert [path.name for path in decisions] == [f"a_push_list.{hash8(suspended_hash)}.json"]
+    recorded = json.loads(decisions[0].read_text(encoding="utf-8"))
+    assert recorded["payload_hash"] == suspended_hash  # the payload the human was shown, unmoved
+    assert (recorded["decision"], recorded["by"], recorded["reason"]) == ("hold", SYSTEM_IDENTITY, DEADLINE_REASON)
+    assert recorded["token_id"] == TIMER_TOKEN_ID
+    folded = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / run_id / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["event"] == "approve_decision"
+    ]
+    assert len(folded) == 1
+    assert folded[0]["by"] == SYSTEM_IDENTITY
+    assert git("rev-parse", "main", cwd=origin) == before  # 'hold' has no external effect, and none happened
+
+
+@pytest.mark.os_agnostic
+def test_apply_deadlines_leaves_a_run_alone_before_its_decide_by(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """One second short of the deadline: nothing written, nothing relaunched, and it says why."""
+    clock = MovableClock(_T0)
+    obj = services_with(CommittingExecutor(), tmp_path, clock=clock)
+    run_id = started_run(cli_runner, tmp_path, obj)
+    runs_arg = str(tmp_path / "runs")
+    clock.at = decide_by_of(tmp_path, run_id) - timedelta(seconds=1)
+
+    applied = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg], obj=obj)
+
+    assert applied.exit_code == 0, applied.output
+    assert "not due until" in applied.output
+    assert "applied 0 default decision(s)" in applied.output
+    assert not list((tmp_path / "runs" / run_id / "decisions").glob("*.json"))
+    status = cli_runner.invoke(cli_mod.cli, ["run", "status", run_id, "--runs", runs_arg], obj=obj)
+    assert "suspended" in status.output
+
+
+@pytest.mark.os_agnostic
+def test_a_human_approve_after_the_deadline_default_is_refused_and_pushes_nothing(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The race that matters, at the CLI: exactly one decision wins and the loser is REFUSED.
+
+    The human's option here is the one with the external effect, so this also proves the
+    refusal is not cosmetic: a decision that was never recorded must not push.
+    """
+    clock = MovableClock(_T0)
+    obj = services_with(CommittingExecutor(), tmp_path, clock=clock)
+    run_id = started_run(cli_runner, tmp_path, obj)
+    runs_arg = str(tmp_path / "runs")
+    origin = tmp_path / "scratch" / "origin" / "a.git"
+    before = git("rev-parse", "main", cwd=origin)
+    clock.at = decide_by_of(tmp_path, run_id) + timedelta(seconds=1)
+    applied = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg, "--no-relaunch"], obj=obj)
+    assert applied.exit_code == 0, applied.output
+    assert "applied 1 default decision(s)" in applied.output
+
+    late = cli_runner.invoke(
+        cli_mod.cli,
+        ["run", "approve", run_id, "a_push_list", "--decision", "approve", "--runs", runs_arg, "--no-relaunch"],
+        obj=obj,
+    )
+
+    assert late.exit_code == ExitCode.INVALID_ARGUMENT, late.output
+    assert "already decided for this payload" in late.output
+    decisions = sorted((tmp_path / "runs" / run_id / "decisions").glob("*.json"))
+    assert len(decisions) == 1
+    assert json.loads(decisions[0].read_text(encoding="utf-8"))["by"] == SYSTEM_IDENTITY
+    assert git("rev-parse", "main", cwd=origin) == before
+
+
+@pytest.mark.os_agnostic
+def test_run_approve_refuses_a_wrong_node_an_unoffered_option_and_a_repeat_answer(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """Three of ``_decision_for``'s refusals, each naming what the caller got wrong."""
+    obj = services_with(CommittingExecutor(), tmp_path)
+    run_id = started_run(cli_runner, tmp_path, obj)
+    runs_arg = str(tmp_path / "runs")
+
+    def approve(node_id: str, decision: str) -> Result:
+        argv = ["run", "approve", run_id, node_id, "--decision", decision, "--runs", runs_arg, "--no-relaunch"]
+        return cli_runner.invoke(cli_mod.cli, argv, obj=obj)
+
+    wrong_node = approve("g_discover", "hold")
+    assert wrong_node.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "suspended on 'a_push_list', not 'g_discover'" in wrong_node.output
+
+    unoffered = approve("a_push_list", "maybe")
+    assert unoffered.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "is not one of" in unoffered.output and "['approve', 'hold']" in unoffered.output
+
+    assert approve("a_push_list", "hold").exit_code == 0
+    repeat = approve("a_push_list", "approve")
+    assert repeat.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "already decided for this payload" in repeat.output
+    assert len(list((tmp_path / "runs" / run_id / "decisions").glob("*.json"))) == 1
+
+
+@pytest.mark.os_agnostic
+def test_run_approve_refuses_a_payload_that_does_not_match_state_json(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """``_decision_for``'s three payload refusals, in order of how broken the run dir is.
+
+    A decision is bound to the payload's content hash, so the CLI answers only a payload
+    it can prove is the one ``state.json`` names - never whatever bytes happen to sit at
+    the path.
+    """
+    obj = services_with(CommittingExecutor(), tmp_path)
+    run_id = started_run(cli_runner, tmp_path, obj)
+    runs_arg = str(tmp_path / "runs")
+    root = tmp_path / "runs" / run_id
+    payload_path = next((root / "nodes" / "a_push_list").glob("*/payload.json"))
+
+    def approve() -> Result:
+        argv = ["run", "approve", run_id, "a_push_list", "--decision", "hold", "--runs", runs_arg, "--no-relaunch"]
+        return cli_runner.invoke(cli_mod.cli, argv, obj=obj)
+
+    payload_path.write_text(payload_path.read_text(encoding="utf-8").replace("push list", "other list"), "utf-8")
+    tampered = approve()
+    assert tampered.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "does not match state.json's cursor_payload_hash" in tampered.output
+
+    payload_path.unlink()
+    missing = approve()
+    assert missing.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "the payload file for 'a_push_list' is missing" in missing.output
+
+    state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+    state["cursor_payload_hash"] = None
+    (root / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    hashless = approve()
+    assert hashless.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "names no payload hash" in hashless.output
+    assert not list((root / "decisions").glob("*.json"))  # no refusal wrote a decision
+
+
+@pytest.mark.os_agnostic
+def test_the_shipped_timer_unit_runs_the_command_that_applies_the_default() -> None:
+    """The operator installs these files by hand, so nothing else notices if the verb is renamed."""
+    deploy = Path(__file__).resolve().parent.parent / "deploy"
+    service = (deploy / "agentdag-approve-timer.service").read_text(encoding="utf-8")
+    timer = (deploy / "agentdag-approve-timer.timer").read_text(encoding="utf-8")
+
+    assert "run apply-deadlines" in service
+    assert "Type=oneshot" in service
+    assert "Unit=agentdag-approve-timer.service" in timer
+    assert "WantedBy=timers.target" in timer
+    assert "Persistent=true" in timer  # a machine off across a decide_by still applies the default
