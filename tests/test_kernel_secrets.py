@@ -175,13 +175,17 @@ def test_scrub_key_pass_usage_token_counts_survive_in_both_spellings() -> None:
 def test_scrub_key_pass_extended_usage_metadata_keys_survive() -> None:
     """Round two of the same fix, prompted by checking all 138 distinct keys the real
     transcripts under ``/var/lib/agentdag/runs`` carry against the first allowlist:
-    seven more numeric-or-boolean usage-metadata fields were still being redacted -
+    six more numeric-or-boolean usage-metadata fields were still being redacted -
     ``max_output_tokens``, ``estimated_tokens``, ``estimated_tokens_delta``,
-    ``output_tokens_details``, ``truncated_by_token_cap``, and the cache-tier
-    breakdown ``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` (the only
-    place a transcript records which prompt-caching TTL a turn used).
+    ``truncated_by_token_cap``, and the cache-tier breakdown
+    ``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` (the only place a
+    transcript records which prompt-caching TTL a turn used).
 
-    Five of the seven get a both-spellings assertion, same as the original four: the
+    (A seventh field, ``output_tokens_details``, was added in this same round and
+    removed a round later - see ``test_scrub_key_pass_redacts_a_container_valued_key_not_on_the_usage_allowlist``
+    below for why a container-valued key gains nothing from being listed here.)
+
+    Four of the six get a both-spellings assertion, same as the original four: the
     alternate spelling (snake_case for a field the SDK emits camelCase, or vice
     versa) is an unambiguous mechanical transform with no digit adjacent to a case
     boundary, so deriving it is not a guess about what the SDK would actually send.
@@ -202,7 +206,6 @@ def test_scrub_key_pass_extended_usage_metadata_keys_survive() -> None:
         "maxOutputTokens": "max_output_tokens",
         "estimated_tokens": "estimatedTokens",
         "estimated_tokens_delta": "estimatedTokensDelta",
-        "output_tokens_details": "outputTokensDetails",
         "truncatedByTokenCap": "truncated_by_token_cap",
     }
     for observed, derived in both_spellings.items():
@@ -321,46 +324,71 @@ def test_scrub_key_pass_redacts_nested_secret_keys_in_dicts_and_lists() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_scrub_key_pass_does_not_short_circuit_recursion_into_an_allowlisted_container() -> None:
-    """``output_tokens_details`` (unlike the other ten entries in
-    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST`, which are all scalars)
-    is a DICT in a real transcript - so "allowlisted" must mean exactly one thing: do
-    not redact THIS value whole. It must never mean "stop walking this value",
-    because a container is exactly where that would matter: anything nested inside an
-    allowlisted key would otherwise escape the KEY pass entirely.
+def test_scrub_key_pass_redacts_a_container_valued_key_not_on_the_usage_allowlist() -> None:
+    """``output_tokens_details`` was added to
+    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST` in the round that added
+    six other usage-metadata fields, then removed a round later once it became clear
+    the entry protected nothing worth protecting: it is a DICT in a real transcript
+    (unlike every other entry, which is a scalar int or bool), and this codebase's own
+    archived transcripts show no nested keys under it worth naming individually - so
+    there was nothing concrete to allowlist, only the container's own shape.
 
-    This property already holds, and it was DISCOVERED while reviewing the extended
-    allowlist, not deliberately designed for this case: :func:`~agentdag.domain.scrub.scrub`'s
-    dict branch is ``"[scrubbed]" if _is_secret_key(key) else scrub(val)`` - the ELSE
-    branch always recurses, for every key that is not redacted whole, whether that
-    key is an ordinary non-secret key (``"content"``) or an allowlisted one
-    (``"output_tokens_details"``). :func:`~agentdag.domain.scrub._is_secret_key`
-    collapses both cases to the same single ``bool``, so both take the same branch;
-    there is no separate code path that treats "allowlisted" as "leave untouched".
-    This exact branch shape (redact-whole vs. recurse, never redact-whole vs.
-    leave-untouched) dates to the module's introduction at commit cbe7a62, before the
-    KEY pass, the regression, or either allowlist round existed - it was never
-    re-examined when the allowlist was added, it simply falls out of the shape.
+    Removing a key from the allowlist is NOT a no-op the way it might look:
+    :data:`~agentdag.domain.scrub.SECRET_KEY_COMPONENTS` still evaluates the key's own
+    name independently of what type its value is, and ``output_tokens_details``
+    contains the component ``"tokens"`` like every other allowlisted field. Off the
+    list, it is redacted WHOLE - the entire dict collapses to the string
+    ``"[scrubbed]"`` - same treatment as any other unenumerated token-shaped key, in
+    both spellings.
 
-    A hypothetical real nested count field like ``reasoning_tokens`` is deliberately
-    NOT used as the "survives" half of this test: it is not itself on the allowlist
-    (it does not appear anywhere in this codebase's own transcripts, so adding it
-    would be a guess, not a verified field) and the component ``"tokens"`` in it
-    means it is currently redacted like any other unenumerated key - a SEPARATE
-    question from the containment property this test isolates. An ordinary
-    non-count nested value is used instead so the assertion cannot be read as taking
-    a position on that separate question.
+    Mutation check (verified by running it): putting
+    ``("output", "tokens", "details")`` back into
+    :data:`~agentdag.domain.scrub.USAGE_COUNT_KEY_ALLOWLIST` makes both assertions
+    below fail (the dict survives as a walked dict instead of collapsing to a string) -
+    pinning that the removal, not just the allowlist's general shape, is what this
+    test guards.
+    """
+    assert scrub({"output_tokens_details": {"reasoning_tokens": 12}}) == {"output_tokens_details": "[scrubbed]"}
+    assert scrub({"outputTokensDetails": {"reasoning_tokens": 12}}) == {"outputTokensDetails": "[scrubbed]"}
+
+
+@pytest.mark.os_agnostic
+def test_scrub_key_pass_decides_each_key_independently_at_any_depth() -> None:
+    """The leaf-semantics property: the KEY pass decides EACH key on its own, the
+    moment ``scrub`` reaches it, never inherited from or short-circuited by an
+    ancestor. Nested two levels under an ordinary, unremarkable wrapper key (neither
+    secret-shaped nor on the allowlist - ``"details"`` and ``"inner"``, matching the
+    real transcript shape ``usage.output_tokens_details.<field>``), a secret-shaped
+    sibling key redacts and an allowlisted count sibling survives, side by side, at
+    the same depth.
+
+    This already holds, and it was DISCOVERED while reviewing the allowlist, not
+    deliberately designed for this case: :func:`~agentdag.domain.scrub.scrub`'s dict
+    branch is ``"[scrubbed]" if _is_secret_key(key) else scrub(val)`` - the ELSE
+    branch always recurses, for every key that is not itself redacted whole, at every
+    depth, regardless of what any ancestor key was. :func:`~agentdag.domain.scrub._is_secret_key`
+    is evaluated fresh at each dict level with no memory of the keys above it; there is
+    no code path that treats "an ancestor was fine" as "stop checking, or stop
+    recursing, from here down". This exact branch shape (redact-whole vs. recurse,
+    reapplied at every level, never redact-whole vs. leave-untouched) dates to the
+    module's introduction at commit cbe7a62, before the KEY pass, the regression, or
+    any allowlist round existed - nobody re-examined it when the allowlist was added,
+    it simply falls out of the shape. The module's own VALUE-pass docstring already
+    states the intent this depends on ("reached under any key... regardless of its
+    key"), also present at cbe7a62, so the walk-never-stops guarantee was a deliberate
+    goal from the start - just for the VALUE pass reaching everywhere, not because
+    anyone was thinking about a future allowlisted leaf sharing a subtree with a
+    secret.
 
     Mutation check (verified by running it): a plausible ALTERNATIVE implementation -
-    one that special-cases an allowlisted key to return its value untouched instead
-    of recursing into it - makes the nested ``apiToken`` assertion fail (it survives
-    instead of being redacted), proving the container-safety property is not free
-    with just any allowlist implementation and is worth pinning explicitly rather
-    than assuming.
+    one that recurses only ONE level deep and returns anything nested beyond that
+    untouched (a refactor that drops the recursive ``scrub(val)`` call in favour of
+    the raw ``val`` past the first level) - makes the nested ``apiToken`` assertion
+    fail (it survives, two levels down, instead of being redacted), proving this
+    depth property is not free with just any dict-walking implementation.
     """
-    result = scrub({"output_tokens_details": {"note": "keep me", "apiToken": "hunter2"}})
-    assert result == {"output_tokens_details": {"note": "keep me", "apiToken": "[scrubbed]"}}
-    assert result["output_tokens_details"] != "[scrubbed]"  # the container itself must not be redacted whole
+    result = scrub({"details": {"inner": {"apiToken": "hunter2", "input_tokens": 5}}})
+    assert result == {"details": {"inner": {"apiToken": "[scrubbed]", "input_tokens": 5}}}
 
 
 @pytest.mark.os_agnostic

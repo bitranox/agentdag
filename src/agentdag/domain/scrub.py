@@ -86,31 +86,48 @@ USAGE_COUNT_KEY_ALLOWLIST = frozenset(
         ("max", "output", "tokens"),
         ("estimated", "tokens"),
         ("estimated", "tokens", "delta"),
-        ("output", "tokens", "details"),
         ("ephemeral", "1h", "input", "tokens"),
         ("ephemeral", "5m", "input", "tokens"),
         ("truncated", "by", "token", "cap"),
     }
 )
 """The narrow exception to :data:`SECRET_KEY_COMPONENTS`'s default-redact stance:
-eleven usage-accounting fields the kernel executor streams for every turn - each one
-an INTEGER count or a boolean about a count, never a secret - identified by SPLIT
+ten usage-accounting fields the kernel executor streams for every turn - each one an
+INTEGER count or a boolean about a count, never a secret - identified by SPLIT
 COMPONENTS (not the raw string), so one entry covers every spelling the SDK uses for
 that field at once (``cache_read_input_tokens``/``cacheReadInputTokens`` both split to
 ``("cache", "read", "input", "tokens")``).
 
+This allowlist governs LEAVES, not subtrees. A dict value always gets walked (see
+:func:`scrub`'s dict branch) whether its key is allowlisted, secret, or neither - so
+an entry here only changes what happens to a key whose value is itself a scalar
+(an int or a bool). Listing a CONTAINER-valued key here would not be a no-op the way
+it might look: :data:`SECRET_KEY_COMPONENTS` still evaluates that key's own name
+independently of what type its value is, so a container key containing a secret word
+component (as every field in this set does, being built from ``tokens``) is redacted
+WHOLE the moment it is taken off this list, same as any other unenumerated key - the
+allowlist is what stands between it and that outcome, not between its children and
+theirs. ``output_tokens_details`` was tried here and removed for exactly this reason:
+it is a dict in a real transcript, and this codebase's own archived transcripts show
+no nested keys under it worth naming individually (nothing here invents field names
+from another provider's schema) - so the entry protected only the container's own
+shape (a walkable, mostly-empty dict instead of a bare ``"[scrubbed]"`` string), a
+distinction with no security consequence given nothing meaningful was found inside
+it. A future nested field worth keeping gets its OWN entry when someone can name and
+verify it, exactly like every entry already here.
+
 The first four are the per-turn token counts (``input_tokens``, ``output_tokens``,
 ``cache_creation_input_tokens``, ``cache_read_input_tokens``); redacting them made
 every archived transcript's per-turn usage permanently unreadable, exactly the audit
-trail a security reviewer needs to reconstruct a dispatch's spend. The other seven
-were found still redacted after that first fix, by checking all 138 distinct keys the
-real transcripts under ``/var/lib/agentdag/runs`` carry against the shipped
-allowlist: ``max_output_tokens``, ``estimated_tokens``, ``estimated_tokens_delta``,
-``output_tokens_details``, ``truncated_by_token_cap`` (all numeric or boolean usage
-metadata), and ``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` - the
-cache-tier breakdown that is the ONLY evidence in a transcript of which prompt-caching
-TTL a turn used, load-bearing for reconstructing a dispatch's actual cache-read cost,
-not merely informative.
+trail a security reviewer needs to reconstruct a dispatch's spend. The other six were
+found still redacted after that first fix, by checking all 138 distinct keys the real
+transcripts under ``/var/lib/agentdag/runs`` carry against the shipped allowlist:
+``max_output_tokens``, ``estimated_tokens``, ``estimated_tokens_delta``,
+``truncated_by_token_cap`` (all numeric or boolean usage metadata), and
+``ephemeral_1h_input_tokens`` / ``ephemeral_5m_input_tokens`` - the cache-tier
+breakdown that is the ONLY evidence in a transcript of which prompt-caching TTL a
+turn used, load-bearing for reconstructing a dispatch's actual cache-read cost, not
+merely informative.
 
 The exception is enumerated and stays small ON PURPOSE: it grows only when someone
 identifies a specific field and adds it deliberately, never by widening the shape
