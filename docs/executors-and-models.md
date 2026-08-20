@@ -73,7 +73,8 @@ that looks over-engineered until it fails. A regular expression looking for secr
 not catch an agent socket or a cloud credential variable, since neither name contains anything that
 looks like a secret. Naming what may pass is the only version of this that works.
 
-The test gate has its own, separate allowlist, deliberately narrower.
+The test gate has its own, separate allowlist, shaped for what the build tooling needs rather than
+for what a Claude child needs. It is the wider of the two.
 
 ## 5. Codex, the second arm
 
@@ -82,10 +83,9 @@ probed rather than assumed, because the two parity gaps below shape the design i
 once it is half built.
 
 A Codex node is one `codex mcp-server` process per node, spoken to over MCP on standard input and
-output. It reaches parity on most of what a node
-needs: a working directory, per-node instructions in two flavours, a model, an effort setting through
-its configuration, and a sandbox mode plus a never-ask approval policy that together do the write-set
-job the Claude arm does with a hook.
+output. It reaches parity on most of what a node needs: a working directory, per-node instructions
+in two flavours, a model, an effort setting through its configuration, and a sandbox mode plus a
+never-ask approval policy that together do the write-set job the Claude arm does with a hook.
 
 It misses on two, and the design compensates instead of pretending otherwise.
 
@@ -112,7 +112,7 @@ what an adapter would therefore do.
 | model and effort           | both first class                                         | model first class, effort through configuration                    |
 | working directory          | yes                                                      | yes                                                                |
 | schema-validated result    | output shape in the brief, adapter validates, one re-ask | same, re-asked on the same thread                                  |
-| usage reporting            | per turn and at the end                                  | absent, so charged at dispatch and reconciled from its session log |
+| usage reporting            | streamed per turn, kept per node                         | absent, so charged at dispatch and reconciled from its session log |
 | in-node spend cap          | seam exists, the check and interrupt are planned         | none possible, which is why the budget is charged up front         |
 | write-set enforcement      | a tool hook denying writes outside the isolation root    | its own sandbox mode plus the working directory                    |
 | hard deadline              | interrupt, then terminate the process                    | terminate the process, one server per node so threads die with it  |

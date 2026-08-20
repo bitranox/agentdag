@@ -19,18 +19,18 @@ more than the accumulated answer to these limits.
 | Limit                        | A person                                                                                                      | A language model                                                                                                         | What it does to the team                                                                                                                                   |
 |------------------------------|---------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle     |
-| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, and one node knowing something costs nothing to give another                   | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
-| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives the dispatch                                                                                            | anything that must outlive a step is written down, or it did not happen                                                                                    |
+| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up   | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                  |
+| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                             | anything that must outlive a step is written down, or it did not happen                                                                                    |
 | Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
 | Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                         | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a two-minute task costs nearly what a two-hour one costs, because the fixed startup dominates                            | a node carries work worth the startup, or small items get batched into a single dispatch                                                                   |
-| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | every message lands in everyone's context and is re-read on every later turn, so cost grows with the square of the talk  | coordinate through typed records and an order fixed at plan time, never through a shared conversation                                                      |
+| Cost of one question         | two minutes of work costs two minutes                                                                         | a fixed startup before any work, from about 170 tokens to about 38,800 depending on what cascade it inherits             | keep the inherited cascade at nothing, then give a node enough work to clear even the small startup                                                        |
+| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | in a shared conversation every message lands in everyone's context and is re-read on every later turn, so cost squares   | coordinate through typed records and an order fixed at plan time, never through a shared conversation                                                      |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
 between heads is the expensive part and talking is the cheap part, so organisations grow layers to
 ration the first and run on meetings for the second. For a model it is the other way round: sharing
-knowledge costs nothing, and talking is what costs. Copy the human answer and you pay twice, once
-for rationing something that is already free and again for spending freely on the thing that is not.
+knowledge costs a read, and talking is what costs. Copy the human answer and you pay twice, once for
+rationing something that is nearly free and again for spending freely on the thing that is not.
 
 The human figures are the ordinary ones from general knowledge rather than anything measured here,
 and nothing turns on the exact number. What matters is which way each row runs.
@@ -51,23 +51,33 @@ without one. That is the mechanism the design has to survive.
 survive has to be written down somewhere a later process can read.
 
 **Delivery only at the recipient's tool-call boundary.** You can reach a running agent, and it will
-read what you sent. What you cannot do is preempt it: the message arrives when it next pauses to
-call a tool, never mid-thought, and a long stretch of thinking or one slow tool call postpones it
-indefinitely.
+read what you sent. What a MESSAGE cannot do is preempt it: it arrives when the agent next pauses to
+call a tool, and a long stretch of thinking postpones it.
 
-The difference matters more than it sounds. Steering works, and it is genuinely useful for anything
-that tolerates latency. What does not work is using a message as a lock or a stop button, because by
-the time it lands the agent may already have done the thing you were writing to prevent. So no
-guarantee may rest on delivery: two nodes are kept apart by giving them disjoint work, not by
-telling one to wait.
+Preemption itself does exist, but only for the process holding the agent's client. Measured, an
+interrupt stops a dispatch mid-tool in under a tenth of a second, three seconds into a ninety-second
+call, and the tool's own process is dead afterwards. That is a lever the coordinator has over its
+own children. It is not a lever one agent has over another.
+
+So steering by message works, and is genuinely useful for anything that tolerates latency. Using a
+message as a lock or a stop button does not, because by the time it lands the agent may already have
+done the thing you were writing to prevent. Between two agents, no guarantee may rest on delivery:
+they are kept apart by disjoint work, not by telling one to wait.
 
 **No self-verification.** A model asked whether its own work is correct will tell you it is. Not
-always, but often enough that the answer carries no information. Confidence is free.
+always, but often enough that the answer is not reliable enough to decide anything on. Confidence is
+free.
 
-**A fixed price per dispatch.** Starting an agent costs roughly the same whether you hand it a
-sentence or a page, because it pays for its system prompt and its instruction cascade every time.
-On this machine that overhead runs to tens of thousands of tokens before the work begins. Twenty
-small items dispatched separately spend more on greetings than on work.
+**A fixed price per dispatch.** Starting an agent costs the same before it reads a word of your
+task, because it pays for its system prompt and whatever instruction cascade it inherits. How large
+that is depends entirely on the cascade: measured on this machine, an isolated child that loads no
+settings pays about 170 tokens of first-turn input, one that loads the project's settings about
+6,400, and one that loads the full operator plugin set about 38,800. The last of those is why the
+executor asks for no setting sources at all.
+
+Even at the low end the cost is fixed rather than proportional, so a node has to carry enough work
+to be worth starting. Against a 170-token startup the break-even is on the order of a couple of
+thousand tokens of real work; against a cascade-loading dispatch it is two hundred times that.
 
 ## 2. Why the human org chart does not transfer
 
@@ -75,7 +85,8 @@ Hierarchy in a human organisation answers span of control. One person can direct
 can hold only so much in their head, and transferring what they know to someone else is slow and
 expensive. Layers exist to ration those three scarcities.
 
-Two of the three do not bind a model at all. Knowledge on disk is equally cheap for every agent to
+Two of the three bind a model differently enough that hierarchy is the wrong answer to them.
+Knowledge on disk is equally cheap for every agent to
 reach, so "who knows what" is not a transfer problem, and there is no reason to arrange agents so
 that information trickles down a chain. That much of the anti-hierarchy instinct is right.
 
@@ -143,8 +154,8 @@ None of this is anyone being careless. These are capable tools built by people w
 the role metaphor is genuinely the most natural way to explain multi-agent work to somebody new. It
 is a good explanation and a bad blueprint. It imports the one human constraint that does not apply,
 and it quietly drops the two that do: attention degrades long before the window is full, and a
-running agent cannot be preempted, so no message is guaranteed to land before the thing it would
-prevent.
+message to a running agent cannot preempt it, so no message is guaranteed to land before the thing
+it would prevent.
 
 So the question is not how to arrange the meeting better. It is what you build if you never hold one.
 
@@ -153,6 +164,8 @@ So the question is not how to arrange the meeting better. It is what you build i
 The resolution is one distinction. Knowledge available to every node, without restriction, is the
 genuine advantage a model team has over a human one. But available means retrievable, not delivered.
 A node gets three things: its task, the slice it certainly needs, and a path to everything else.
+Today the first two are wired and the third is a field on the node spec that nothing reads; a node's
+reach is its own tools over its own tree.
 
 This is not a novel idea so much as one already implemented three times over in the surrounding
 tooling: a skill is an index line with its body fetched on demand; a stored fact is a pointer with
@@ -169,7 +182,8 @@ Take the five constraints seriously and the shape is not a hierarchy and not a p
 dependency scheduler, and its ancestors are Make, Bazel and MapReduce rather than any org chart.
 
 **The coordinator holds records and state, never content, and stays thin.** It knows which nodes ran,
-what each returned, and what is still to do. It does not know what any of them said. This matters
+what each returned, and what is still to do. It does not know what any of them produced, beyond
+their typed facts and, when one fails, its error line. This matters
 more than it sounds: the coordinator is the one context in the system that everything passes through,
 so it is the first thing to rot if content flows into it. A fat coordinator is the default failure,
 not an exotic one.
@@ -180,15 +194,22 @@ operative word, and it is a bound on drift as much as on scope.
 **Parallel where independent, serial where dependent, and the test for independent is precise:**
 branches are independent when they share no mutable artifact. That is sharper than it first looks. Two
 agents reading the same files in parallel is fine. Two agents making un-reconciled decisions about the
-same file is the failure mode the whole field has been arguing about, and it is what this rule
-forbids. Where branches do share something mutable, order them at plan time. There is no runtime
-lock to reach for: by constraint three a message reaches a running agent only at its next tool call,
-so it cannot be relied on to arrive before the write it would prevent.
+same file is the failure mode the whole field has been arguing about, and it is what this rule rules
+out by construction. The kernel does not check it: nothing intersects two nodes' declared write
+sets, and the isolation scan deliberately excuses a write into any declared region, including a
+sibling's. It is a discipline the shipped graph keeps, not a mechanism it is held to.
+
+Where branches do share something mutable, either order them at plan time or serialise at the
+resource itself, which is what the test gate does with a host-wide file lock. What is not available
+is a lock built out of messages to a running agent: by constraint three a message arrives only at
+its next tool call, so it cannot be relied on to land before the write it would prevent.
 
 **Misclassify in the safe direction.** Running a parallel task serially is merely slow. Running a
 serial task in parallel is destructive: divergent decisions, wasted dispatches, work that has to be
-thrown away. Because the two errors cost so differently, the default is serial and fanning out is
-something you prove, not something you assume.
+thrown away. Because the two errors cost so differently, serial is the safe guess and fanning out is
+something to argue for. That is a rule for whoever writes a graph rather than a setting: the shipped
+concurrency default is two, and the fleet graph fans out over every member without proving
+anything.
 
 **Nothing decides on prose, and nothing grades itself.** By constraint four a model asked about its
 own work is not a source of information, so the checks that decide anything in the shipped graph are
@@ -204,11 +225,12 @@ of the work, and it has no stake in the verdict. Self-assessment fails both; a s
 neither.
 
 Putting the review on a different model family is a further lever on the same axis. It is designed,
-it is off by default, and it is off because nobody has measured whether family diversity finds real
+it is off by default, and it is off because we have not measured whether family diversity finds real
 defects that a fresh context of the same family misses. The measurement is specified rather than
 assumed, and if the answer is no, the claim gets retired rather than kept as folklore. Where several
-judgements are collected, the counting is done by code, never by one more model asked to summarise
-the others.
+judgements are collected, the counting is to be done by code, never by one more model asked to
+summarise the others. That is a designed pattern; nothing in the shipped graph collects several
+judgements yet.
 
 ## 6. What survives from human organisations
 
@@ -227,17 +249,22 @@ the primitives as functions. agentdag is the second, for three reasons in order 
 
 Re-planning. Real work does not know its own shape up front. A debugging run finds out what to do next
 from what it just learned; a fleet chore does not know how many repositories it has until it looks.
-Every graph-as-data system fixes its topology before the run starts. Every graph-as-code system
+A graph-as-data system fixes its topology before the run starts unless it ships a specific escape
+hatch for dynamic dispatch. A graph-as-code system
 re-plans freely. Since a coordinator that cannot re-plan cannot do the interesting half of the work,
 that decides it.
 
-Determinism is achievable. The price of graph-as-code is that the coordinator program has to replay
-identically, which means it may not read the clock or a random number. That is a real constraint and
-it is enforced rather than requested.
+Determinism is achievable. The price of graph-as-code is that the program has to replay identically,
+which means it may not reach for the system clock or a random number; the coordinator's injected
+clock is the one sanctioned source, because it replays. That constraint is partly mechanised rather
+than merely asked for: a static check refuses a workflow module that names the clock, randomness or
+uuid directly. It reads only that module, so a helper function can still hide one.
 
-The price is the point. Every model call is a node whose result is journaled, and the coordinator
-branches only on typed fields of those records. That is precisely the discipline that keeps the
-coordinator thin, so the cost of graph-as-code buys the property section 5 needs anyway.
+The price is the point. Every model call is a node whose result is journaled, and the shipped
+coordinator branches on typed fields of those records rather than on prose. That is a discipline the
+graph keeps rather than something the kernel refuses to compile - the lint the design calls for does
+not exist - and it is what keeps the coordinator thin, so the cost of graph-as-code buys the
+property section 5 needs anyway.
 
 ## 8. Why build it rather than adopt something
 

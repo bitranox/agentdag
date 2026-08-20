@@ -83,8 +83,10 @@ deadline can reap the node's grandchildren, so it is not a detail; see
 [safety and sandbox](safety-and-sandbox.md).
 
 Four more verbs operate on the run directory afterwards: `status`, `records`, `resume` and `approve`.
-That is the whole surface. The CLI is allowed to read the clock and randomness when it mints a run
-id; the coordinator itself never may, because determinism is what makes replay possible.
+That is the whole `run` surface. The CLI is allowed to read the clock and randomness when it mints a
+run id. A workflow program may not, and a static check refuses one that reaches for either directly,
+so a value that would differ on replay never reaches a node's input. The coordinator itself reads
+time only through one injected clock, which is what lets a test pin it.
 
 **Not yet:** the network face. The design puts an MCP server over streamable HTTP with a bearer
 token in front of the same verbs, so that another tool, including Claude Code itself, can start runs
@@ -102,7 +104,10 @@ The brief is prose, read from a file, and it becomes the node's system prompt. I
 want made, written once, and every agent node in the run receives the same text. There is no
 templating engine and no assembled context: a node is told what to do by its brief alone. What it
 gets besides that is its own working directory, its model and effort resolved from the tier policy,
-a fixed short first instruction, and nothing else.
+a fixed short first instruction, and a fixed tool set. No project context is assembled for it. What
+it also gets, and only this, is agentdag's own two hooks, a turn ceiling, a private home and config
+directory holding its own credential, and an environment allowlist: the machinery that bounds it,
+never content.
 
 That "nothing else" is deliberate and it is stronger than it sounds. See section 11.
 
@@ -114,7 +119,9 @@ to.
 A node returns a typed record: a status from a closed vocabulary, references to artefacts it wrote,
 a small map of key facts, and the names of the fields in that map a caller is allowed to trust. The
 content it produced stays on disk. The next node that needs the content reads the file; the
-coordinator, which passes the record along, never reads the content at all.
+coordinator, which passes the record along, never interprets that content and never pulls it into
+another node's context. It does hash it, since the isolation scan reads every file under the run
+root to build its manifest, but nothing it reads there ever reaches a branch decision.
 
 This is the "records, not content" rule from [why agentdag exists](why-agentdag.md), and it is what
 keeps the one context every node passes through from filling up with everything every node said.
@@ -123,7 +130,9 @@ keeps the one context every node passes through from filling up with everything 
 
 The executor streams the agent's messages, writes them to a transcript, and builds the record from
 the structured metadata the run reports: turn count, error flag, token usage. The model's free text
-is not parsed for structure and does not become the result.
+is not parsed for structure and does not become the result. One narrow exception: on a failed
+dispatch the result text is checked for the CLI's own not-logged-in string, so an auth failure gets
+named specifically rather than as a generic executor error.
 
 Code nodes build their record directly, with genuinely typed facts in it: a gate's record carries the
 exit code, an isolation scan's carries the list of paths that should not exist.
@@ -220,7 +229,7 @@ Detail in [the execution model](execution-model.md).
 
 ## 9. Cost and limits
 
-Token usage is measured per turn and per node and accumulated per model row across the run, and it is
+Token usage is measured per node and accumulated per model row across the run, and it is
 in the record and the run summary. A turn ceiling per node exists.
 
 **Not yet:** a cap that fires. Budgets are declared on nodes, per-row ceilings are declared in the
@@ -237,13 +246,13 @@ for folding many small items into one dispatch when they would not.
 
 ## 10. Sandbox mode
 
-Nodes run behind a sandbox port. Today exactly one adapter is wired, and its guarantees are three
-booleans, all false: no filesystem boundary, no egress control, no separate user. Those booleans are
-stamped onto every node's record, so the isolation a piece of work ran under is a journaled fact
-rather than a claim in a README.
+There is none. A node runs as the coordinator's own operating system user, sharing its filesystem
+and its network, and the record the node produces does not describe its isolation because there is
+no field for it. A port that would at least declare the absence on every record is written on the
+milestone branch and is not on the default branch.
 
-That is the point of shipping it as a no-op first. It names today's behaviour honestly and puts the
-seam where a real boundary will attach.
+Naming the absence in a typed field is worth doing before any boundary exists, because a claim that
+travels with the work cannot go stale the way this paragraph can.
 
 **Not yet:** a container per node, with its own home, its own mounts, and its own network namespace
 with egress denied by default and allowed only to the model API. It is wanted rather than planned,

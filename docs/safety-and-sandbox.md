@@ -5,8 +5,9 @@ contained today**. It runs as the same operating system user as the coordinator,
 no separate account, so its shell can read anything that user can read and can make outbound network
 requests. Everything below raises the cost of an accident. None of it stops a determined process.
 
-That is stated here, and in the README, and as three false booleans on every record the system
-writes, because a safety claim that only lives in prose is the kind that gets believed.
+That is stated here and in the README, and nowhere else. It is not in the records the system
+writes, which say nothing about isolation at all - a safety claim that lives only in prose is the
+kind that gets believed, and this one has nowhere else to live yet.
 
 ---
 
@@ -107,51 +108,38 @@ node's token refresh from rewriting the operator's. It is hygiene, not isolation
 Files the system writes are owner-only where it matters: the journal, its audit copy, and every
 credential copy.
 
-## 7. The sandbox port, today
+## 7. There is no sandbox
 
-Nodes run behind a sandbox port with two halves. One is a declaration made once per run: what
-isolation this run's nodes have, as three booleans for filesystem, network egress and separate user.
-The other is a per-dispatch preparation step around an agent node's body, shaped as a context manager
-so an adapter can set something up and tear it down.
+A node runs as the coordinator's own operating system user, in the coordinator's own filesystem and
+network namespace. There is no boundary of any kind, and the record a node produces does not say so:
+nothing in it describes what isolation the work ran under. You have to know it from this document,
+which is the weakest possible way to carry a safety-relevant fact.
 
-Exactly one adapter is wired, and it declares all three booleans false, which is the truth. Its
-preparation step passes the request through unchanged.
+A sandbox port that would at least make the absence explicit, by declaring three false booleans on
+every record, is written and reviewed on the milestone branch. It is not on the default branch and
+nothing above describes it. When it lands, the honest statement becomes a journaled one, which is
+worth something even before any boundary exists: an isolation claim that travels with the work
+cannot quietly go stale the way a sentence in a document can.
 
-Two things make shipping that no-op worth doing rather than a formality. The declaration is stamped
-onto every record the run writes, at the point the record is constructed, so the isolation a piece of
-work ran under is a journaled fact that travels with it, and a record replayed from the journal keeps
-the declaration it was originally dispatched under rather than being restamped with today's. And the
-seam now exists in the one place a boundary has to attach, which means a real adapter is an adapter
-rather than a refactor.
-
-The preparation half is defined and tested and has no live call site yet, because what belongs in the
-request's environment cannot be settled before an adapter needs it. So today the port is exercised
-only through its declaration.
-
-## 8. What the sandbox could become
+## 8. What a boundary would take
 
 **A container per node** is the shape everyone means: its own home, its own mounts, and, the part
 that matters most, its own network namespace with egress denied by default and allowed only to the
-model API. The request shape the port already passes is drawn for that: the node directory and the
-worktree as the two writable mounts, the isolation root as the ceiling, a working directory that can
-be rewritten to an in-container path, the environment to inject, and an egress allowlist. The
-current adapter ignores all of it, which is why its egress boolean stays false however that list is
-filled in.
+model API.
 
 **What makes it hard is not the container.** The kernel assumes the coordinator and the node see one
 filesystem, and quite a lot rests on that assumption. The run directory is written by the
 coordinator. The gate is a child process the coordinator starts in the node's worktree. The
-isolation scan walks the run tree from the coordinator's side and compares content before and after.
-Put the node behind a mount boundary and every one of those has to cross it, and nobody has worked
-out how. That is why the preparation half of the port has no call site: what belongs in a node's
-environment cannot be settled before the adapter that needs it exists.
+isolation scan walks the run tree from the coordinator's side and hashes every file under it, before
+and after. Put the node behind a mount boundary and every one of those has to cross it, and nobody
+has worked out how.
 
 So the honest statement is that a boundary is wanted, the reason is measured, and the mechanism is
-open. The case for wanting it is that egress is the measured hole rather than the theorised one,
-and the command denylist in section 2 is the measurement.
+open. The case for wanting it is that egress is the measured hole rather than the theorised one, and
+the command denylist in section 2 is that measurement.
 
-**A virtual machine per node** would inherit the same open problem, more so, and only becomes
-worth solving if work is ever pointed at repositories outside our control.
+**A virtual machine per node** would inherit the same open problem, more so, and only becomes worth
+solving if work is ever pointed at repositories outside our control.
 
 **A separate operating system user per node** is the obvious first idea and it is the wrong one. It
 costs more than a container for the filesystem half of the problem, and it delivers nothing at all

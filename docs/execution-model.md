@@ -65,10 +65,13 @@ deadline should not orphan a completed result.
 The brief's file path is out, but its content is in. Where the text lives is not identity; the text
 is.
 
-Two consequences follow. A node whose inputs are unchanged has the same key across runs, which is
-what makes replay exact. And two different nodes that genuinely are the same call share one key, so
-the second is served the first's record without running: that is deduplication working, not a
-collision.
+Two consequences follow. A node whose inputs are unchanged has the same key on every relaunch of
+the same run, because its dependencies' records are served back byte for byte from the journal. That
+is what makes replay exact. It is not a property across runs: a record carries its own measured
+duration, so a fresh run of the same graph produces different keys below the first node.
+
+And two different nodes that genuinely are the same call share one key, so the second is served the
+first's record without running: that is deduplication working, not a collision.
 
 ## 4. The journal
 
@@ -78,14 +81,16 @@ with its own open, write, flush and sync. That ordering gives one guarantee and 
 is never ahead of the audit copy.
 
 Six kinds of line: a run started, a resume with its reason, a node started, a node's result, a human
-decision, and a run summary. Nothing else is state. There is a `state.json` beside the journal for
-convenience, but it is derived, and the journal is what a replay reads.
+decision, and a run summary. Those are the only DECISION state a replay reads. Two other things on
+disk are state the journal does not carry: the `done/` markers that make an apply idempotent, and a
+decision file in the window before a launch folds it in. `state.json` is derived, and is for the CLI
+and for people.
 
 ## 5. Replay, the crash window, and what resumable actually buys
 
 Folding the journal in one pass gives everything a relaunch needs: the results already recorded, the
-keys that have a started line and no result, the decisions already made, and the exact sequence of
-keys the last run dispatched.
+keys that have a started line and no result, the decisions already made, and every key any launch of
+this run has dispatched, in file order, duplicates included.
 
 ```mermaid
 graph TD
@@ -104,8 +109,12 @@ graph TD
 The crash window is the gap between the two lines, and it is exactly one node wide per node in
 flight. A process killed there leaves a started line with no result; the next launch finds no result
 for that key and runs the body again, in the same node directory as the attempt that died, so
-whatever the dead attempt wrote is still there for the retry to use. Everything else is served from
-the journal and does not run.
+whatever the dead attempt wrote is still there for the retry to use. Every other DISPATCH is served
+from the journal and its body does not run.
+
+The program around the dispatches does re-execute from the top. A relaunch re-reads its inputs,
+re-walks the run tree to take its snapshots, and appends a fresh run summary. What replay makes
+exact is which bodies run, not which lines of the workflow execute.
 
 That gives a testable property rather than a promise, and it is the one the kernel is checked
 against: kill a run between the started and result lines of one node, resume, and exactly that node
@@ -150,10 +159,11 @@ External effects are split in two. A `stage` node writes an intent describing wh
 performs nothing. An `apply` node performs intents, each guarded by a marker file named for the
 intent's deduplication key and touched only after the effect succeeded.
 
-That ordering is what makes a crash survivable in the one place it really matters. An effect either
-has not happened, or has happened and is marked. A crash between the effect and the marker leaves the
-marker missing, so the next run tries again, which is why the effect itself also re-checks external
-state before acting: the fleet migration re-reads the target and skips a push that is already there.
+That ordering is what makes a crash survivable in the one place it really matters. An effect is in
+one of three states: not performed, performed and marked, or performed but unmarked because the
+process died between the two non-atomic steps. The third is the whole reason for what follows. A
+missing marker sends the next run at it again, so the effect itself re-checks external state before
+acting: the fleet migration re-reads the target and skips a push that is already there.
 
 There is one more check at the same point, and it exists because of section 6. Immediately before
 performing, the applier re-reads what it is about to act on and compares it to what the intent named.
@@ -198,9 +208,13 @@ collide.
 
 What makes it structural rather than a promise is where a branch is allowed to write. A map branch
 writes inside its own isolation and returns a record. The reduce that closes the map writes one
-manifest mapping each branch to its record, and everything downstream reads that manifest rather
-than some shared object the branches have been mutating in flight. No branch writes back into
-coordinator state, so there is no concurrent write to drop and no merge rule to get wrong.
+manifest mapping each branch to its record. That manifest is the audit artefact: today nothing reads
+it back, and the shipped graph folds the branch records in memory and passes the reduce's own typed
+facts downstream. What matters is the direction of the writes. No branch writes into another
+branch's artefacts, so there is no concurrent write to drop and no merge rule to get wrong.
+
+Branches do accumulate into the coordinator's own in-memory bookkeeping, the token totals and the
+record map, which is safe only because the coordinator is single-threaded.
 
 That is the specific difference from the shared-state pattern described in
 [why agentdag exists](why-agentdag.md), and it earns being said outright rather than left as an
@@ -230,7 +244,9 @@ the process exited on purpose. Failed means the workflow raised. Done means it r
 launch appends a run summary.
 
 A raw process death writes nothing, which is the point: the state file still says running and a
-started line still has no result, and that pair is precisely how the next launch recognises a crash.
+started line still has no result. Nothing reads either one to classify the launch: the next launch
+simply finds no result for that key and runs the body again. That pair is how a PERSON recognises a
+crash, not how the coordinator does.
 
 **Not yet:** cancelling, cancelled and crashed exist in the vocabulary and nothing sets them. Cancel
 as an operation, and the deadline that would kill a node's scope and record a deadline error, are
@@ -252,8 +268,9 @@ in ordinary configuration, so that raising a turn ceiling does not move the poli
 
 The table also carries what the design calls thresholds and run limits: a floor on how much work
 justifies a dispatch, a fan-in width for reduce trees, a journal size to watch, a ceiling on
-continuations, per-row token ceilings for a whole run, and a deadline ceiling. They are loaded and
-reported on. Enforcing them is a later milestone.
+continuations, per-row token ceilings for a whole run, and a deadline ceiling. They are parsed into
+typed models and validated on load, so an operator's typo is a load error. Nothing reads them after
+that: neither the reporting nor the enforcing is built.
 
 **Not yet:** escalation. The rule for retrying a node one rank up, and what to do when there is no
 higher row, is described in the policy shape and is not implemented.
@@ -265,7 +282,8 @@ time. A long node grows its own context turn by turn until attention degrades, w
 [why agentdag exists](why-agentdag.md) is written around.
 
 The designed answer is a ceiling with a deterministic handover rather than a summary. The coordinator
-can read a node's context size exactly after every turn, from what the executor reports. At a
+can read what each turn's input cost from the usage the executor reports, which is a good enough
+proxy for what the model just saw. At a
 threshold it stops the node, which writes a typed handover record: what is done, what is left, the key
 facts, the artefact paths, the state of its write set. The node ends with a continuation status, and
 the coordinator dispatches a successor with the same brief plus that record, in the same worktree, on
