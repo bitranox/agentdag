@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ...domain.journal import ResultLine, StartedLine
 from ...domain.kernel_errors import KernelError
 from ...domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash
-from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
+from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord, SandboxGuarantees
 from ...domain.scrub import scrub
 from .ports import format_stamp, stamp
 from .replay import build_replay_index
@@ -120,7 +120,15 @@ class Dispatcher:
         """
         return cls(journal=journal, run_dir=run_dir, clock=clock, index=build_replay_index(journal.lines()))
 
-    async def dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:
+    async def dispatch(
+        self,
+        spec: NodeSpec,
+        *,
+        brief: str,
+        input_obj: Mapping[str, Any],
+        body: Body,
+        sandbox: SandboxGuarantees | None = None,
+    ) -> ResultRecord:
         """Serve this call's record from the journal, or run ``body`` once and record it.
 
         The key is appended to :attr:`dispatched_keys` BEFORE the index is consulted, so
@@ -133,6 +141,13 @@ class Dispatcher:
             brief: The node's brief, written to ``brief.md`` in its node directory.
             input_obj: The assembled input, written to ``input.json`` as canonical JSON.
             body: What to run when the journal has no result for this key.
+            sandbox: What isolation boundary this call runs under (Task 19), or ``None``
+                when the caller has none to declare. Stamped onto the record at
+                CONSTRUCTION time, before ``record.json`` is written and the journal's
+                ``result`` line is appended, so it is what actually gets persisted - not
+                applied here at all when ``call.key`` is already served: a served record
+                keeps whatever declaration it was ORIGINALLY dispatched under, because it
+                is read back from the journal untouched, never rebuilt.
 
         Returns:
             The record for this call: the journaled one when it was served, otherwise
@@ -147,8 +162,8 @@ class Dispatcher:
         served = self.index.results.get(call.key)
         if served is not None:
             self.records[spec.node_id] = served
-            return served  # replay: no node dir, no started line, no body
-        return await self._run_and_record(spec, call, body)
+            return served  # replay: no node dir, no started line, no body, no re-stamp
+        return await self._run_and_record(spec, call, body, sandbox=sandbox)
 
     def _identify(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any]) -> _Call:
         """Compute this call's journal key from the spec, its dependencies' records and its texts."""
@@ -170,7 +185,9 @@ class Dispatcher:
         except KeyError as exc:
             raise KernelError(f"node {node_id!r} depends on {dep!r}, which this run has not dispatched") from exc
 
-    async def _run_and_record(self, spec: NodeSpec, call: _Call, body: Body) -> ResultRecord:
+    async def _run_and_record(
+        self, spec: NodeSpec, call: _Call, body: Body, *, sandbox: SandboxGuarantees | None
+    ) -> ResultRecord:
         """Run one dispatch for real: inputs, ``started``, the body, the record, ``result``.
 
         A crash-window re-run computes this exact same key (design: the crash happens
@@ -192,7 +209,7 @@ class Dispatcher:
         # ResultRecord.input_hash is the record's OWN journal key (result-record.schema.json's
         # field description, and its examples), not call.input_hash - that is only ONE
         # ingredient journal_key() hashed together with brief_hash and prefix to produce it.
-        record = _complete(outcome, spec=spec, input_hash=call.key, duration_s=duration_s)
+        record = _complete(outcome, spec=spec, input_hash=call.key, duration_s=duration_s, sandbox=sandbox)
         self._write(node_dir, "record.json", record.model_dump_json(by_alias=True, indent=1))
         self.journal.append(ResultLine(key=call.key, record=record, at=stamp(self.clock)))
         self.records[spec.node_id] = record
@@ -298,7 +315,9 @@ def _refuse_empty(outcome: NodeOutcome) -> NodeOutcome:
     )
 
 
-def _complete(outcome: NodeOutcome, *, spec: NodeSpec, input_hash: str, duration_s: float) -> ResultRecord:
+def _complete(
+    outcome: NodeOutcome, *, spec: NodeSpec, input_hash: str, duration_s: float, sandbox: SandboxGuarantees | None
+) -> ResultRecord:
     """Complete a body's outcome into the record the coordinator branches on (design 2.2).
 
     Args:
@@ -311,6 +330,12 @@ def _complete(outcome: NodeOutcome, *, spec: NodeSpec, input_hash: str, duration
             :func:`~agentdag.domain.keys.journal_key` combines with the brief hash and
             the dependency prefix to produce the key).
         duration_s: How long the body ran, measured on the injected clock.
+        sandbox: What isolation boundary this dispatch ran under (Task 19), or ``None``
+            when the caller declared none. ``sandbox`` lives on
+            :class:`~agentdag.domain.models.ResultRecord`, not on ``outcome`` (a
+            :class:`~agentdag.domain.models.NodeOutcome`), so it is added as an explicit
+            key here rather than coming from ``outcome.model_dump()`` - the same reason
+            ``node_id``, ``attempt``, ``input_hash`` and ``duration_s`` are.
 
     Returns:
         The full :class:`~agentdag.domain.models.ResultRecord`.
@@ -322,5 +347,6 @@ def _complete(outcome: NodeOutcome, *, spec: NodeSpec, input_hash: str, duration
             "attempt": spec.attempt,
             "input_hash": input_hash,
             "duration_s": duration_s,
+            "sandbox": sandbox,
         }
     )

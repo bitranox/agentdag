@@ -47,11 +47,14 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   control this kernel is measured against until M5 compares the two.
 - A `Sandbox` port (`application/kernel/sandbox.py`) and its `none` adapter
   (`adapters/kernel/sandbox_none.py`, wired by default): definition only - a container
-  adapter is a later, deliberately parked task. `SandboxGuarantees` is stamped by the
-  coordinator onto every dispatched node's record (`ResultRecord.sandbox`), work and code
-  nodes alike, so a run's own records can say what boundary was actually in force instead
-  of only the README's prose; `NoSandbox` declares `filesystem`, `network_egress` and
-  `separate_uid` all `false` - the honest, unchanged-in-kind truth about today's kernel.
+  adapter is a later, deliberately parked task. `SandboxGuarantees` is stamped onto every
+  dispatched node's record (`ResultRecord.sandbox`) at the point the record is built, work
+  and code nodes alike, and persisted with it - `record.json` and the journal's `result`
+  line both carry it, so `agentdag run records` shows it too - instead of only the
+  README's prose; `NoSandbox` declares `filesystem`, `network_egress` and `separate_uid`
+  all `false` - the honest, unchanged-in-kind truth about today's kernel. A record served
+  from the journal on replay keeps the declaration it was originally dispatched under,
+  even when a later launch is wired with a different `Sandbox` adapter.
 
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are

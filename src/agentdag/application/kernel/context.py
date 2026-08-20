@@ -84,8 +84,9 @@ class Coordinator:
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: Resolves a spec to a model row, and carries the executor limits.
         sandbox: What isolation boundary every dispatched node runs under (Task 19); its
-            :meth:`~.sandbox.Sandbox.guarantees` is stamped onto every node's record by
-            :meth:`_dispatch`, whatever primitive dispatched it.
+            :meth:`~.sandbox.Sandbox.guarantees` is read once per dispatch by
+            :meth:`_dispatch`, whatever primitive dispatched it, and handed to the
+            dispatcher, which stamps it onto the record it builds.
         parallel: How many map branches may run at once, across the WHOLE run - the
             semaphore behind it is built once here and shared by every :meth:`map`
             call, so two maps running at the same time still admit ``parallel``
@@ -688,18 +689,17 @@ class Coordinator:
         dispatched spec's write set is recorded in :attr:`declared_write_sets`
         BEFORE the body runs - :meth:`scan` reads that map, never re-derives it.
 
-        Also the ONE place :attr:`sandbox`'s guarantees are stamped onto a record (Task 19):
+        Also the ONE place :attr:`sandbox`'s guarantees are READ for a dispatch (Task 19):
         every primitive routes through here, so every node - a work node dispatched through
         an :class:`~.ports.Executor` and a code node (gate, scan, reduce, ...) that never
         touches :attr:`sandbox` at all - carries the SAME declaration, because there is
-        exactly one :class:`~.sandbox.Sandbox` wired per run. Stamped onto the record
-        returned to the CALLER, after :meth:`~agentdag.application.kernel.dispatch.
-        Dispatcher.dispatch` has already written ``record.json`` and appended the journal's
-        ``result`` line - so a replayed (served) node's returned record reflects THIS
-        launch's wired sandbox, not necessarily the one the original dispatch ran under, and
-        neither ``record.json`` nor the journal line carries ``sandbox`` yet. Threading the
-        declaration into what actually gets persisted is follow-up work, not this task's -
-        see Task 19's report.
+        exactly one :class:`~.sandbox.Sandbox` wired per run. The declaration is handed to
+        :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`, which stamps it
+        onto the record it BUILDS, before ``record.json`` is written and the journal's
+        ``result`` line is appended - so what is actually persisted carries ``sandbox`` too,
+        not only what this method returns. A key already served from the journal is
+        returned untouched: it keeps whatever declaration it was ORIGINALLY dispatched
+        under, even when THIS launch is wired with a different :class:`~.sandbox.Sandbox`.
 
         Args:
             spec: The node being dispatched.
@@ -709,12 +709,15 @@ class Coordinator:
 
         Returns:
             The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
-            returned, already charged, with :attr:`sandbox`'s guarantees stamped on.
+            returned, already charged: freshly built with :attr:`sandbox`'s guarantees on
+            it, or served from the journal with its own original declaration intact.
         """
         self.declared_write_sets[spec.node_id] = tuple(spec.write_set)
-        record = await self.dispatcher.dispatch(spec, brief=brief, input_obj=input_obj, body=body)
+        record = await self.dispatcher.dispatch(
+            spec, brief=brief, input_obj=input_obj, body=body, sandbox=self.sandbox.guarantees()
+        )
         self._charge(record)
-        return record.model_copy(update={"sandbox": self.sandbox.guarantees()})
+        return record
 
     def _charge(self, record: ResultRecord) -> None:
         """Add a record's charged tokens to the run's per-row totals.

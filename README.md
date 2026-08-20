@@ -342,10 +342,11 @@ caveat above applies to the kernel unchanged in kind.
   so a run that failed on one can only be restarted as a NEW run. M3 adds the retry path.
 - **A `Sandbox` port now exists, but the shipped `none` adapter enforces nothing.** It
   turns the paragraph above into a typed declaration rather than only prose - every node
-  the coordinator dispatches gets back a record carrying `sandbox.adapter == "none"` with
-  `filesystem`, `network_egress` and `separate_uid` all `false` - though this version does
-  not yet thread it into the persisted journal, so `agentdag run records` does not show it
-  yet either.
+  the coordinator dispatches gets a record carrying `sandbox.adapter == "none"` with
+  `filesystem`, `network_egress` and `separate_uid` all `false`, persisted in `record.json`
+  and the journal's `result` line, so `agentdag run records` shows it too. A record served
+  from the journal on replay keeps the declaration it was originally dispatched under,
+  even when a later launch is wired with a different `Sandbox` adapter.
 
 ---
 
