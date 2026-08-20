@@ -23,7 +23,7 @@ more than the accumulated answer to these limits.
 | What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that inherits no settings                                            | anything that must outlive a step is written down, or it did not happen                                                                                    |
 | Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                 |
 | Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                        | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a large cost before any work: one cold dispatch measured about 19,000 tokens, and an inherited cascade adds tens of thousands more      | keep the inherited cascade at nothing, and give a node enough work to be worth starting at all                                                             |
+| Cost of one question | two minutes of work costs two minutes | a large fixed cost before any work: tens of thousands of tokens for the first node, about a tenth of that for each one after it that shares its brief | give a node enough work to be worth starting, and keep the brief identical across a fan-out so the prefix stays cached |
 | Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | dispatching to a fresh subagent separates the contexts properly; what returns is a summary, and the coordinator keeps every one of them | constrain the return channel: a typed record and a path, so the coordinator decides what happens next without ever holding what happened                   |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
@@ -72,21 +72,20 @@ free.
 your task, because its system prompt, its tool definitions and whatever settings cascade it
 inherits all have to be sent first.
 
-What that costs, measured here on ONE cold dispatch: a real node inheriting no settings at all paid
-about 19,000 tokens of input before the work began. A bare child with no tools and a trivial prompt
-paid 170, a floor no working node comes near, and that same trivial child rose to a few thousand
-with the project's settings and to tens of thousands with a full operator plugin set. The last of
-those is why the executor asks for no setting sources: it removes the part that is optional, not the
-cost itself.
+The FIRST node pays it in full. Measured on this machine, a node inheriting no settings at all still
+sends tens of thousands of tokens before the work starts: two probes of trivial work measured 19,000
+and 26,000, the difference being the brief and the tool set rather than anything the node did. So
+the figure is not a constant to quote, it is a floor that moves with what you send.
 
-What the SECOND node pays is not measured, though the mechanism suggests much less. Caching is a
-prefix match over the tools and the system prompt. In the shipped graph every node sends the same
-tool set and the same brief as its system prompt, and its working directory is a separate option
-rather than prompt text, so the prefix should be stable from one node to the next and a hit is
-billed at roughly a tenth. A workflow that gave each node a different brief would lose that.
+Every LATER node in the same run pays about a tenth of it. Caching is a prefix match over the tools
+and the system prompt; the shipped graph sends the same tool set and the same brief to every node,
+and a node's working directory is a separate option rather than prompt text, so the prefix is stable
+across nodes. Measured: two dispatches, identical brief, different working directories - the first
+read nothing from cache, the second read 26,159 of its 26,161 input tokens from cache. Same token
+count, and a cached read is billed at roughly a tenth.
 
-None of which is a measurement: every probe available is a cold start that read nothing from cache.
-Read the 19,000 as the first node's cost and the ceiling for the rest.
+So the cost of a fleet is one full startup plus a tenth of one per node after it, provided the nodes
+share a brief. A workflow that gave each node its own brief would pay it in full every time.
 
 The part that does not depend on that answer is the shape: the price is attached to starting a node
 rather than to the size of the task it is given, so a node should carry enough work to be worth
