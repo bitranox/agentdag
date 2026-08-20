@@ -24,7 +24,7 @@ from ...application.kernel.ports import LockToken
 from ...domain.kernel_errors import LockHeld
 from ...domain.models import LockHolder
 
-__all__ = ["FileRunLock", "current_holder", "holder_is_alive"]
+__all__ = ["FileRunLock", "current_holder", "holder_is_alive", "pid_exists"]
 
 _LOCK_MODE = 0o600
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
@@ -98,8 +98,14 @@ def _pid_exists_windows(pid: int) -> bool:
     return f'"{pid}"' in result.stdout
 
 
-def _pid_exists(pid: int) -> bool:
-    """Return whether a process with ``pid`` currently exists, on this platform."""
+def pid_exists(pid: int) -> bool:
+    """Return whether a process with ``pid`` currently exists, on this platform.
+
+    Public because it is this adapter's platform PRIMITIVE, separate from the policy
+    :func:`holder_is_alive` builds on it: "does this pid exist" is asked out-of-band by
+    anything that must confirm a process is really gone rather than trust a handle it
+    holds, and the answer needs a different system call on each platform.
+    """
     if sys.platform == "win32":
         return _pid_exists_windows(pid)
     try:
@@ -152,7 +158,7 @@ def holder_is_alive(holder: LockHolder) -> bool:
     """
     if _boot_differs(holder.boot_id):
         return False
-    if not _pid_exists(holder.pid):
+    if not pid_exists(holder.pid):
         return False
     if holder.pid_start_time == "-":
         return True

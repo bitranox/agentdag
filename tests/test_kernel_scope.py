@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from agentdag.adapters.kernel import scope_none
+from agentdag.adapters.kernel.lock_file import pid_exists
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
 from agentdag.composition.kernel import manager_state_is_live
@@ -75,7 +76,7 @@ def test_noscope_starts_reports_alive_and_kills_the_process(tmp_path: Path) -> N
 
     assert scope.kill(handle) is True
     assert scope.is_alive(handle) is False
-    assert not _pid_exists(handle.pid)
+    assert not pid_exists(handle.pid)
 
 
 @pytest.mark.os_posix
@@ -90,11 +91,11 @@ def test_noscope_kill_reaps_a_grandchild_not_only_the_process_it_started(tmp_pat
     scope = NoScope()
     handle = scope.start(unit="agentdag-noscope-grandchild", argv=_SPAWNS_A_CHILD_ARGV, env={}, cwd=tmp_path)
     grandchild = _grandchild_pid(handle.log_path)
-    assert _pid_exists(grandchild)  # control: it really is running before the kill
+    assert pid_exists(grandchild)  # control: it really is running before the kill
 
     assert scope.kill(handle) is True
 
-    assert not _pid_exists(handle.pid)
+    assert not pid_exists(handle.pid)
     assert _waits_until_gone(grandchild)
 
 
@@ -117,7 +118,7 @@ def _waits_until_gone(pid: int) -> bool:
     """
     deadline = time.monotonic() + _REAP_TIMEOUT_S
     while time.monotonic() < deadline:
-        if not _pid_exists(pid):
+        if not pid_exists(pid):
             return True
         time.sleep(0.05)
     return False
@@ -165,11 +166,11 @@ def test_noscope_kill_escalates_to_sigkill_for_a_child_that_ignores_sigterm(tmp_
     scope = NoScope()
     handle = scope.start(unit="agentdag-noscope-ignores-sigterm", argv=_IGNORE_SIGTERM_ARGV, env={}, cwd=tmp_path)
     time.sleep(_START_GRACE_S)
-    assert _pid_exists(handle.pid)  # control: it really is running, and really ignoring SIGTERM
+    assert pid_exists(handle.pid)  # control: it really is running, and really ignoring SIGTERM
 
     assert scope.kill(handle) is True
 
-    assert not _pid_exists(handle.pid)
+    assert not pid_exists(handle.pid)
 
 
 @pytest.mark.os_posix
@@ -200,7 +201,7 @@ def test_noscope_kill_survives_a_process_group_that_can_no_longer_be_signalled(
 
     monkeypatch.undo()
     assert scope.kill(handle) is True  # control: with killpg restored the same child dies
-    assert not _pid_exists(handle.pid)
+    assert not pid_exists(handle.pid)
 
 
 @pytest.mark.os_agnostic
@@ -242,7 +243,7 @@ def test_noscope_kill_returns_false_when_the_process_outlives_the_final_signal(t
         proc.poll, proc.wait = real_poll, real_wait  # type: ignore[method-assign]
         real_wait()  # actually reap the (genuinely dead) process so no zombie is left behind
 
-    assert not _pid_exists(handle.pid)  # the signals really were delivered, patches aside
+    assert not pid_exists(handle.pid)  # the signals really were delivered, patches aside
 
 
 @pytest.mark.parametrize(
@@ -300,43 +301,6 @@ def test_systemdscope_confirm_reports_the_captured_stderr_for_an_early_failure(t
 
     assert result.alive is False
     assert result.stderr.strip() != ""
-
-
-def _pid_exists(pid: int) -> bool:
-    """Return whether a process with ``pid`` currently exists, on either platform.
-
-    Out-of-band on purpose: the adapter's own ``is_alive`` reads its ``Popen``, so a test
-    that only asked the adapter could not tell "the OS process is gone" from "the object
-    thinks so". The probe differs per platform, and neither form works on the other:
-
-    * POSIX: signal 0 exists precisely to ask this question without delivering anything.
-    * Windows: there is no signal 0. ``os.kill(pid, 0)`` there calls ``TerminateProcess``
-      on the handle, which would KILL a live process instead of reporting on it, and it
-      succeeds for a process that has already exited while any handle to it is still open
-      (``Popen`` holds one), so it answers "alive" for a dead pid. The liveness question is
-      asked the way the lock adapter asks it in production instead - ``tasklist``, which
-      lists running processes only.
-    """
-    if sys.platform == "win32":
-        # Suppressions below: a resolved executable and a fixed argument list, never a shell
-        # string - the same call the lock adapter makes in production.
-        listed = subprocess.run(  # nosec B603  # noqa: S603
-            [shutil.which("tasklist") or "tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=30,
-        )
-        return f'"{pid}"' in listed.stdout
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _cgroup_procs_path(unit: str) -> Path:
