@@ -215,6 +215,24 @@ parallel when they share no mutable artifact. In the shipped graph that is true 
 every branch owns its own worktree, and the graph refuses to start on a fleet where two members would
 collide.
 
+What makes it structural rather than a promise is where a branch is allowed to write. A map branch
+writes inside its own isolation and returns a record. The reduce that closes the map writes one
+manifest mapping each branch to its record, and everything downstream reads that manifest rather
+than some shared object the branches have been mutating in flight. No branch writes back into
+coordinator state, so there is no concurrent write to drop and no merge rule to get wrong.
+
+That is the specific difference from the shared-state pattern described in
+[why agentdag exists](why-agentdag.md), and it earns being said outright rather than left as an
+implication. Naming a hazard in somebody else's design is cheap unless you also say what you do
+instead.
+
+**Not yet:** the kernel does not enforce any of it. That paragraph describes how the shipped graph
+is written and what the design requires, not something checked at runtime. The isolation scan
+catches a write to a path nobody declared, which is a different guarantee, and it would not stop a
+workflow author handing two branches the same declared path. This is the general shape of the
+coordinator's properties today: conventions where a durable-execution platform would have
+mechanisms.
+
 Serialisation for a shared resource is done at the resource, not by the scheduler. The test gate is
 the example: every gate run in the system takes one host-wide lock, because the build tool
 environment is shared across the machine and two gates would rebuild it under each other. So the

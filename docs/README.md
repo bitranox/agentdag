@@ -46,6 +46,9 @@ The baseline graph is still in the repository and still runs, as the control the
 against. It carries no journal, no cap and no unattended approval on purpose: what their absence
 costs is the thing worth knowing.
 
-The full design corpus, including the probes behind the measured claims and the milestone plans at
-three altitudes, is internal and not part of this repository. What it decided is stated in these
-documents rather than linked.
+The premises this design rests on are measured rather than assumed: what a dispatch costs, and so
+how much work a node has to carry to be worth starting; what each executor's surface actually
+offers, which is what the parity table reports; and what a coordinator does when it dies between a
+node finishing and that node's record landing. Those measurements, and the full design corpus behind
+them, are internal and not part of this repository, so these documents state what they establish
+rather than linking to them.

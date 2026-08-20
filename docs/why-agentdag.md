@@ -16,7 +16,9 @@ organised and degrades for reasons nobody can see.
 
 ## 1. A model is not a person
 
-**Status:** rationale, stable.
+**Status:** rationale. The two named effects below, lost-in-the-middle and context rot, are cited
+from general knowledge rather than checked against the papers. The argument does not rest on the
+citation: anyone can watch attention degrade on their own workload without one.
 
 Five constraints actually bind a language model working as part of a system. None of them is the one
 an org chart is designed around.
