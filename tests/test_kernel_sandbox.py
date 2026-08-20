@@ -49,6 +49,7 @@ class _OneRowPolicy:
     max_turns: int = 5
     deny_bash: tuple[str, ...] = ()
     tokens_per_row: Mapping[str, int] = {"sonnet": 10}
+    deadline_ceiling_s: float = 999_999.0
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""

@@ -80,6 +80,7 @@ class LoadedPolicy:
         self.max_turns = max_turns
         self.deny_bash = deny_bash
         self.tokens_per_row: Mapping[str, int] = table.run_limits.tokens_per_row
+        self.deadline_ceiling_s: float = table.run_limits.deadline_ceiling_s
         self.rows: dict[str, TierRow] = {row.alias: row for row in table.models}
         self.thresholds: Thresholds = table.thresholds
 

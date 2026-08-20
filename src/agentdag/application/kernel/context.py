@@ -165,6 +165,15 @@ class Coordinator:
         would push the run's row total past ``policy.tokens_per_row``. Both checks are a
         no-op for a node whose spec declares no cap for the resolved row.
 
+        The node deadline (design 7, M3; a DIFFERENT quantity from the token cap - wall-clock
+        seconds elapsed, never a token count) is threaded the same way:
+        ``min(spec.deadline_s, policy.deadline_ceiling_s)`` reaches ``ExecutorRequest.deadline_s``,
+        clamped HERE rather than left to the executor, so the executor never has to know
+        about the run-limit ceiling at all - it only ever compares elapsed time against the
+        one already-clamped figure it was handed. The clamp is silent (no journal line): the
+        planner-driven ``clamp`` event of design 2.3 rule 4 is out of scope here, same as the
+        other three run-limit clamps ``domain.policy`` already documents as such.
+
         The resolved row naming an executor :attr:`executors` does not carry (the tier
         policy table describes the full target deployment; wiring an executor is a
         separate, incremental step - a policy row can legitimately be ``available``
@@ -213,6 +222,7 @@ class Coordinator:
             "effort": spec.effort,
         }
         node_cap = spec.budget.tokens.get(row.alias)
+        node_deadline_s = min(spec.deadline_s, self.policy.deadline_ceiling_s)
 
         async def body(node_dir: Path) -> NodeOutcome:
             if row.executor not in self.executors:
@@ -242,6 +252,7 @@ class Coordinator:
                 write_set=tuple(spec.write_set),
                 deny_bash=self.policy.deny_bash,
                 token_cap=node_cap,
+                deadline_s=node_deadline_s,
             )
             return await executor.run(request)
 

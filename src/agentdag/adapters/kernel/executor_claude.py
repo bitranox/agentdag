@@ -72,16 +72,18 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClie
 from ...domain.kernel_errors import KernelError
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
 from ...domain.scrub import scrub
+from .clock_utc import UtcClock
 from .hooks_claude import deny_bash_commands, deny_outside_root
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from datetime import datetime
     from pathlib import Path
 
     from claude_agent_sdk import EffortLevel
     from claude_agent_sdk import HookCallback as _SdkHookCallback
 
-    from ...application.kernel.ports import ExecutorRequest
+    from ...application.kernel.ports import Clock, ExecutorRequest
 
 __all__ = [
     "DEFAULT_TOOLS",
@@ -563,11 +565,19 @@ class ClaudeExecutor:
             positional ``credentials``).
         tools: The tool set a node may call, matched against
             ``ClaudeAgentOptions.allowed_tools``. Defaults to :data:`DEFAULT_TOOLS`.
+        clock: The seam :meth:`_run` reads wall-clock time through to enforce a node's
+            own deadline (design 7, M3) - the SAME kind of injected seam every other
+            duration in this kernel is measured on (``application.kernel.ports.Clock``),
+            never a bare ``time.monotonic()`` call, so a test can drive the deadline
+            check with a fake clock instead of a real sleep. Defaults to
+            :class:`~agentdag.adapters.kernel.clock_utc.UtcClock` so every call site and
+            test fixture built before M3 still constructs without naming it.
     """
 
     credentials: CredentialSource
     deny_bash: tuple[str, ...] = field(kw_only=True)
     tools: tuple[str, ...] = field(default=DEFAULT_TOOLS, kw_only=True)
+    clock: Clock = field(default_factory=UtcClock, kw_only=True)
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
         """Validate ``request``, then run it to completion and report its outcome.
@@ -650,12 +660,27 @@ class ClaudeExecutor:
         single terminal usage snapshot rather than summed turn by turn) - see
         :meth:`_on_turn`'s own docstring for why a per-turn figure alone can never
         serve as a spend cap.
+
+        The node deadline (design 7, M3) is checked at the SAME turn seam, right after
+        the token cap and only when the cap itself did not already fire this turn (no
+        second ``interrupt()`` once one ceiling has already stopped the dispatch) - but
+        it is a DIFFERENT quantity entirely: :meth:`_deadline_exceeded` compares WALL-CLOCK
+        SECONDS ELAPSED since ``dispatch_started`` (read once, here, before ``query()``)
+        against ``request.deadline_s``, never ``running_total`` (a token count) and never
+        compared against ``request.token_cap``. ``deadline_hit`` is latched exactly like
+        ``cap_hit`` and checked FIRST at both exit points below: a dispatch cannot cross
+        both ceilings on the very same turn (only the first ``interrupt()`` call is ever
+        made), but if it somehow did, the deadline record - ``cancelled``/``deadline`` -
+        is what the run keeps, since a node that ran too long is what actually happened
+        even when it also happened to be spending too much.
         """
         options = self._options_for(request)
         transcript_path = request.node_dir / "transcript.jsonl"
+        dispatch_started = self.clock.now()
         first_turn_input = 0
         seen_first_turn = False
         cap_hit = False
+        deadline_hit = False
         running_total = 0
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
@@ -667,12 +692,23 @@ class ClaudeExecutor:
                         first_turn_input = input_total(usage)
                         seen_first_turn = True
                     running_total += input_total(usage) + int(usage.get("output_tokens", 0))
-                    if not cap_hit and await self._on_turn(running_total, client, request.token_cap):
-                        cap_hit = True
+                    if not cap_hit and not deadline_hit:
+                        cap_hit = await self._on_turn(running_total, client, request.token_cap)
+                    if (
+                        not cap_hit
+                        and not deadline_hit
+                        and self._deadline_exceeded(dispatch_started, request.deadline_s)
+                    ):
+                        await client.interrupt()
+                        deadline_hit = True
                 if isinstance(message, ResultMessage):
+                    if deadline_hit:
+                        return self._deadline_outcome(request, first_turn_input, message.usage or {})
                     if cap_hit:
                         return self._budget_outcome(request, first_turn_input, message.usage or {})
                     return self._outcome_for(request, message, first_turn_input, cwd_rel)
+        if deadline_hit:
+            return self._deadline_outcome(request, first_turn_input, {})
         if cap_hit:
             return self._budget_outcome(request, first_turn_input, {})
         return NodeOutcome(
@@ -864,6 +900,110 @@ class ClaudeExecutor:
                 type=ErrorType.BUDGET_EXCEEDED,
                 message=(
                     f"node token cap {request.token_cap} exceeded at a turn seam; "
+                    "interrupted, overshoot bounded by one turn"
+                ),
+                transient=False,
+            ),
+        )
+
+    def _deadline_exceeded(self, dispatch_started: datetime, deadline_s: float | None) -> bool:
+        """Whether WALL-CLOCK time elapsed since ``dispatch_started`` has passed ``deadline_s``.
+
+        The node-deadline half of the M3 turn seam, deliberately a PURE comparison with
+        no ``interrupt()`` call of its own (unlike :meth:`_on_turn`, which both decides
+        AND acts) - :meth:`_run` calls ``client.interrupt()`` itself once this returns
+        ``True``, the same shape :meth:`_on_turn` uses, kept as two separate calls here
+        only because this method has no client to call it on without widening its
+        signature for no reason: ``self.clock.now() - dispatch_started`` is the only
+        thing it needs.
+
+        Args:
+            dispatch_started: When this dispatch's ``query()`` call was made, read from
+                :attr:`clock` ONCE at the top of :meth:`_run` - never re-read here, so
+                every turn's check measures elapsed time against the SAME start.
+            deadline_s: ``request.deadline_s`` - this node's own wall-clock ceiling in
+                SECONDS, already clamped to ``Policy.deadline_ceiling_s`` by
+                :meth:`~agentdag.application.kernel.context.Coordinator.work` before it
+                ever reached :class:`~agentdag.application.kernel.ports.ExecutorRequest`,
+                or ``None`` for a call site that predates this field (every test fixture
+                built before M3) - nothing is enforced then, mirroring :meth:`_on_turn`'s
+                own "no cap declared, nothing checked" rule for :attr:`token_cap`.
+
+        Returns:
+            ``True`` once elapsed SECONDS strictly exceeds ``deadline_s`` - inclusive at
+            the boundary itself, same as :meth:`_on_turn`'s own ``<=`` reading of
+            ``token_cap``: a node may fully spend the deadline it was given, not be cut
+            off the instant it reaches it exactly.
+
+        Example:
+            >>> from datetime import datetime, timedelta, timezone
+            >>> from pathlib import Path
+            >>> class _FixedClock:
+            ...     def __init__(self, now: datetime) -> None:
+            ...         self._now = now
+            ...     def now(self) -> datetime:
+            ...         return self._now
+            >>> started = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+            >>> executor = ClaudeExecutor(
+            ...     OAuthTokenFile(Path("unused")), deny_bash=(),
+            ...     clock=_FixedClock(started + timedelta(seconds=10)),
+            ... )
+            >>> executor._deadline_exceeded(started, 10.0)
+            False
+            >>> executor._deadline_exceeded(started, 9.0)
+            True
+        """
+        if deadline_s is None:
+            return False
+        elapsed_s = (self.clock.now() - dispatch_started).total_seconds()
+        return elapsed_s > deadline_s
+
+    def _deadline_outcome(
+        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]
+    ) -> NodeOutcome:
+        """Build the record a deadline-stopped dispatch gets, stamped on the path that called ``interrupt()``.
+
+        Mirrors :meth:`_budget_outcome` exactly - the SAME probe finding applies here:
+        an interrupted dispatch's terminal message never says "interrupted" (a plain
+        SUCCESS at a turn boundary, a transient ``executor_error`` mid-tool), so this is
+        the ONLY place a deadline-stopped node's outcome may be decided, never the
+        terminal ``ResultMessage`` :meth:`_run` may still receive afterward. Same two
+        load-bearing omissions too: no ``artefact_refs`` (a half-finished worktree is
+        never handed downstream as complete) and ``error.transient=False`` (a node
+        stopped for running too long must not be Task 24's retry target, straight back
+        into running out of time again).
+
+        Args:
+            request: The dispatch this outcome is for - ``request.model`` names the row
+                charged, ``request.deadline_s`` is quoted in the error message.
+            first_turn_input: What :meth:`_run` recorded as the FIRST turn's own
+                :func:`input_total`, kept in ``key_facts`` like every other outcome.
+            usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
+                produced, or ``{}`` on the rarer path where the stream ended with no
+                terminal message at all.
+
+        Returns:
+            A ``CANCELLED`` outcome (design 2.2: "cancelled: the scheduler stopped it -
+            deadline or cancel"), ``error.type=DEADLINE``, ``transient=False``,
+            ``key_facts["deadline_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
+        """
+        in_tokens = input_total(usage)
+        out_tokens = int(usage.get("output_tokens", 0))
+        cache_read = int(usage.get("cache_read_input_tokens", 0))
+        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        return NodeOutcome(
+            status=NodeStatus.CANCELLED,
+            key_facts={"deadline_hit": True, "first_turn_input_tokens": first_turn_input},
+            typed_fields=["deadline_hit"],
+            tokens=tokens,
+            charged_tokens={request.model: in_tokens + out_tokens},
+            executor_used="claude",
+            model_used=request.model,
+            effort_used=_NO_VALUE,
+            error=NodeError(
+                type=ErrorType.DEADLINE,
+                message=(
+                    f"node deadline {request.deadline_s}s exceeded at a turn seam; "
                     "interrupted, overshoot bounded by one turn"
                 ),
                 transient=False,

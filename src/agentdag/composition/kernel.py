@@ -72,11 +72,12 @@ def wire_kernel(
     Returns:
         The wiring for one launch (or relaunch) of the coordinator.
     """
+    clock = UtcClock()
     return KernelWiring(
         journal_factory=JsonlJournal,
         lock=FileRunLock(),
-        clock=UtcClock(),
-        executors={"claude": ClaudeExecutor(credentials=credential, deny_bash=tuple(deny_bash))},
+        clock=clock,
+        executors={"claude": ClaudeExecutor(credentials=credential, deny_bash=tuple(deny_bash), clock=clock)},
         gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=IsolationScanner(),

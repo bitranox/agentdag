@@ -45,6 +45,9 @@ class OneRowPolicy:
     max_turns: int = 5
     deny_bash: tuple[str, ...] = ("git push",)
     tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
+    deadline_ceiling_s: float = 999_999.0
+    """Generous like ``tokens_per_row`` above - :class:`LowDeadlineCeilingPolicy` is the
+    one that exercises the clamp; nothing here should trip it by accident."""
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
@@ -55,6 +58,18 @@ class LowCeilingPolicy(OneRowPolicy):
     """:class:`OneRowPolicy`, but a run ceiling low enough for the budget-cap tests to hit."""
 
     tokens_per_row: Mapping[str, int] = {"sonnet": 100}
+
+
+class LowDeadlineCeilingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a deadline ceiling below ``work_spec``'s own ``deadline_s``.
+
+    ``work_spec()`` declares ``deadline_s=3600``; this ceiling is well under that, so a
+    dispatch under this policy proves :meth:`~agentdag.application.kernel.context.Coordinator.work`
+    clamps the SPEC's requested deadline to ``policy.deadline_ceiling_s`` before it ever
+    reaches :class:`~agentdag.application.kernel.ports.ExecutorRequest`.
+    """
+
+    deadline_ceiling_s: float = 30.0
 
 
 class RecordingExecutor:
@@ -257,6 +272,38 @@ def test_work_threads_the_node_s_own_cap_into_the_executor_request(tmp_path: Pat
     asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
 
     assert executor.requests[0].token_cap == 400_000  # work_spec()'s own Budget(tokens={"sonnet": 400_000})
+
+
+@pytest.mark.os_agnostic
+def test_work_threads_the_node_s_own_deadline_into_the_executor_request(tmp_path: Path) -> None:
+    """The node deadline's own call site (design 7, M3): a DIFFERENT quantity from the
+    token cap above (wall-clock seconds, never a token count) and a DIFFERENT limits
+    field (``deadline_ceiling_s``, never ``tokens_per_row``) - proven here under a
+    ceiling generous enough that ``work_spec()``'s own ``deadline_s=3600`` reaches the
+    executor UNCHANGED.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert executor.requests[0].deadline_s == 3600  # work_spec()'s own deadline_s, well under OneRowPolicy's ceiling
+
+
+@pytest.mark.os_agnostic
+def test_work_clamps_the_node_s_deadline_to_the_policy_s_ceiling(tmp_path: Path) -> None:
+    """The clamp itself (design 2.3 rule 4): ``work_spec()`` declares ``deadline_s=3600``,
+    well past :class:`LowDeadlineCeilingPolicy`'s own 30-second ceiling - the SPEC's own
+    value must never reach the executor unclamped, whatever a node asked for.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowDeadlineCeilingPolicy())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert executor.requests[0].deadline_s == 30.0  # the ceiling, not the spec's own 3600
 
 
 @pytest.mark.os_agnostic

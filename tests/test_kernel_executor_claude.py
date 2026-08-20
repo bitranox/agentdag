@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import stat
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -775,5 +776,208 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
     assert outcome.error.transient is False
     assert outcome.artefact_refs == []
     assert outcome.key_facts.get("cap_hit") is True
+    assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
+    assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
+
+
+# ---------------------------------------------------------------------------------
+# M3: the node deadline, the SAME turn seam as the token cap above but a DIFFERENT
+# quantity - elapsed WALL-CLOCK SECONDS since dispatch start, never a token count. Every
+# test below either drives a clock double directly (proving the comparison reads TIME)
+# or is built so a mutation that swapped the deadline check for the token-cap one, or
+# vice versa, would fail it - the "unit trap" the task brief named explicitly.
+# ---------------------------------------------------------------------------------
+
+_STARTED = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+
+class _SequenceClock:
+    """A ``Clock`` stand-in returning each of a pre-programmed sequence of readings in turn.
+
+    ``ClaudeExecutor._run`` reads the clock once at dispatch start, then once more per
+    ``AssistantMessage`` arrival (:meth:`ClaudeExecutor._deadline_exceeded`) - this fake
+    is built with exactly that many readings, in order, so a test pins precisely what
+    elapsed time each check saw without depending on real wall-clock timing at all.
+    Clamps at the last reading rather than raising if over-read, so a test that is off by
+    one call fails on an assertion rather than an unrelated ``IndexError``.
+    """
+
+    def __init__(self, readings: list[datetime]) -> None:
+        self._readings = list(readings)
+        self._index = 0
+
+    def now(self) -> datetime:
+        """Return the next staged reading, or the last one if this instance is over-read."""
+        reading = self._readings[min(self._index, len(self._readings) - 1)]
+        self._index += 1
+        return reading
+
+
+@pytest.mark.os_agnostic
+def test_deadline_exceeded_compares_elapsed_seconds_never_a_token_count(tmp_path: Path) -> None:
+    """Direct unit test of the comparison itself, mirroring
+    ``test_on_turn_interrupts_once_the_running_total_passes_the_cap``'s own shape for the
+    token cap. Inclusive at the boundary (``>``, never ``>=``), same reading as
+    ``_on_turn``'s own ``<=``: a node may fully spend the deadline it was given.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+
+    def executor_at(reading: datetime) -> ClaudeExecutor:
+        return ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=_SequenceClock([reading]))
+
+    assert executor_at(_STARTED + timedelta(seconds=10))._deadline_exceeded(_STARTED, 10.0) is False  # pyright: ignore[reportPrivateUsage]
+    assert executor_at(_STARTED + timedelta(seconds=11))._deadline_exceeded(_STARTED, 10.0) is True  # pyright: ignore[reportPrivateUsage]
+    # No deadline declared at all: never enforced, however much time elapsed.
+    assert executor_at(_STARTED + timedelta(days=1))._deadline_exceeded(_STARTED, None) is False  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.os_agnostic
+def test_run_interrupts_a_node_that_exceeds_its_deadline_and_a_higher_deadline_lets_it_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    turns = [_turn(10), _turn(10)]  # trivial token usage: nowhere near any real cap
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    # Readings: dispatch start, then after turn 1 (5s elapsed), then after turn 2 (15s).
+    readings = [_STARTED, _STARTED + timedelta(seconds=5), _STARTED + timedelta(seconds=15)]
+
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=_SequenceClock(readings))
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome = asyncio.run(executor.run(_request(tmp_path, deadline_s=10.0)))
+    assert outcome.status == "cancelled"
+    assert outcome.error is not None
+    assert outcome.error.type == "deadline"
+    instance = FakeStreamClient.instances[0]
+    assert instance.interrupt_calls == 1
+    assert instance.turns_yielded == 2  # crossed only after the second turn's elapsed reading
+
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=_SequenceClock(readings))
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome2 = asyncio.run(executor.run(_request(tmp_path, deadline_s=20.0)))
+    assert outcome2.status == "done"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+
+@pytest.mark.os_agnostic
+def test_run_s_deadline_check_reads_the_clock_and_never_the_token_running_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unit-trap proof the task brief named explicitly: a comparison that
+    accidentally read ``running_total`` (tokens) instead of elapsed seconds - or vice
+    versa - would get BOTH halves of this test backwards.
+
+    Arm 1: a HUGE token running total (1,000, dwarfing any real per-turn cap) but only 1
+    REAL second elapsed, against ``deadline_s=500``. A buggy comparison of tokens against
+    ``deadline_s`` would read 1,000 > 500 and wrongly interrupt; the real comparison
+    (1 second elapsed <= 500) must NOT interrupt.
+
+    Arm 2: the mirror image - a TINY running total (1 token) but 1,000 REAL seconds
+    elapsed, against the SAME ``deadline_s=500``. A buggy comparison of tokens against
+    ``deadline_s`` would read 1 <= 500 and wrongly let it through; the real comparison
+    (1,000 seconds elapsed > 500) must interrupt.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+
+    huge_tokens_tiny_time = [_turn(1000)]
+    clock_a = _SequenceClock([_STARTED, _STARTED + timedelta(seconds=1)])
+    executor_a = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock_a)
+    FakeStreamClient.configure(huge_tokens_tiny_time, _result(is_error=False, subtype="success", num_turns=1))
+    outcome_a = asyncio.run(executor_a.run(_request(tmp_path, deadline_s=500.0)))
+    assert outcome_a.status == "done"  # 1 real second elapsed: nowhere near the 500s deadline
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+    tiny_tokens_huge_time = [_turn(1)]
+    clock_b = _SequenceClock([_STARTED, _STARTED + timedelta(seconds=1000)])
+    executor_b = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock_b)
+    FakeStreamClient.configure(tiny_tokens_huge_time, _result(is_error=False, subtype="success", num_turns=1))
+    outcome_b = asyncio.run(executor_b.run(_request(tmp_path, deadline_s=500.0)))
+    assert outcome_b.status == "cancelled"  # 1000 real seconds elapsed: past the 500s deadline
+    assert outcome_b.error is not None
+    assert outcome_b.error.type == "deadline"
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("is_error", "subtype"),
+    [(False, "success"), (True, "error_during_execution")],
+    ids=["turn_boundary_success_shaped", "mid_tool_error_shaped"],
+)
+def test_a_deadline_stopped_node_s_record_is_cancelled_deadline_regardless_of_the_sdk_s_own_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_error: bool, subtype: str
+) -> None:
+    """Both SDK shapes the probe measured (``workflow/design/probes/m3-interrupt.md`` in
+    RESEARCH), same as the budget cap's own equivalent test: NEITHER may decide this
+    node's outcome. Both must land ``CANCELLED``/``deadline``, ``transient=False``, no
+    artefact ref at all.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    turns = [_turn(1)]  # trivial usage: the DEADLINE is what fires here, not the cap
+    result = _result(is_error=is_error, subtype=subtype, num_turns=1, usage_input=1)
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, result)
+    clock = _SequenceClock([_STARTED, _STARTED + timedelta(seconds=11)])
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, deadline_s=10.0)))
+
+    assert outcome.status == "cancelled"
+    assert outcome.artefact_refs == []
+    assert outcome.error is not None
+    assert outcome.error.type == "deadline"
+    assert outcome.error.transient is False  # never retried straight back into running out of time again
+    assert outcome.key_facts.get("deadline_hit") is True
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_node_with_no_declared_deadline_is_never_interrupted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control for the whole call site: ``ExecutorRequest.deadline_s`` defaults to
+    ``None``, and a dispatch under it runs to a normal DONE outcome, whatever the clock
+    reports elapsing.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    turns = [_turn(1)]
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=1))
+    clock = _SequenceClock([_STARTED, _STARTED + timedelta(days=365)])  # absurdly over any real deadline
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path)))  # deadline_s not overridden: None
+
+    assert outcome.status == "done"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+
+@pytest.mark.os_agnostic
+def test_run_reports_deadline_with_empty_usage_when_the_stream_ends_with_no_terminal_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deadline's own equivalent of
+    ``test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_no_terminal_message``:
+    ``_run``'s own ``if deadline_hit: return self._deadline_outcome(request, first_turn_input, {})``
+    after the ``async with`` block, reached when the stream ends with no terminal
+    ``ResultMessage`` at all.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", _NoTerminalStreamClient)
+    clock = _SequenceClock([_STARTED, _STARTED + timedelta(seconds=11)])
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, deadline_s=10.0)))
+
+    assert outcome.status == "cancelled"
+    assert outcome.error is not None
+    assert outcome.error.type == "deadline"
+    assert outcome.error.transient is False
+    assert outcome.artefact_refs == []
+    assert outcome.key_facts.get("deadline_hit") is True
     assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
     assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
