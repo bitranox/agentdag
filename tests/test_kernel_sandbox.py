@@ -102,7 +102,7 @@ def _coordinator(
         run_dir=run_dir,
         clock=UtcClock(),
         executors={},
-        gate_port=MakeTestGate(lock=tmp_path / "gate.lock"),
+        gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=_OneRowPolicy(),
