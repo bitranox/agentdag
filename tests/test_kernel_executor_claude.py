@@ -703,3 +703,77 @@ def test_a_node_with_no_declared_cap_is_never_interrupted(tmp_path: Path, monkey
 
     assert outcome.status == "done"
     assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+
+class _NoTerminalStreamClient:
+    """A ``ClaudeSDKClient`` stand-in whose stream ends with NO terminal ``ResultMessage`` at all.
+
+    ``FakeStreamClient`` above always yields its staged ``ResultMessage`` after the
+    turns loop, whether or not it was interrupted early - that is exactly what the
+    two SDK-shape tests need (the probe measured a terminal message always arrives,
+    in one of two shapes). This fake covers the ONE branch neither of those reaches:
+    ``ClaudeExecutor._run``'s own ``if cap_hit: return self._budget_outcome(request,
+    first_turn_input, {})`` sitting AFTER the ``async with`` block - reached only when
+    the stream closes with no terminal message whatsoever (a connection drop right
+    after the interrupted turn, before the SDK's own terminal message would have
+    arrived).
+    """
+
+    instances: ClassVar[list[_NoTerminalStreamClient]] = []
+
+    def __init__(self, *, options: object) -> None:
+        self.options = options
+        self.interrupt_calls = 0
+        type(self).instances.append(self)
+
+    async def __aenter__(self) -> _NoTerminalStreamClient:
+        """Return self, matching ``ClaudeSDKClient``'s own context-manager protocol."""
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """No-op: nothing this fake holds needs releasing."""
+        return None
+
+    async def query(self, prompt: str) -> None:
+        """Record the prompt this dispatch queried with (unused by the test, kept for shape parity)."""
+
+    async def receive_response(self) -> AsyncIterator[AssistantMessage | ResultMessage]:
+        """Yield one over-cap turn, then end the stream with no ``ResultMessage`` at all."""
+        yield _turn(500)  # crosses any small cap on the very first turn
+
+    async def interrupt(self) -> None:
+        """Record that this dispatch was asked to stop."""
+        self.interrupt_calls += 1
+
+
+@pytest.mark.os_agnostic
+def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_no_terminal_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one branch neither SDK-shape test reaches: ``_run``'s own
+    ``if cap_hit: return self._budget_outcome(request, first_turn_input, {})`` after
+    the ``async with`` block - a capped dispatch whose stream ends with no terminal
+    ``ResultMessage`` at all. Both
+    ``test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_s_own_shape``
+    cases go through a ``ResultMessage`` arriving (one of the two shapes the probe
+    measured); this one never gets one, so ``_budget_outcome`` is called with an EMPTY
+    usage mapping rather than a terminal one - it must still report a well-formed
+    ``BUDGET_EXCEEDED`` record (zero charged tokens, since no terminal usage was ever
+    seen), not fall through to the generic "no ResultMessage" ``EXECUTOR_ERROR`` a few
+    lines below it in the source.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", _NoTerminalStreamClient)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.type == "budget_exceeded"
+    assert outcome.error.transient is False
+    assert outcome.artefact_refs == []
+    assert outcome.key_facts.get("cap_hit") is True
+    assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
+    assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
