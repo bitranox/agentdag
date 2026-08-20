@@ -155,9 +155,17 @@ def _signal_tree(proc: subprocess.Popen[bytes], *, terminate: bool) -> None:
     """Signal ``proc``'s whole process group on POSIX, or just ``proc`` on Windows.
 
     The group id is ``proc.pid`` because :meth:`NoScope.start` made the child a group
-    leader. ``ProcessLookupError`` is expected and ignored: the child can exit between
-    the liveness check and this call, and its group then no longer exists - that is the
-    outcome the caller wanted, not a failure.
+    leader. Two errors are expected and ignored, and both mean the same thing - there is
+    nothing left in the group to signal, which is the outcome the caller wanted:
+
+    * ``ProcessLookupError`` (ESRCH): the child exited between the liveness check and this
+      call, and its group is gone.
+    * ``PermissionError`` (EPERM): the child has exited but not been reaped, so the group
+      holds only a zombie. Linux answers ESRCH (or succeeds) there; macOS and the BSDs
+      answer EPERM, which uncaught escaped :meth:`NoScope.kill`, a method documented to
+      return a ``bool`` (measured on macOS CI, every Python version, 2026-08-18). EPERM
+      cannot mean "not ours" here: this adapter only ever signals a group it created
+      itself in :meth:`NoScope.start`.
 
     The platform test is written as ``sys.platform == "win32"`` inline rather than
     through :data:`_POSIX`, because that is the form the type checker narrows on: with
@@ -175,5 +183,5 @@ def _signal_tree(proc: subprocess.Popen[bytes], *, terminate: bool) -> None:
             proc.kill()
         return
     sig = signal.SIGTERM if terminate else signal.SIGKILL
-    with contextlib.suppress(ProcessLookupError):
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, sig)

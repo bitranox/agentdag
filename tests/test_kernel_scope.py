@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from agentdag.adapters.kernel import scope_none
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
 from agentdag.composition.kernel import manager_state_is_live
@@ -139,6 +140,37 @@ def test_noscope_confirm_reports_the_captured_stderr_for_an_early_failure(tmp_pa
     assert "boom: bad argv" in result.stderr
     assert handle.log_path.is_file()
     assert "boom: bad argv" in handle.log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="no process group, so no killpg to refuse")
+def test_noscope_kill_survives_a_process_group_that_can_no_longer_be_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unsignalable process group leaves ``kill`` returning ``bool``, never raising.
+
+    ``os.killpg`` answers EPERM - not ESRCH - for a group holding only a zombie on macOS
+    and the BSDs, and that reached CI as a ``PermissionError`` out of a method documented
+    to return a ``bool``. Injected here at the true external edge (the ``os`` call itself)
+    so the case is provable on every POSIX host, not only the one whose kernel picks EPERM.
+    The grace window is shortened for the same reason it exists - the child really is alive
+    throughout, because the signals never reach it.
+    """
+    monkeypatch.setattr(scope_none, "_TERM_GRACE_S", 0.2)
+
+    def _refuses(pgid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    scope = NoScope()
+    handle = scope.start(unit="agentdag-noscope-eperm", argv=_SLEEP_ARGV, env={}, cwd=tmp_path)
+    time.sleep(_START_GRACE_S)
+    monkeypatch.setattr(scope_none.os, "killpg", _refuses)
+
+    assert scope.kill(handle) is False  # bool, not a PermissionError
+
+    monkeypatch.undo()
+    assert scope.kill(handle) is True  # control: with killpg restored the same child dies
+    assert not _pid_exists(handle.pid)
 
 
 @pytest.mark.os_agnostic
