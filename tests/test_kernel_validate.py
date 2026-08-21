@@ -115,3 +115,23 @@ def test_still_refuses_a_model_kind_that_claims_the_code_executor() -> None:
     reasons = validate_spec(spec(kind=Kind.WORK, executor="code"), limits=limits())
 
     assert any("executor" in reason for reason in reasons), reasons
+
+
+def test_refuses_a_tier_role_above_its_kinds_ceiling() -> None:
+    """DECISIONS.md item 9: this REFUSES rather than clamping.
+
+    Clamping would be silent this milestone, and shipped ``per_kind_ceiling`` is
+    ``{work: deep}`` while 2.3 rule 1 gives judge panels ``top`` - so a silently
+    downgraded judge would return a verdict the coordinator branches on.
+    """
+    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.TOP), limits=limits())
+
+    assert any("ceiling" in reason for reason in reasons), reasons
+
+
+def test_admits_a_tier_role_at_or_below_its_kinds_ceiling() -> None:
+    """The ceiling is inclusive: ``deep`` is allowed where the ceiling IS ``deep``."""
+    for role in (TierRole.MECHANICAL, TierRole.STANDARD, TierRole.DEEP):
+        reasons = validate_spec(spec(kind=Kind.WORK, tier_role=role), limits=limits())
+
+        assert not any("ceiling" in reason for reason in reasons), (role, reasons)

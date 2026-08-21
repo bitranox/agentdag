@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .models import Kind
+from .models import Kind, TierRole
 
 if TYPE_CHECKING:
     from .models import NodeSpec
@@ -52,6 +52,13 @@ CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPL
 
 FAN_OUT_KINDS = frozenset({Kind.MAP, Kind.BATCH})
 """Fan-out and fold performed by the coordinator itself, which carry NO executor (design 2.1)."""
+
+ROLE_ORDER = (TierRole.MECHANICAL, TierRole.STANDARD, TierRole.DEEP, TierRole.TOP)
+"""Ascending role order, stated by design 2.3 rule 2 as ``mechanical < standard < deep < top``.
+
+Lives here because the validator is its only consumer today; 2.3 rule 5's escalation will want
+it too, and should move it beside :class:`~agentdag.domain.models.TierRole` when it lands.
+"""
 
 
 def validate_spec(spec: NodeSpec, *, limits: RunLimits) -> tuple[str, ...]:
@@ -71,7 +78,24 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits) -> tuple[str, ...]:
         reasons.append(f"kind {spec.kind.value!r} is not planner-emittable; allowed: {allowed}")
     reasons.extend(_executor_reasons(spec))
     reasons.extend(_tier_role_reasons(spec))
+    reasons.extend(_ceiling_reasons(spec, limits))
     return tuple(reasons)
+
+
+def _ceiling_reasons(spec: NodeSpec, limits: RunLimits) -> list[str]:
+    """Return the reason ``spec.tier_role`` outranks its kind's ``per_kind_ceiling``.
+
+    REFUSES rather than clamping (DECISIONS.md item 9), which amends design 2.3 rule 4: a
+    clamp is silent this milestone, so a judge quietly dropped from ``top`` to ``deep`` would
+    still return a verdict the coordinator branches on. A kind with no ceiling entry has no
+    ceiling to outrank.
+    """
+    ceiling = limits.per_kind_ceiling.get(spec.kind.value)
+    if spec.tier_role is None or ceiling is None:
+        return []
+    if ROLE_ORDER.index(spec.tier_role) <= ROLE_ORDER.index(ceiling):
+        return []
+    return [f"tier_role {spec.tier_role.value!r} outranks the {spec.kind.value!r} ceiling {ceiling.value!r}"]
 
 
 def _tier_role_reasons(spec: NodeSpec) -> list[str]:
