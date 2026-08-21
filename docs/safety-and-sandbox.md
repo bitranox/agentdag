@@ -90,8 +90,14 @@ the honest summary is that a node's grandchildren are only reliably reaped in th
 Which one you get is decided by probing at startup rather than by trying and falling back, because a
 scope that should have worked and did not is worth stopping on.
 
-**Not yet:** cancel as an operation, and a deadline that kills the scope and records a deadline
-error, are a later milestone.
+Both now exist. `run cancel` writes the intent and returns at once with `cancelling`; the run is
+`cancelled` only once the cgroup is verified empty, so a `make test` grandchild still running fails
+the check rather than passing it. A node past its own `deadline_s` is interrupted at the executor's
+turn seam and recorded `cancelled` with `error.type = deadline`.
+
+**Not yet:** a deadline for the RUN as a whole. Only the per-node one exists - `deadline_ceiling_s`
+is a ceiling on what a node may declare, not a clock over the run - so nothing stops a long run on
+elapsed time except an operator running `run cancel`.
 
 ## 6. Things that look like access control and are not
 

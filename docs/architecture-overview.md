@@ -233,12 +233,12 @@ Detail in [the execution model](execution-model.md).
 Token usage is measured per node and accumulated per model row across the run, and it is
 in the record and the run summary. A turn ceiling per node exists.
 
-**Not yet:** a cap that fires. Budgets are declared on nodes, per-row ceilings are declared in the
-policy, and a budget-exceeded error type exists, but nothing refuses a dispatch or interrupts a node
-yet. The seam is in place and the mechanism is designed: check the streamed per-turn usage and
-interrupt when the row's cap is passed, accepting one turn of overshoot rather than pretending it
-can be zero,
-and refuse the next dispatch when the run-level cap is reached.
+The cap now fires, at both ends. Before a dispatch, the coordinator refuses a node whose own cap
+would push the run past its ceiling. During one, the executor checks the streamed per-turn usage and
+interrupts the client when the row's cap is passed, accepting one turn of overshoot rather than
+pretending it can be zero. A node stopped that way is recorded `failed` with
+`error.type = budget_exceeded`, and it is stamped as not transient, so a retry cannot fund itself
+by re-running work a cap already refused.
 
 One cost note that shapes graphs rather than limiting them: starting an agent costs roughly the same
 whatever you send it, so a node has to be worth the greeting. The design's rule of thumb is that an

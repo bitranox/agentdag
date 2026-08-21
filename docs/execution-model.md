@@ -149,9 +149,15 @@ decision. And a payload whose default option would cause an external side effect
 validation: a default the coordinator may apply unattended must never itself be the destructive
 option.
 
-**Not yet:** the timer that applies a payload's default when a deadline passes, and the notification
-that tells someone a run is waiting. Both are later milestones. Today a suspended run waits until a
-person looks.
+Both halves of the waiting are now handled. `agentdag run apply-deadlines`, driven by the user
+timer under `deploy/`, applies a payload's default once its own `decide_by` has passed and records
+the decision as `by: system`; it takes the run's lock to do it, so it cannot race a coordinator.
+And the coordinator emits a run event when it suspends, carrying the payload's own text and its
+deadline, so a person is told rather than having to look. Where that event goes is configuration
+(`kernel.notify`): nowhere by default, or one mail through the same adapter the email commands use.
+
+**Not yet:** a second sink. A client push is designed and unbuilt, and a sink that fails mid-run is
+silent by choice - `agentdag notify-test` is the one place a broken sink reports itself.
 
 ## 7. Side effects: stage, apply, and doing it once
 
@@ -251,10 +257,21 @@ started line still has no result. Nothing reads either one to classify the launc
 simply finds no result for that key and runs the body again. That pair is how a PERSON recognises a
 crash, not how the coordinator does.
 
-**Not yet:** cancelling, cancelled and crashed exist in the vocabulary and nothing sets them. Cancel
-as an operation, and the deadline that would kill a node's scope and record a deadline error, are
-later milestones. Whether either can reap a node's grandchildren depends on how the coordinator was
-launched; see
+All three of the remaining states are now written by something. `run cancel` records the intent and
+sets `cancelling` at once, and the run becomes `cancelled` only once the scope's cgroup is verified
+empty - the stop verb reporting success is not the test. A node that passes its own `deadline_s` is
+interrupted at the executor's turn seam and its record says `cancelled` with
+`error.type = deadline`.
+
+`crashed` is the odd one, because the run that reaches it cannot write it: a raw process death
+writes nothing at all, which is what the paragraph above describes. So it is written from OUTSIDE,
+by the same periodic pass that applies approve deadlines, and only when three things hold together
+- the state file still says running, the run's lock can be taken (a live coordinator holds its own
+for the whole launch), and the journal is not empty (its first line is appended after the lock).
+The second and third are what separate a crashed run from one that is merely STARTING, since
+`run start` writes `state=running` before the background coordinator exists.
+
+Whether a cancel can reap a node's grandchildren depends on how the coordinator was launched; see
 [safety and sandbox](safety-and-sandbox.md).
 
 ## 11. The tier policy
