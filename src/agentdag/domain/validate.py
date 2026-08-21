@@ -48,13 +48,33 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from .models import Kind, TierRole
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from .models import NodeSpec
     from .policy import RunLimits
 
-__all__ = ["validate_spec"]
+__all__ = ["SpecContext", "validate_spec"]
+
+
+class SpecContext(BaseModel):
+    """What a refuse rule needs BESIDES the spec and the run limits, already resolved.
+
+    Run-scoped and pure: the caller assembles it, so the rules stay free of I/O. A field left
+    empty means "the caller has nothing to check against", and the rules that would use it stay
+    SILENT rather than guessing - a validator that refuses because the caller passed no graph
+    would be worse than one that says nothing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    graph: dict[str, tuple[str, ...]] = Field(default_factory=dict[str, tuple[str, ...]])
+    """Already-admitted node ids to their deps, for existence and acyclicity."""
+
 
 CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPLY, Kind.APPROVE})
 """The kinds the coordinator runs as code, which carry ``executor: "code"`` (design 2.1)."""
@@ -70,12 +90,14 @@ it too, and should move it beside :class:`~agentdag.domain.models.TierRole` when
 """
 
 
-def validate_spec(spec: NodeSpec, *, limits: RunLimits) -> tuple[str, ...]:
+def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | None = None) -> tuple[str, ...]:
     """Return every reason to refuse ``spec``, empty when it may be dispatched.
 
     Args:
         spec: The planner-emitted spec to validate.
         limits: The run's ceilings and allowlists.
+        context: What the rules need besides the spec, already resolved by the caller. Omitted
+            means the rules that need it stay silent rather than guessing.
 
     Returns:
         One human-readable reason per broken rule, in rule order. Empty means the spec
@@ -89,7 +111,35 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits) -> tuple[str, ...]:
     reasons.extend(_tier_role_reasons(spec))
     reasons.extend(_ceiling_reasons(spec, limits))
     reasons.extend(_write_set_reasons(spec))
+    reasons.extend(_dep_reasons(spec, context or SpecContext()))
     return tuple(reasons)
+
+
+def _dep_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
+    """Return the reasons ``spec.deps`` name a missing node or close a cycle (design 2.4)."""
+    if spec.node_id in spec.deps:
+        return [f"node {spec.node_id!r} lists itself as a dep, which is a cycle of one"]
+    if not context.graph:
+        return []
+    reasons = [f"dep {dep!r} names no admitted node" for dep in spec.deps if dep not in context.graph]
+    if _reaches(spec.node_id, spec.deps, context.graph):
+        reasons.append(f"deps of {spec.node_id!r} close a cycle; one of them already depends on it")
+    return reasons
+
+
+def _reaches(target: str, start: Sequence[str], graph: Mapping[str, tuple[str, ...]]) -> bool:
+    """Return whether ``target`` is reachable from ``start`` by following dep edges."""
+    seen: set[str] = set()
+    pending = list(start)
+    while pending:
+        node = pending.pop()
+        if node == target:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        pending.extend(graph.get(node, ()))
+    return False
 
 
 def _write_set_reasons(spec: NodeSpec) -> list[str]:

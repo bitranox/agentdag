@@ -17,7 +17,7 @@ from typing import Any
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
 from agentdag.domain.policy import RunLimits
-from agentdag.domain.validate import validate_spec
+from agentdag.domain.validate import SpecContext, validate_spec
 
 
 def limits(**over: Any) -> RunLimits:
@@ -181,3 +181,37 @@ def test_admits_the_write_set_shapes_graph_a_actually_declares() -> None:
         reasons = validate_spec(spec(write_set=[good]), limits=limits())
 
         assert not any("write_set" in reason for reason in reasons), (good, reasons)
+
+
+def test_refuses_a_dep_that_names_no_admitted_node() -> None:
+    """2.4: deps must name nodes that exist."""
+    context = SpecContext(graph={"g_one": ()})
+
+    reasons = validate_spec(spec(deps=["g_one", "g_missing"]), limits=limits(), context=context)
+
+    assert any("g_missing" in reason for reason in reasons), reasons
+    assert not any("g_one" in reason for reason in reasons), reasons
+
+
+def test_refuses_a_spec_that_would_close_a_cycle() -> None:
+    """2.4: deps must leave the graph acyclic. w_new -> b -> a -> w_new is a cycle."""
+    context = SpecContext(graph={"a": ("w_new",), "b": ("a",)})
+
+    reasons = validate_spec(spec(node_id="w_new", deps=["b"]), limits=limits(), context=context)
+
+    assert any("cycle" in reason for reason in reasons), reasons
+
+
+def test_refuses_a_spec_that_depends_on_itself() -> None:
+    """The one-node cycle, which a naive reachability walk misses."""
+    reasons = validate_spec(spec(node_id="w_self", deps=["w_self"]), limits=limits(), context=SpecContext())
+
+    assert any("cycle" in reason or "itself" in reason for reason in reasons), reasons
+
+
+def test_admits_a_dag_and_says_nothing_about_deps_with_no_context() -> None:
+    """A caller with no graph to check against gets no dep verdict rather than a false one."""
+    context = SpecContext(graph={"a": (), "b": ("a",)})
+
+    assert not any("dep" in r for r in validate_spec(spec(deps=["a", "b"]), limits=limits(), context=context))
+    assert not any("dep" in r for r in validate_spec(spec(deps=["anything"]), limits=limits()))
