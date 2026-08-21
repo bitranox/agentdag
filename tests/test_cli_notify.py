@@ -126,7 +126,10 @@ def test_notify_test_reports_a_failing_sink_loudly_instead_of_containing_it(cli:
 
     result = cli.invoke(cli_mod.cli, ["notify-test"], obj=obj)
 
-    assert result.exit_code != ExitCode.SUCCESS
+    # The exact code, not merely non-zero: it is an operator-facing contract, and it is
+    # GENERAL_ERROR rather than the mail-specific SMTP_FAILURE so it stays true for a sink
+    # that carries no SMTP. The cause travels in the message.
+    assert result.exit_code == ExitCode.GENERAL_ERROR
     assert "no route to host" in result.output
 
 

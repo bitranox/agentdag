@@ -57,6 +57,12 @@ def cli_notify_test(ctx: click.Context) -> None:
     correct answer rather than a failure), and non-zero when resolving or delivering it
     failed - so a setup script can branch on it.
 
+    A delivery failure exits ``GENERAL_ERROR``, not the mail-specific ``SMTP_FAILURE``,
+    even though mail is the only sink that can fail today: the code has to stay TRUE for
+    the next sink (a client push carries no SMTP), and an operator debugging a failed push
+    against a name that says SMTP looks at the wrong system. The sink's own error text
+    carries the cause, which is where a cause belongs.
+
     Raises:
         SystemExit: the sink could not be resolved (``kernel.notify`` names something
             unknown, or ``mail`` with no SMTP host - both refused by the same code a run
@@ -76,5 +82,5 @@ def cli_notify_test(ctx: click.Context) -> None:
         notifier.emit(event)
     except Exception as failed:
         safe_console.echo(f"the configured sink failed: {failed}", err=True)
-        raise SystemExit(ExitCode.SMTP_FAILURE) from failed
+        raise SystemExit(ExitCode.GENERAL_ERROR) from failed
     safe_console.echo("the configured sink accepted a test notification.")
