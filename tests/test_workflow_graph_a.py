@@ -121,6 +121,29 @@ class RecordingGit(GitCli):
         super().push(worktree, target, branch)
 
 
+class CrashingPushGit(GitCli):
+    """The real git adapter, dying AFTER a push lands and before anything records it.
+
+    This is the window the ``done/<kind>/<key>`` marker cannot close on its own:
+    :meth:`~agentdag.application.kernel.context.Coordinator.apply` performs the effect
+    first and touches the marker second, so a process death between the two leaves the
+    push made and nothing on disk saying so. ``SystemExit`` is what reaches the caller:
+    it is a ``BaseException``, so the dispatcher's failed-record handler does not catch
+    it and the launch dies the way a killed process would.
+    """
+
+    def __init__(self) -> None:
+        """Start with no pushes recorded."""
+        super().__init__()
+        self.pushes: list[tuple[Path, Path, str]] = []
+
+    def push(self, worktree: Path, target: Path, branch: str) -> None:
+        """Push for real, record it, then die before the marker can be written."""
+        super().push(worktree, target, branch)
+        self.pushes.append((worktree, target, branch))
+        raise SystemExit(1)
+
+
 def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = None) -> Coordinator:
     """Build a coordinator over an EXISTING run directory, with the real adapters.
 
@@ -392,6 +415,63 @@ def test_a_crash_after_the_body_committed_keeps_the_commit_and_the_branch_still_
     assert git("rev-parse", "HEAD", cwd=run_dir.worktree("b")) == committed  # committed once, not twice
     tally = json.loads((run_dir.root / "artefacts" / "tally.json").read_text(encoding="utf-8"))
     assert [row["status"] for row in tally["rows"]] == ["passed", "passed"]
+
+
+@pytest.mark.os_agnostic
+def test_a_crash_between_the_push_and_its_marker_replays_without_pushing_twice(tmp_path: Path) -> None:
+    """Design section 9, ``stage/apply idempotency``: the effect is performed once ever.
+
+    The dangerous window is not the one the marker covers. ``_apply_one`` reads the
+    marker, performs, then touches it, so a death in the middle leaves an IRREVERSIBLE
+    effect applied with nothing recording it - and the replay re-dispatches the node,
+    because its ``started`` line has no ``result``. What makes the second attempt a
+    no-op is ``perform_push``'s external-state check reading the target REF, not the
+    marker, which is why the recorded outcome below must be ``already-present`` and
+    never ``already-done``.
+
+    The control is in the same test: the guard is a ref comparison and not a blanket
+    refusal, so winding the target back off the pushed commit makes the same path push
+    again. Without it, code that simply never pushed would pass.
+    """
+    executor = CommittingExecutor()
+    _, run_dir = launch(tmp_path, executor, parallel=1, names=["a"])  # suspends at the approve node
+    decide(run_dir, "approve")
+
+    crasher = CrashingPushGit()
+    with pytest.raises(SystemExit):
+        launch(tmp_path, executor, resume="decision", parallel=1, git_port=crasher)
+
+    run_dir = FsRunDir.open(tmp_path / "runs", "r1")
+    scratch = tmp_path / "scratch"
+    origin = scratch / "origin" / "a.git"
+    approved = git("rev-parse", "main", cwd=origin)
+    key = dedup_key(origin, approved)
+    # The window is real, not hypothetical: the push landed, and nothing on disk knows.
+    assert len(crasher.pushes) == 1
+    assert not run_dir.marker("push", key).exists()
+    assert len(build_replay_index(journal_of(run_dir)).crash_window) == 1
+
+    recorder = RecordingGit()
+    outcome, _ = launch(tmp_path, executor, resume="crash", parallel=1, git_port=recorder)
+
+    lines = journal_of(run_dir)
+    started = [line.node_id for line in lines if isinstance(line, StartedLine)]
+    # Without this the no-push assertion below would pass vacuously on a node never re-run.
+    assert started.count("ap_push") == 2
+    assert recorder.pushes == []
+    assert git("rev-parse", "main", cwd=origin) == approved
+    assert run_dir.marker("push", key).exists()
+    assert records_of(lines, "ap_push")[-1].key_facts["outcomes"] == {key: "already-present"}
+    assert outcome.status is RunStatus.DONE
+
+    behind = git("rev-parse", f"{approved}^", cwd=origin)
+    git("update-ref", "refs/heads/main", behind, cwd=origin)
+    control = RecordingGit()
+    intent = PushIntent(repo=origin, head_sha=approved, dedup_key=key)
+
+    assert perform_push(coordinator_over(run_dir, tmp_path, git=control), scratch, intent) == "pushed"
+
+    assert len(control.pushes) == 1
 
 
 @pytest.mark.os_agnostic

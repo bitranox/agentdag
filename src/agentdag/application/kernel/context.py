@@ -700,14 +700,23 @@ class Coordinator:
     async def apply(
         self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: Callable[[HasDedupKey], str]
     ) -> ResultRecord:
-        """Perform each staged intent exactly once, guarded by its ``done/<kind>/<key>`` marker.
+        """Perform each staged intent, guarded by its ``done/<kind>/<key>`` marker.
+
+        The marker is written AFTER the effect, so it cannot be the whole guarantee: a
+        process death between the two leaves the effect applied and unrecorded, and the
+        replay re-dispatches the node and calls ``perform`` again. Closing that window is
+        ``perform``'s own job, not this method's.
 
         Args:
             spec: The apply node's spec.
             intents: The same intents a prior :meth:`stage` call staged.
             kind: The intent kind; also the marker subdirectory, ``done/<kind>/``.
-            perform: Does the one real effect (e.g. a push); called at most once per
-                dedup key, ever, across every apply call that ever names that key.
+            perform: Does the one real effect (e.g. a push). The marker keeps it from
+                being called again once it has RECORDED one. Across the crash window it
+                is called again, so it must read the target's external state and decline
+                an effect already there - graph A's ``perform_push`` compares the target
+                REF, and reports ``"already-present"`` where the marker would have said
+                ``"already-done"``.
 
         Returns:
             ``done``, with ``key_facts["outcomes"]`` mapping each dedup key to either

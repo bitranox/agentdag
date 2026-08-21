@@ -269,6 +269,7 @@ def launch(
     resume: str | None = None,
     parallel: int = 2,
     names: list[str] | None = None,
+    git_port: GitCli | None = None,
 ) -> tuple[RunOutcome, FsRunDir]:
     """Start (or resume) one graph A run over a real run directory and return its outcome.
 
@@ -287,6 +288,9 @@ def launch(
             calls; nothing persists it in between.
         names: The fleet a FRESH run migrates; defaults to two members. An empty list
             is a fleet of none, which is what makes ``g_discover`` halt the run.
+        git_port: The git port this launch runs over; defaults to the shipped adapter.
+            Injected at the seam production uses, so a test can watch or interrupt the
+            one effect that leaves the process without patching anything.
 
     Returns:
         The run's outcome, and the run directory it ran over.
@@ -310,7 +314,7 @@ def launch(
             args=args,
             executors={"claude": executor},
             gate_port=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
-            git=GitCli(),
+            git=git_port if git_port is not None else GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
             sandbox=NoSandbox(),
