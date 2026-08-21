@@ -23,6 +23,16 @@ Three rules are deliberately absent, and none of them is an oversight:
 Known inconsistency, recorded rather than resolved: 2.4 lists ``deadline_s`` over
 ``deadline_ceiling_s`` as a refuse rule, while ``context.py:246`` silently clamps it with
 ``min()``. The shipped clamp is tested and is left alone.
+
+Measured 2026-08-22, and it is why nothing calls this function yet: run over graph A's seven
+hand-authored specs, these rules pass six and refuse ``ap_push`` for ``kind: apply``. That
+refusal is CORRECT for a planner and WRONG for graph A, whose apply node is hand-authored and
+legitimate - 2.4 governs planner-emitted specs only. So this cannot be wired into the dispatch
+path; it can only gate a planner's output, and no planner exists. The same run caught a real
+defect in the executor rule, which had demanded an ``executor`` that a model kind may legitimately
+omit because the resolved ROW supplies it. That control is not a test: asserting it needs graph A's
+private spec builders, and reaching into them fails pyright's ``reportPrivateUsage`` with no
+precedent in this suite. It belongs in the graph A e2e test once a spec-capturing seam exists.
 """
 
 from __future__ import annotations
@@ -84,6 +94,8 @@ def _executor_reasons(spec: NodeSpec) -> list[str]:
     elif spec.kind in FAN_OUT_KINDS:
         if named is not None:
             return [f"kind {spec.kind.value!r} is coordinator fan-out and carries no executor, but named {named!r}"]
-    elif named is None or named == "code":
-        return [f"kind {spec.kind.value!r} is model-executed, so its executor must name a model runner, not {named!r}"]
+    elif named == "code":
+        # None is legitimate: LoadedPolicy.resolve takes the executor from the resolved model
+        # ROW, so a model kind carrying tier_role and model alone (graph A's w_migrate) is valid.
+        return [f"kind {spec.kind.value!r} is model-executed, so its executor may not be 'code'"]
     return []

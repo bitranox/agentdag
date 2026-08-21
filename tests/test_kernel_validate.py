@@ -93,3 +93,25 @@ def test_refuses_a_role_on_a_kind_that_resolves_no_model_row() -> None:
         reasons = validate_spec(spec(kind=kind, executor=executor, tier_role=TierRole.DEEP), limits=limits())
 
         assert any("tier_role" in reason for reason in reasons), (kind, reasons)
+
+
+def test_admits_a_model_kind_that_leaves_the_executor_to_the_policy_row() -> None:
+    """A model-executed spec may omit ``executor``: the resolved ROW supplies it.
+
+    Graph A's shipped ``w_migrate`` does exactly this - ``tier_role`` and ``model``, no
+    ``executor`` - and ``LoadedPolicy.resolve`` returns ``ResolvedRow(executor=row.executor)``.
+    A rule demanding one here refuses a spec that runs today.
+    """
+    reasons = validate_spec(
+        spec(kind=Kind.WORK, executor=None, tier_role=TierRole.STANDARD, model="sonnet"),
+        limits=limits(),
+    )
+
+    assert not any("executor" in reason for reason in reasons), reasons
+
+
+def test_still_refuses_a_model_kind_that_claims_the_code_executor() -> None:
+    """Omitting the executor is fine; naming the CODE runner for a model kind is not."""
+    reasons = validate_spec(spec(kind=Kind.WORK, executor="code"), limits=limits())
+
+    assert any("executor" in reason for reason in reasons), reasons
