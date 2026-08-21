@@ -1,9 +1,9 @@
-"""GatePort: ``make test`` (or an injected command) under ONE host-wide file lock.
+"""GatePort: ``make test`` (or an injected command), run as a subprocess.
 
 The gate is the mechanical step the agent cannot satisfy by asserting that it did the
-work: it is a separate process and the coordinator reads only its exit code. The lock
-exists because the bmk tool environment is shared across the whole host, so two gates
-running at once can rebuild it under each other.
+work: it is a separate process and the coordinator reads only its exit code. It gets an
+explicit, filtered environment (see :data:`GATE_ENV_ALLOWLIST`) rather than inheriting
+the coordinator's whole one.
 
 Contents:
     * :data:`GATE_ENV_ALLOWLIST` - the only environment variables a gate process gets.
@@ -23,10 +23,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = ["GATE_ENV_ALLOWLIST", "MakeTestGate", "gate_env", "withheld_names"]
-
-"""How long a gate call waits for the host-wide lock before giving up (M1 leftover): long
-enough for a real ``make test`` run under contention, short enough that a wedged holder is
-reported rather than hung on forever."""
 
 _GATE_LOG_MODE = 0o600
 """``gate.log`` is a store file like every other one under the run directory: created

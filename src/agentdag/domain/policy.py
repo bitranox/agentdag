@@ -92,11 +92,17 @@ class Escalation(BaseModel):
 
 
 class Thresholds(BaseModel):
-    """The three named thresholds of design 3.5, as policy-table data, not code constants."""
+    """The named thresholds of design 3.5 and 3.8, as policy-table data, not code constants.
+
+    ``min_node_tokens`` is the granularity FLOOR in tokens rather than in minutes, because a
+    dispatch's token count does not move with cache state while its wall-clock does. It is the
+    per-dispatch startup cost divided by the acceptable overhead fraction, so it needs no
+    throughput term at all, which removes the largest source of drift from the figure.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    min_node_minutes: int
+    min_node_tokens: int
     reduce_tree_fanin: int
     journal_max_lines: int
     max_continuations: int
@@ -174,7 +180,7 @@ def resolve_row(table: PolicyTable, *, tier_role: TierRole | None, model: str | 
         ...     "kind_defaults": {},
         ...     "escalation": {"max_hops": 1, "then": "approve", "no_higher_row": "approve",
         ...                    "on_auth_failure": "fail_run"},
-        ...     "thresholds": {"min_node_minutes": 1, "reduce_tree_fanin": 1, "journal_max_lines": 1,
+        ...     "thresholds": {"min_node_tokens": 1, "reduce_tree_fanin": 1, "journal_max_lines": 1,
         ...                    "max_continuations": 1},
         ...     "run_limits": {"tokens_per_row": {}, "deadline_ceiling_s": 1.0, "per_kind_ceiling": {},
         ...                    "planner_kinds": [], "top_role_budget_floor": 0.0},

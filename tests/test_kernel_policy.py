@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.domain.kernel_errors import SpecRejected
 from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.policy import Thresholds
 
 if TYPE_CHECKING:
     from typing import Any
@@ -51,6 +53,32 @@ def test_shipped_policy_loads_and_is_versioned_by_content() -> None:
     assert p.rows["sonnet"].handover_at_tokens == 100_000
     assert p.thresholds.max_continuations == 3
     assert p.deadline_ceiling_s == 5400  # RunLimits.deadline_ceiling_s (design 2.3 rule 4, M3)
+
+
+@pytest.mark.os_agnostic
+def test_the_node_granularity_floor_is_counted_in_tokens_not_minutes() -> None:
+    """The floor is 260,000 tokens, and the superseded minutes key is refused rather than ignored.
+
+    Two assertions with two different jobs. The first pins the shipped value. The second pins the
+    UNIT independently of that value, so it still bites if the figure is re-derived: ``Thresholds``
+    forbids extra keys, so a table carrying the superseded ``min_node_minutes`` ALONGSIDE a valid
+    ``min_node_tokens`` still raises. Supplying both is what isolates the mechanism: with only the
+    stale key the model would reject it for the required field being absent instead, and the
+    assertion would pass without ever exercising the extra-key rule it is named for.
+    """
+    p = load_policy(shipped())
+    assert p.thresholds.min_node_tokens == 260_000
+
+    with pytest.raises(ValidationError):
+        Thresholds.model_validate(
+            {
+                "min_node_tokens": 260_000,
+                "min_node_minutes": 0.5,
+                "reduce_tree_fanin": 12,
+                "journal_max_lines": 5000,
+                "max_continuations": 3,
+            }
+        )
 
 
 @pytest.mark.os_agnostic

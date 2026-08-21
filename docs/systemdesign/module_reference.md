@@ -14,7 +14,7 @@ the [documentation index](../README.md).
 - `src/agentdag/domain/behaviors.py`  -  Pure domain functions (greeting)
 - `src/agentdag/domain/enums.py`  -  Type-safe enums (OutputFormat, DeployTarget)
 - `src/agentdag/domain/graph_a.py`  -  Graph A records (WorkResult, Tally, TallySummary, PushIntent) and the pure decisions over them (reduce_tally, stage, dedup_key, is_scratch_target)
-- `src/agentdag/domain/models.py`  -  Kernel records and their closed vocabularies (NodeSpec, NodeOutcome, ResultRecord, RunState, Decision, SandboxGuarantees; Kind, NodeStatus, ErrorType, RunStatus, TierRole)
+- `src/agentdag/domain/models.py`  -  Kernel records and their closed vocabularies (NodeSpec, NodeOutcome, ResultRecord, RunState, Decision; Kind, NodeStatus, ErrorType, RunStatus, TierRole)
 - `src/agentdag/domain/journal.py`  -  The six journal line shapes and their canonical serialisation
 - `src/agentdag/domain/keys.py`  -  The content-addressed journal key: which fields are identity, canonical JSON, the dependency prefix hash
 - `src/agentdag/domain/policy.py`  -  The tier policy shapes (TierRow, KindDefault, Thresholds, RunLimits, ResourceRow) and row resolution
@@ -26,12 +26,11 @@ the [documentation index](../README.md).
 - `src/agentdag/application/ports.py`  -  Callable Protocol definitions for adapter functions
 - `src/agentdag/application/graph_a_ports.py`  -  The five graph A ports (GitPort, GatePort, WorkPort, ApprovePort, RunStore) and GraphAWiring, the record holding one run's implementations
 - `src/agentdag/application/graph_a.py`  -  Graph A as a deterministic program: `make_scratch_fleet` (mirror the fleet), `run_graph` (map work and gate, tally, stage, approve) and `apply` (the idempotent push)
-- `src/agentdag/application/kernel/ports.py`  -  The kernel ports (Journal, RunDir, Clock, Executor, Policy, Scope, Lock) and KernelWiring
+- `src/agentdag/application/kernel/ports.py`  -  The kernel ports (Journal, RunDir, Clock, Executor, Policy, IsolationScanner, Scope, Lock) and KernelWiring
 - `src/agentdag/application/kernel/context.py`  -  Coordinator: the primitives a workflow program calls (work, gate, scan, map, reduce, stage, approve, apply)
 - `src/agentdag/application/kernel/dispatch.py`  -  One dispatch: compute the key, serve from the journal or run the body between a started and a result line
 - `src/agentdag/application/kernel/replay.py`  -  Folding the journal into a replay index: results, crash window, decisions, key sequence
 - `src/agentdag/application/kernel/run.py`  -  Driving one launch of a run: lock, opening line, workflow, terminal state
-- `src/agentdag/application/kernel/sandbox.py`  -  The Sandbox port: a per-run guarantees declaration and a per-dispatch preparation step
 - `src/agentdag/application/kernel/summary.py`  -  The run summary line appended by every launch that reaches done
 - `src/agentdag/application/kernel/workflow_check.py`  -  The determinism check over a replay's dispatched keys
 - `src/agentdag/application/workflows/graph_a.py`  -  Graph A re-expressed as a kernel workflow: journaled, resumable, approve-bearing
@@ -41,7 +40,10 @@ the [documentation index](../README.md).
 - `src/agentdag/adapters/config/deploy.py`  -  Configuration deployment
 - `src/agentdag/adapters/config/display.py`  -  Configuration display (TOML/JSON output, redaction)
 - `src/agentdag/adapters/config/overrides.py`  -  CLI `--set` override parsing and deep-merge
-- `src/agentdag/adapters/email/sender.py`  -  SMTP email with EmailConfig (Pydantic)
+- `src/agentdag/adapters/config/permissions.py`  -  Permission defaults loader and the effective directory/file modes for config deployment
+- `src/agentdag/adapters/email/config.py`  -  EmailConfig (Pydantic) and its dict loader
+- `src/agentdag/adapters/email/transport.py`  -  SMTP send functions (`send_email`, `send_notification`)
+- `src/agentdag/adapters/email/sender.py`  -  Re-exports `config` and `transport` for backward compatibility
 - `src/agentdag/adapters/email/validation.py`  -  Email recipient validation
 - `src/agentdag/adapters/logging/setup.py`  -  lib_log_rich initialization
 - `src/agentdag/adapters/cli/`  -  CLI adapter package:
@@ -61,7 +63,7 @@ the [documentation index](../README.md).
   - `commands/run.py`  -  run group: start, status, records, resume, approve, and the hidden coordinator entry point
 - `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
   - `git_cli.py`  -  GitPort over the git CLI (mirror, remove_mirror, clone, inspect, push)
-  - `gate_make.py`  -  GatePort: the project's `make test` in a child process, under one host-wide lock
+  - `gate_make.py`  -  GatePort: the project's `make test` as a separate child process, given only its allowlisted environment
   - `store_fs.py`  -  RunStore: one timestamped run directory holding worktrees, logs, homes, records and done markers
   - `work_claude_sdk.py`  -  WorkPort over the Claude Agent SDK, one isolated client and credential per node
   - `approve_console.py`  -  ApprovePort: the console confirmation asked once before anything is pushed
@@ -73,7 +75,6 @@ the [documentation index](../README.md).
   - `lock_file.py`  -  The exclusive run lock, with a holder identity that survives pid reuse
   - `policy_yaml.py`  -  Loading the tier policy and content-hashing it into a policy version
   - `scope_none.py`, `scope_systemd.py`, `scope_common.py`  -  Launching and reaping the coordinator, as a process group or a systemd user scope
-  - `sandbox_none.py`  -  The only Sandbox adapter: declares that it isolates nothing
   - `isolation_scan.py`  -  Content manifests of the run tree, before and after a node
   - `clock_utc.py`  -  The one place the system reads the wall clock
 
@@ -101,6 +102,7 @@ the [documentation index](../README.md).
 - `src/agentdag/adapters/config/defaultconfig.toml`  -  Base defaults
 - `src/agentdag/adapters/config/defaultconfig.d/40-layered-config.toml`  -  lib_layered_config integration docs
 - `src/agentdag/adapters/config/defaultconfig.d/50-mail.toml`  -  Email defaults
+- `src/agentdag/adapters/config/defaultconfig.d/60-kernel.toml`  -  Kernel run defaults and the Claude executor's credential path
 - `src/agentdag/adapters/config/defaultconfig.d/90-logging.toml`  -  Logging defaults
 
 ### Tests
@@ -132,7 +134,7 @@ Kernel tests, and the helpers they share:
 - `tests/test_kernel_dispatch.py`, `tests/test_kernel_run.py`, `tests/test_kernel_run_dir.py`  -  One dispatch, one launch, and the run directory on disk
 - `tests/test_kernel_context.py`, `tests/test_kernel_primitives.py`, `tests/test_kernel_workflow_check.py`  -  The coordinator's primitives and the determinism check
 - `tests/test_kernel_executor_claude.py`, `tests/test_kernel_secrets.py`  -  The Claude executor, its environment allowlist, and secret scrubbing
-- `tests/test_kernel_policy.py`, `tests/test_kernel_lock.py`, `tests/test_kernel_scope.py`, `tests/test_kernel_scan.py`, `tests/test_kernel_sandbox.py`  -  Policy resolution, the run lock, scope teardown, isolation scanning, the sandbox declaration
+- `tests/test_kernel_policy.py`, `tests/test_kernel_lock.py`, `tests/test_kernel_scope.py`, `tests/test_kernel_scan.py`  -  Policy resolution, the run lock, scope teardown, isolation scanning
 - `tests/test_workflow_graph_a.py`, `tests/test_cli_run.py`  -  Graph A on the kernel, replay and crash window proven, and the `run` CLI stories
 
 ---
@@ -141,27 +143,27 @@ Kernel tests, and the helpers they share:
 
 ### Layer Assignments
 
-| Directory/Module         | Layer       | Responsibility                                             |
-|--------------------------|-------------|------------------------------------------------------------|
-| `domain/`                | Domain      | Pure logic  -  no I/O, logging, or frameworks              |
-| `application/ports.py`   | Application | Protocol definitions for adapters                          |
-| `application/graph_a.py` | Application | Graph A as a deterministic program over typed records      |
-| `adapters/config/`       | Adapters    | Configuration loading, deployment, display                 |
-| `adapters/email/`        | Adapters    | SMTP email sending                                         |
-| `adapters/logging/`      | Adapters    | lib_log_rich initialization                                |
-| `adapters/cli/`          | Adapters    | Click CLI framework integration                            |
-| `adapters/graph_a/`      | Adapters    | git, gate, run store, work node and approve for graph A    |
-| `adapters/memory/`       | Adapters    | In-memory implementations for testing                      |
-| `application/kernel/`    | Application | The coordinator: primitives, dispatch, replay, one run     |
-| `application/workflows/` | Application | Workflow programs the coordinator runs                     |
-| `adapters/kernel/`       | Adapters    | Journal, run store, lock, policy, scope, sandbox, executor |
-| `composition/`           | Composition | Wires adapters to ports                                    |
+| Directory/Module         | Layer       | Responsibility                                          |
+|--------------------------|-------------|---------------------------------------------------------|
+| `domain/`                | Domain      | Pure logic  -  no I/O, logging, or frameworks           |
+| `application/ports.py`   | Application | Protocol definitions for adapters                       |
+| `application/graph_a.py` | Application | Graph A as a deterministic program over typed records   |
+| `adapters/config/`       | Adapters    | Configuration loading, deployment, display              |
+| `adapters/email/`        | Adapters    | SMTP email sending                                      |
+| `adapters/logging/`      | Adapters    | lib_log_rich initialization                             |
+| `adapters/cli/`          | Adapters    | Click CLI framework integration                         |
+| `adapters/graph_a/`      | Adapters    | git, gate, run store, work node and approve for graph A |
+| `adapters/memory/`       | Adapters    | In-memory implementations for testing                   |
+| `application/kernel/`    | Application | The coordinator: primitives, dispatch, replay, one run  |
+| `application/workflows/` | Application | Workflow programs the coordinator runs                  |
+| `adapters/kernel/`       | Adapters    | Journal, run store, lock, policy, scope, executor       |
+| `composition/`           | Composition | Wires adapters to ports                                 |
 
 ### Import Enforcement
 
 Layer boundaries enforced via `import-linter` contracts in `pyproject.toml`:
 - **Domain is pure**: Cannot import from adapters or composition
-- **Clean Architecture layers**: Validates dependency direction (composition → adapters → application → domain)
+- **Clean Architecture layers**: Validates dependency direction (composition -> adapters -> application -> domain)
 
 Run `lint-imports` to verify compliance.
 
@@ -257,19 +259,21 @@ Generate example configuration files.
 
 Send email using configured SMTP settings.
 
-| Option                               | Description                     |
-|--------------------------------------|---------------------------------|
-| `--to ADDRESS`                       | Recipient (repeatable)          |
-| `--subject TEXT`                     | Subject line  -  required       |
-| `--body TEXT`                        | Plain-text body                 |
-| `--body-html TEXT`                   | HTML body                       |
-| `--from ADDRESS`                     | Override sender                 |
-| `--attachment PATH`                  | File to attach (repeatable)     |
-| `--smtp-host HOST:PORT`              | Override SMTP host (repeatable) |
-| `--smtp-username USER`               | Override username               |
-| `--smtp-password PASS`               | Override password               |
-| `--use-starttls / --no-use-starttls` | Override STARTTLS               |
-| `--timeout SECONDS`                  | Override timeout                |
+| Option                                                               | Description                          |
+|----------------------------------------------------------------------|--------------------------------------|
+| `--to ADDRESS`                                                       | Recipient (repeatable)               |
+| `--subject TEXT`                                                     | Subject line  -  required            |
+| `--body TEXT`                                                        | Plain-text body                      |
+| `--body-html TEXT`                                                   | HTML body                            |
+| `--from ADDRESS`                                                     | Override sender                      |
+| `--attachment PATH`                                                  | File to attach (repeatable)          |
+| `--smtp-host HOST:PORT`                                              | Override SMTP host (repeatable)      |
+| `--smtp-username USER`                                               | Override username                    |
+| `--smtp-password PASS`                                               | Override password                    |
+| `--use-starttls / --no-use-starttls`                                 | Override STARTTLS                    |
+| `--timeout SECONDS`                                                  | Override timeout                     |
+| `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
+| `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
 **Exit codes:** 0, 2 (file not found), 22, 69 (SMTP failure), 78 (no SMTP hosts)
 
@@ -277,17 +281,19 @@ Send email using configured SMTP settings.
 
 Send simple plain-text notification email.
 
-| Option                               | Description                     |
-|--------------------------------------|---------------------------------|
-| `--to ADDRESS`                       | Recipient (repeatable)          |
-| `--subject TEXT`                     | Subject  -  required            |
-| `--message TEXT`                     | Message  -  required            |
-| `--from ADDRESS`                     | Override sender                 |
-| `--smtp-host HOST:PORT`              | Override SMTP host (repeatable) |
-| `--smtp-username USER`               | Override username               |
-| `--smtp-password PASS`               | Override password               |
-| `--use-starttls / --no-use-starttls` | Override STARTTLS               |
-| `--timeout SECONDS`                  | Override timeout                |
+| Option                                                               | Description                          |
+|----------------------------------------------------------------------|--------------------------------------|
+| `--to ADDRESS`                                                       | Recipient (repeatable)               |
+| `--subject TEXT`                                                     | Subject  -  required                 |
+| `--message TEXT`                                                     | Message  -  required                 |
+| `--from ADDRESS`                                                     | Override sender                      |
+| `--smtp-host HOST:PORT`                                              | Override SMTP host (repeatable)      |
+| `--smtp-username USER`                                               | Override username                    |
+| `--smtp-password PASS`                                               | Override password                    |
+| `--use-starttls / --no-use-starttls`                                 | Override STARTTLS                    |
+| `--timeout SECONDS`                                                  | Override timeout                     |
+| `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
+| `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
 **Exit codes:** 0, 22, 69 (SMTP failure), 78 (no SMTP hosts)
 
@@ -322,7 +328,6 @@ Run graph A over the scratch origins in `REPOS_FILE`, applying the change in `BR
 | `--runs DIR`    | Directory holding one timestamped directory per run      |
 | `--parallel N`  | How many branches may run at once (minimum 1)            |
 | `--model NAME`  | Model each work node runs on                             |
-| `--lock PATH`   | Host-wide lock file serialising the gate across branches |
 
 **Exit codes:** 0, 22 (a push target outside the scratch tree)
 
@@ -375,7 +380,7 @@ Raises `ValueError` with descriptive message on invalid input.
 
 ### EmailConfig Fields
 
-The `EmailConfig` Pydantic model (`adapters/email/sender.py`) provides validated, immutable email configuration:
+The `EmailConfig` Pydantic model (`adapters/email/config.py`) provides validated, immutable email configuration:
 
 | Field                          | Type          | Default | Description                          |
 |--------------------------------|---------------|---------|--------------------------------------|

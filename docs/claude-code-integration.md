@@ -43,25 +43,49 @@ directory, its model, and agentdag's own hooks. That is the whole of its world.
 If you have been assuming that a dispatched node behaves like your session because it runs the same
 binary, this is the paragraph to remember.
 
-## 4. Why it is built that way
+## 4. The environment a node is meant to carry
 
-Two reasons, and they point the same way.
+A node should start under the operator's own environment: the settings, the tools, the skills, the
+self-learning memory store, the tool-call hooks and the CLAUDE.md cascade an interactive session runs
+with. That set is the accumulated capability. The skills are how a task gets done properly rather
+than plausibly, and the memory is the record of which traps this machine has already fallen into. A
+node without them is not a leaner agent, it is a worse one doing the same work, rediscovering by hand
+what the store already holds.
 
-The first is the rule from [why agentdag exists](why-agentdag.md): accessible is not loaded. A node
-should be able to reach any knowledge and should start loaded with almost none of it, because
-attention degrades long before a context window fills. Starting every node under an operator's full
-instruction cascade is the most reliable way to make a contained task stop being contained.
+The cost objection is the obvious one and it is weaker than it looks. A full cascade is a large
+startup, and [why agentdag exists](why-agentdag.md) has the measured ratio against a bare child. But
+it is an identical prefix on every node in a run, the same text in the same order with nothing
+per-node in it, so the first node pays it in full and every node after it sends the same token count
+and reads almost all of it back from cache at roughly a tenth of the price. What that leaves is a run
+whose token count is large and whose bill is not. It still binds a budget cap, which counts tokens
+and cannot see the discount, and it barely touches what the run costs.
 
-The second is cost. Starting an agent costs roughly the same whatever you send it, because it pays for
-its instruction cascade every time, and a full operator plugin set multiplies that fixed cost on every
-single dispatch. In a graph that fans out over a fleet, that is paid once per branch, before any work
-happens.
+Four things have to hold before a node runs under an operator's environment, and none of them is
+optional.
 
-There is a third, quieter benefit. A run is reproducible in a way it could not be otherwise: the same
-brief and the same policy produce the same dispatch, regardless of what the operator happens to have
-installed this week.
+**Hooks split by lifecycle.** PreToolUse and PostToolUse are the ones worth inheriting, because they
+are the operator's own guard rails on individual tool calls. SessionStart and Stop must not load: a
+Stop hook written for an interactive session expects a person to answer it, and a headless node that
+meets one hangs instead of finishing.
 
-## 5. What a node gets instead
+**The executor's own hooks bind on top, not instead.** Refusing a write outside the isolation root
+and refusing a listed shell command shape are what make a node containable at all, and they are the
+executor's guarantee rather than the operator's preference. An inherited hook set adds to them and
+must not be able to replace them.
+
+**Memory is read by every node and written by one.** N nodes writing the store at once is the
+parallel-writer failure section 8 describes, in the one place whose entire value is that it
+accumulates. Reads are free and parallel; writes go through a single node.
+
+**The resolved cascade is part of what identifies a call.** Its hash joins the journal key, or replay
+stops being replay: the same brief under a memory store that has since grown would be served from the
+journal as though nothing had changed. The key already counts a node's knowledge grant among its
+identity fields and carries a format version for exactly this kind of addition.
+
+**Not yet:** any of it. The executor asks for no setting sources today, so the four requirements above
+are conditions on a change rather than descriptions of one.
+
+## 5. What a node gets today
 
 Its brief, as its system prompt. A fixed short first instruction. A small tool set. Its own worktree.
 Its model and effort, resolved from the tier policy rather than chosen by the node. And two hooks of
@@ -71,8 +95,11 @@ command shapes. Those, and what they do not catch, are in
 
 ## 6. Knowledge, and the grant that is coming
 
-The other half of "accessible is not loaded" is the retrieval path, and it is the half that does not
-exist yet.
+Bulk content behaves in the opposite way to standing capability. A cascade is small, identical across
+nodes and cacheable. A body of work content is none of the three: every node needs a different slice,
+so none of it caches, and handing a node twenty documents it might need is the reliable way to make
+it wander. So a corpus is retrieved rather than delivered, and the retrieval path is the half that
+does not exist yet.
 
 The design gives a node a list of knowledge datasets it may reach, and a place to write things back
 into the shared store. Both are blocked on work in the semantic index that has not shipped: a filter
@@ -87,7 +114,7 @@ ask.
 
 |                                        | A Claude Code subagent | An agentdag node                          |
 |----------------------------------------|------------------------|-------------------------------------------|
-| inherits your hooks, CLAUDE.md, skills | yes                    | no, deliberately                          |
+| inherits your hooks, CLAUDE.md, skills | yes                    | not yet, the change is designed           |
 | survives the session ending            | no                     | yes, the run directory is the state       |
 | resumable after a crash                | no                     | yes, exactly the node that did not finish |
 | result the caller can branch on        | its final text         | a typed record from a closed vocabulary   |
@@ -129,7 +156,8 @@ Until that ships, a suspended run waits until someone runs the status command.
 
 ## Where to go next
 
-- [Why agentdag exists](why-agentdag.md) is where "accessible is not loaded" comes from.
+- [Why agentdag exists](why-agentdag.md) is where the split between standing capability and bulk
+  content comes from.
 - [Executors and models](executors-and-models.md) is the mechanics of driving the binary, including
   credentials and whether a subscription works.
 - [Safety and sandbox](safety-and-sandbox.md) is what the node's own hooks do and do not stop.
