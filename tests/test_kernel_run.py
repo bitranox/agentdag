@@ -23,6 +23,7 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
@@ -312,6 +313,7 @@ def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_p
                 by="tester",
                 token_id="local",
                 resume_reason=None,
+                notifier=NoNotifier(),
             )
         )
 

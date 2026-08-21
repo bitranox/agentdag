@@ -16,6 +16,7 @@ Contents:
     * :func:`make_repo` - a one-commit repository with a green ``make test``.
     * :class:`CommittingExecutor` - the work-node stand-in; optionally crashes the process.
     * :class:`StrayExecutor` - writes outside every declared write set, so the scan fails.
+    * :class:`RecordingNotifier` - a notification sink that keeps every event it is given.
     * :func:`fleet` - mirror N repositories into a scratch tree and build the run's args.
     * :func:`policy_path` - the shipped tier policy table.
     * :func:`launch` - start or resume one graph A run over a real run directory.
@@ -36,6 +37,7 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
@@ -45,11 +47,13 @@ from agentdag.application.workflows.graph_a import GraphAArgs
 from agentdag.domain.models import Decision, NodeOutcome, NodeStatus, Tokens
 
 if TYPE_CHECKING:
+    from agentdag.application.kernel.notify import Notifier, RunEvent
     from agentdag.application.kernel.ports import ExecutorRequest
     from agentdag.application.kernel.run import RunOutcome
 
 __all__ = [
     "CommittingExecutor",
+    "RecordingNotifier",
     "StrayExecutor",
     "decide",
     "fleet",
@@ -188,6 +192,23 @@ class StrayExecutor(CommittingExecutor):
         return await super().run(request)
 
 
+class RecordingNotifier:
+    """Keeps every :class:`~agentdag.application.kernel.notify.RunEvent` it is handed.
+
+    The whole substitution is the SINK, not the port: a test asserts on the events the
+    kernel emitted, which is the thing under test, rather than on a mail server's
+    behaviour, which is not.
+    """
+
+    def __init__(self) -> None:
+        """Start with no events recorded."""
+        self.events: list[RunEvent] = []
+
+    def emit(self, event: RunEvent) -> None:
+        """Record ``event`` in arrival order."""
+        self.events.append(event)
+
+
 def fleet(tmp_path: Path, names: list[str]) -> tuple[GraphAArgs, list[Path]]:
     """Build ``names`` as real repositories, mirror them into a scratch tree, write the args.
 
@@ -270,6 +291,7 @@ def launch(
     parallel: int = 2,
     names: list[str] | None = None,
     git_port: GitCli | None = None,
+    notifier: Notifier | None = None,
 ) -> tuple[RunOutcome, FsRunDir]:
     """Start (or resume) one graph A run over a real run directory and return its outcome.
 
@@ -291,6 +313,10 @@ def launch(
         git_port: The git port this launch runs over; defaults to the shipped adapter.
             Injected at the seam production uses, so a test can watch or interrupt the
             one effect that leaves the process without patching anything.
+        notifier: Where this launch's run events go; defaults to the shipped no-op sink,
+            which is also what production wires when the operator configured none - so a
+            test that says nothing about notification runs the same way an unconfigured
+            operator's run does.
 
     Returns:
         The run's outcome, and the run directory it ran over.
@@ -322,6 +348,7 @@ def launch(
             by="tester",
             token_id="local",
             resume_reason=resume,
+            notifier=notifier if notifier is not None else NoNotifier(),
         )
     )
     return outcome, run_dir

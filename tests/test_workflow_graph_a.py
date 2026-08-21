@@ -22,6 +22,7 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
@@ -100,6 +101,7 @@ def launch_over(
             by="tester",
             token_id="local",
             resume_reason=None,
+            notifier=NoNotifier(),
         )
     )
 
@@ -577,6 +579,7 @@ def test_two_fleet_members_that_would_share_one_worktree_are_refused_before_any_
                 by="tester",
                 token_id="local",
                 resume_reason=None,
+                notifier=NoNotifier(),
             )
         )
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import CommittingExecutor, fleet, git, policy_path
+from kernel_fakes import CommittingExecutor, RecordingNotifier, fleet, git, policy_path
 
 from agentdag.adapters import cli as cli_mod
 from agentdag.adapters.cli.exit_codes import ExitCode
@@ -31,6 +31,7 @@ from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.adapters.kernel.scope_none import NoScope
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
 
     from click.testing import CliRunner, Result
 
+    from agentdag.application.kernel.notify import Notifier
     from agentdag.application.kernel.ports import Clock, Scope
 
 
@@ -124,6 +126,7 @@ def services_with(
     scope: Scope | None = None,
     wire_calls: list[Mapping[str, object]] | None = None,
     clock: Clock | None = None,
+    notifier: Notifier | None = None,
 ) -> Callable[[], AppServices]:
     """Return a services factory whose ``wire_kernel`` hands back a fixed wiring over real adapters.
 
@@ -135,6 +138,9 @@ def services_with(
     ``clock`` defaults to a real :class:`UtcClock`; pass a :class:`MovableClock` for a
     test about ``decide_by``, which is a day out from the run's own start and can only
     be reached by moving the clock the whole run reads (Task 22).
+    ``notifier`` defaults to the shipped no-op sink, which is also what an operator who
+    configured none gets; pass a :class:`~kernel_fakes.RecordingNotifier` for a test
+    about what the run TOLD somebody (Task 23).
     """
     wiring = KernelWiring(
         journal_factory=JsonlJournal,
@@ -147,6 +153,7 @@ def services_with(
         policy=load_policy(policy_path()),
         scope=scope if scope is not None else NoScope(),
         sandbox=NoSandbox(),
+        notifier=notifier if notifier is not None else NoNotifier(),
         parallel=2,
     )
 
@@ -683,6 +690,53 @@ def started_run(cli_runner: CliRunner, tmp_path: Path, obj: Callable[[], AppServ
     match = re.search(r"run (\S+) suspended at a_push_list", started.output)
     assert match, started.output
     return match.group(1)
+
+
+@pytest.mark.os_agnostic
+def test_apply_deadlines_records_and_announces_a_run_whose_coordinator_died(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The crash path end to end, through the CLI that the systemd timer actually runs.
+
+    The kernel-level behaviour is pinned in ``test_kernel_notify.py``; what THIS proves is
+    the wiring - that the periodic pass reaches ``record_crash`` at all, and hands it the
+    sink ``kernel.notify`` resolved rather than a fresh no-op nobody hears.
+    """
+    notifier = RecordingNotifier()
+    obj = services_with(CommittingExecutor(crash_on="w_migrate@1"), tmp_path, notifier=notifier)
+    (tmp_path / "runs").mkdir()
+    runs_arg = str(tmp_path / "runs")
+
+    crashed = cli_runner.invoke(cli_mod.cli, start_args(tmp_path, extra=["--parallel", "1"]), obj=obj)
+
+    assert crashed.exit_code != 0, crashed.output  # the executor took the process down mid-run
+    run_id = _only_run_id(tmp_path)
+    assert _status_of(tmp_path, run_id) == "running"  # nothing was written on the way out
+    assert notifier.events == []  # and nobody was told, which is the whole problem
+
+    swept = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg], obj=obj)
+
+    assert swept.exit_code == 0, swept.output
+    assert "recorded 1 crashed run(s)" in swept.output
+    assert _status_of(tmp_path, run_id) == "crashed"
+    assert [event.status.value for event in notifier.events] == ["crashed"]
+
+    again = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg], obj=obj)
+
+    assert "recorded 0 crashed run(s)" in again.output
+    assert len(notifier.events) == 1  # the recorded state is the dedup
+
+
+def _only_run_id(tmp_path: Path) -> str:
+    """Return the id of the one run under ``runs/``, refusing to guess when there are several."""
+    ids = [entry.name for entry in (tmp_path / "runs").iterdir() if entry.is_dir()]
+    assert len(ids) == 1, ids
+    return ids[0]
+
+
+def _status_of(tmp_path: Path, run_id: str) -> str:
+    """Read a run's status straight off its state file."""
+    return str(json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))["status"])
 
 
 def cursor_hash(tmp_path: Path, run_id: str) -> str:

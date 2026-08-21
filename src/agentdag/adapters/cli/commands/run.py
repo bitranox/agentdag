@@ -82,15 +82,18 @@ from pydantic import ValidationError
 from agentdag.adapters.kernel.executor_claude import CredentialCopy, OAuthTokenFile
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import current_holder
+from agentdag.adapters.kernel.notify_mail import MailNotifier
+from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
-from agentdag.application.kernel.approve import apply_due_default
+from agentdag.application.kernel.approve import apply_due_default, suspend_payload_rel
 from agentdag.application.kernel.cancel import request_cancel, resolve_cancel, scope_unit, sweep_stale_scope
+from agentdag.application.kernel.crash import record_crash
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import RunRefused, WorkflowNotFound
-from agentdag.domain.keys import content_hash, hash8
+from agentdag.domain.keys import content_hash
 from agentdag.domain.models import ApprovePayload, Decision, RunState, RunStatus
 from agentdag.domain.scrub import scrub
 
@@ -108,6 +111,7 @@ if TYPE_CHECKING:
 
     from agentdag.adapters.kernel.executor_claude import CredentialSource
     from agentdag.application.kernel.approve import DeadlineOutcome
+    from agentdag.application.kernel.notify import Notifier
     from agentdag.application.kernel.ports import KernelWiring, Scope
     from agentdag.application.kernel.run import RunOutcome
     from agentdag.application.workflows import WorkflowDef
@@ -438,12 +442,20 @@ def cli_run_approve(
 def cli_run_apply_deadlines(
     ctx: click.Context, *, runs_option: Path | None, no_relaunch: bool, foreground: bool
 ) -> None:
-    """Apply the default of every run suspended past its decide_by, then relaunch each one.
+    """Apply every overdue approve default, and record every run whose coordinator died.
 
     Design 3.4's DEADLINE OWNER, meant to be run periodically by the user timer under
     ``deploy/`` - never by the exited coordinator, which cannot, and never by whichever
     client happens to be watching, which is not an authority. Safe to run at any time and
     as often as the operator likes: a run with nothing due is left exactly as it was.
+
+    It carries a SECOND job, and the reason is the same authority argument. A coordinator
+    killed mid-run writes nothing, so its ``state.json`` claims ``running`` forever and
+    nobody is told - and the run nobody is watching is precisely the one that needs an
+    owner other than itself. This periodic pass is the only thing that looks at every run
+    without being asked, so it is where
+    :func:`~agentdag.application.kernel.crash.record_crash` belongs. The verb keeps its
+    name for the deadline job it was deployed under; the unit file needs no change.
 
     Relaunches ONLY the runs whose default this invocation actually recorded, taken from
     what :func:`~agentdag.application.kernel.approve.apply_due_default` reported rather
@@ -459,8 +471,10 @@ def cli_run_apply_deadlines(
     runs_dir = _resolve_runs_dir(config, runs_option)
     wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
     applied = 0
+    crashed = 0
     failed_relaunches = 0
     for run_dir in _each_run_dir(runs_dir):
+        crashed += _record_crash_if_dead(run_dir, wiring=wiring)
         outcome = apply_due_default(run_dir, lock=wiring.lock, clock=wiring.clock, holder=current_holder())
         _echo_deadline_outcome(outcome)
         if not outcome.applied:
@@ -469,8 +483,32 @@ def cli_run_apply_deadlines(
         if not no_relaunch:
             failed_relaunches += _relaunch_after_default(ctx, run_dir=run_dir, runs_dir=runs_dir, foreground=foreground)
     safe_console.echo(f"applied {applied} default decision(s)")
+    safe_console.echo(f"recorded {crashed} crashed run(s)")
     if failed_relaunches:
         raise SystemExit(ExitCode.GENERAL_ERROR)
+
+
+def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring) -> int:
+    """Record and announce ``run_dir`` if a dead coordinator left it claiming to run.
+
+    Args:
+        run_dir: The run to check.
+        wiring: This invocation's wiring, for the lock, the clock and the sink.
+
+    Returns:
+        ``1`` when this run was recorded ``crashed``, ``0`` otherwise - so the caller can
+        sum it without a second query.
+    """
+    outcome = record_crash(
+        run_dir,
+        lock=wiring.lock,
+        holder=current_holder(),
+        clock=wiring.clock,
+        notifier=wiring.notifier,
+    )
+    if outcome.recorded:
+        safe_console.echo(f"{outcome.run_id}: recorded crashed - its coordinator is gone")
+    return int(outcome.recorded)
 
 
 @click.command("_coordinate", context_settings=CLICK_CONTEXT_SETTINGS, hidden=True)
@@ -599,6 +637,30 @@ def _resolve_credential(config: Config) -> tuple[CredentialSource, str]:
     return CredentialCopy(source_path=home_copy), f"a private copy of {home_copy}"
 
 
+def _resolve_notifier(ctx: click.Context) -> Notifier:
+    """Build the notification sink ``kernel.notify`` names.
+
+    Two values, because there are two sinks: ``"none"`` (the default - an operator who
+    configured nothing is not signed up for mail) and ``"mail"``, which sends through the
+    same ``btx_lib_mail`` adapter ``agentdag email send-notification`` already uses.
+
+    An explicit ``"mail"`` with no SMTP host configured FAILS here rather than falling
+    back to silence: the operator asked to be told, and a run that quietly tells nobody
+    is the failure this whole port exists to prevent - discovered, otherwise, on the run
+    they most needed it for.
+    """
+    cli = get_cli_context(ctx)
+    choice = str(cli.config.get("kernel.notify", default=_packaged_kernel_defaults()["notify"])).strip().lower()
+    if choice == "none":
+        return NoNotifier()
+    if choice != "mail":
+        _fail(f"kernel.notify is {choice!r}; it must be 'none' or 'mail'")
+    email_config = cli.services.load_email_config_from_dict(cli.config.as_dict())
+    if not email_config.smtp_hosts:
+        _fail("kernel.notify is 'mail' but email.smtp_hosts is empty - configure it, or set kernel.notify = 'none'")
+    return MailNotifier(send_notification=cli.services.send_notification, config=email_config)
+
+
 def _shipped_policy_path() -> Path:
     """Return the tier policy YAML shipped with this package."""
     return Path(str(files("agentdag.policy") / "tier-policy.yaml"))
@@ -656,6 +718,7 @@ def _build_wiring(
         parallel=parallel,
         max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
         deny_bash=_config_deny_bash(config),
+        notifier=_resolve_notifier(ctx),
     )
     return wiring, credential_desc
 
@@ -790,6 +853,7 @@ def _run_foreground(
                 by=getpass.getuser(),
                 token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
                 resume_reason=resume_reason,
+                notifier=wiring.notifier,
             )
         )
     except Exception as exc:
@@ -867,7 +931,7 @@ def _decision_for(
     payload_hash = state.cursor_payload_hash
     if run_dir.read_decision(node_id, payload_hash) is not None:
         _fail(f"run {run_id} already decided for this payload at {node_id!r}")
-    rel = f"nodes/{node_id}/{hash8(payload_hash)}/payload.json"
+    rel = suspend_payload_rel(node_id, payload_hash)
     try:
         text = run_dir.read_text(rel)
     except FileNotFoundError:

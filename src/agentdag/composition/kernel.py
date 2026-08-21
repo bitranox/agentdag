@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..adapters.kernel.executor_claude import CredentialSource
+    from ..application.kernel.notify import Notifier
     from ..application.kernel.ports import Scope
 
 __all__ = ["manager_state_is_live", "wire_kernel"]
@@ -55,6 +56,7 @@ def wire_kernel(
     parallel: int,
     max_turns: int,
     deny_bash: Sequence[str],
+    notifier: Notifier,
 ) -> KernelWiring:
     """Build the production kernel wiring for one CLI invocation of ``agentdag run``.
 
@@ -68,6 +70,9 @@ def wire_kernel(
         parallel: How many map branches a launch may run at once.
         max_turns: The SDK turn ceiling every node dispatch runs under.
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
+        notifier: Where this launch's run events go - resolved by the CLI, which is
+            the layer that has both the loaded config naming the sink and the email
+            adapter the mail sink sends through; this function takes neither.
 
     Returns:
         The wiring for one launch (or relaunch) of the coordinator.
@@ -84,6 +89,7 @@ def wire_kernel(
         policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),
         scope=_choose_scope(),
         sandbox=NoSandbox(),
+        notifier=notifier,
         parallel=parallel,
     )
 

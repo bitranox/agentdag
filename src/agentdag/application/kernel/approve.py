@@ -42,6 +42,7 @@ Contents:
     * :data:`SYSTEM_IDENTITY` - the ``by`` a decision the system applied carries.
     * :data:`TIMER_TOKEN_ID` - the ``token_id`` naming this pass as the applying agent.
     * :data:`DEADLINE_REASON` - the ``reason`` such a decision carries.
+    * :func:`suspend_payload_rel` - where a suspend published the payload being decided.
     * :func:`validate_default` - design 2.4's rule: a default must have no external effect.
     * :class:`DeadlineOutcome` - what one pass over ONE run reports back.
     * :func:`apply_due_default` - apply one run's default if its deadline has passed.
@@ -67,6 +68,7 @@ __all__ = [
     "TIMER_TOKEN_ID",
     "DeadlineOutcome",
     "apply_due_default",
+    "suspend_payload_rel",
     "validate_default",
 ]
 
@@ -165,6 +167,33 @@ class DeadlineOutcome:
     awaiting_decision: bool
 
 
+def suspend_payload_rel(node_id: str, payload_hash: str) -> str:
+    """Return the run-relative path of the payload a suspend published for ``node_id``.
+
+    One function rather than the same f-string in four places: the coordinator writes
+    this path, this module reads it to apply a default, the CLI reads it to show a human
+    the question, and the notification sink reads it to put that question in the mail.
+    A convention four callers spell out by hand is a convention that drifts.
+
+    Note this is the SUSPEND payload's location - named by the payload's CONTENT hash -
+    not the copy an approve node's own dispatch writes under its journal-key hash. The
+    two agree only by coincidence; see
+    :meth:`~agentdag.application.kernel.context.Coordinator.approve`.
+
+    Args:
+        node_id: The approve node that suspended.
+        payload_hash: The content hash of the payload it is waiting on.
+
+    Returns:
+        The path relative to the run directory's root.
+
+    Example:
+        >>> suspend_payload_rel("a_push_list", "sha256:abcdef0123456789")
+        'nodes/a_push_list/abcdef01/payload.json'
+    """
+    return f"nodes/{node_id}/{hash8(payload_hash)}/payload.json"
+
+
 def apply_due_default(run_dir: RunDir, *, lock: RunLock, clock: Clock, holder: LockHolder) -> DeadlineOutcome:
     """Apply ``run_dir``'s approve default if its ``decide_by`` has passed, under the run's lock.
 
@@ -254,7 +283,7 @@ def _payload_on_offer(run_dir: RunDir, *, node_id: str, payload_hash: str) -> Ap
         _NotAppliedError: the payload file is missing or unreadable, or its content does
             not hash to ``payload_hash``.
     """
-    rel = f"nodes/{node_id}/{hash8(payload_hash)}/payload.json"
+    rel = suspend_payload_rel(node_id, payload_hash)
     try:
         text = run_dir.read_text(rel)
     except (OSError, ValueError) as unreadable:

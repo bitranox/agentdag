@@ -18,6 +18,10 @@ Three exits, and the fourth that is not an exit at all:
   the crash window, and it is what the next launch re-dispatches. The lock is still
   released, because releasing it is the only thing that has to happen either way.
 
+The first three exits also EMIT a run event, because each is a thing an operator who is
+not watching needs told. The fourth cannot - there is nobody left to emit - so
+:mod:`~agentdag.application.kernel.crash` observes it from outside instead.
+
 At ``parallel > 1`` the crash window is not necessarily ONE key: more than one map
 branch can be mid-flight at once, so a crash can leave several ``started``-without-
 ``result`` keys at the same time - e.g. one branch's work node and a sibling's gate,
@@ -40,9 +44,11 @@ from pydantic import BaseModel
 
 from ...domain.journal import ResumeLine, RunStartedLine
 from ...domain.kernel_errors import RunRefused, Suspended
-from ...domain.models import RunState, RunStatus
+from ...domain.models import ApprovePayload, RunState, RunStatus
+from .approve import suspend_payload_rel
 from .context import Coordinator
 from .dispatch import Dispatcher
+from .notify import RunEvent, emit_best_effort
 from .ports import stamp
 from .summary import append_run_summary
 from .workflow_check import assert_deterministic
@@ -53,6 +59,7 @@ if TYPE_CHECKING:
     from ...domain.models import LockHolder
     from ..graph_a_ports import GatePort, GitPort
     from ..workflows import WorkflowDef
+    from .notify import Notifier
     from .ports import Clock, Executor, IsolationScanner, Journal, Policy, RunDir, RunLock
     from .sandbox import Sandbox
 
@@ -100,6 +107,7 @@ async def run_coordinator(
     by: str,
     token_id: str,
     resume_reason: str | None,
+    notifier: Notifier,
 ) -> RunOutcome:
     """Run one launch of ``workflow`` over ``run_dir`` and report how it ended.
 
@@ -127,6 +135,10 @@ async def run_coordinator(
         token_id: The credential this launch authenticated with, recorded likewise.
         resume_reason: Why this launch is a resume (``decision``, ``crash``,
             ``restart`` or ``manual``); ignored on a run's first start.
+        notifier: Where this launch's run events go. Required, not defaulted: every
+            other port here is, and a notification channel that can be silently
+            forgotten at a call site is one an operator discovers is missing on the run
+            they most needed it for. The no-op sink is how an operator says "none".
 
     Returns:
         The launch's outcome.
@@ -173,13 +185,19 @@ async def run_coordinator(
         )
         co.fold_decisions()
         _write_state(co, status=RunStatus.RUNNING, cursor=None, by=by)
-        return await _drive(co, workflow=workflow, args=args, by=by, replay_seconds=replay_seconds)
+        return await _drive(co, workflow=workflow, args=args, by=by, replay_seconds=replay_seconds, notifier=notifier)
     finally:
         lock.release(token)
 
 
 async def _drive(
-    co: Coordinator, *, workflow: WorkflowDef, args: BaseModel, by: str, replay_seconds: float | None
+    co: Coordinator,
+    *,
+    workflow: WorkflowDef,
+    args: BaseModel,
+    by: str,
+    replay_seconds: float | None,
+    notifier: Notifier,
 ) -> RunOutcome:
     """Await the program once and write the state its exit calls for.
 
@@ -201,13 +219,80 @@ async def _drive(
             by=by,
             cursor_payload_hash=suspended.payload_hash,
         )
+        _announce_suspend(co, notifier=notifier, suspended=suspended)
         return RunOutcome(RunStatus.SUSPENDED, suspended.node_id, list(co.dispatcher.dispatched_keys))
     except Exception:
         _write_state(co, status=RunStatus.FAILED, cursor=None, by=by)
+        _announce(co, notifier=notifier, status=RunStatus.FAILED)
         raise
     append_run_summary(co, replay_seconds=replay_seconds)
     _write_state(co, status=RunStatus.DONE, cursor=None, by=by)
+    _announce(co, notifier=notifier, status=RunStatus.DONE)
     return RunOutcome(RunStatus.DONE, None, list(co.dispatcher.dispatched_keys))
+
+
+def _announce(co: Coordinator, *, notifier: Notifier, status: RunStatus) -> None:
+    """Tell the operator this launch reached ``status``, after the state file says so.
+
+    Ordered after :func:`_write_state` deliberately: somebody who opens the run because
+    of the notification must not find it still claiming to be running.
+
+    Args:
+        co: The coordinator whose run ended.
+        notifier: Where the event goes.
+        status: The state reached - ``done`` or ``failed`` here; a suspend has more to
+            say and goes through :func:`_announce_suspend`.
+    """
+    emit_best_effort(
+        notifier,
+        RunEvent(run_id=co.run_id, workflow=co.workflow, status=status, at=stamp(co.clock)),
+    )
+
+
+def _announce_suspend(co: Coordinator, *, notifier: Notifier, suspended: Suspended) -> None:
+    """Tell the operator a run is waiting on them, carrying the question and its deadline.
+
+    The payload is read back from the file the suspend just published rather than from
+    the exception, which carries only the hash: what the operator must see is what the
+    DECIDER will be shown, and reading the same file both of them read is the only way
+    those cannot drift.
+
+    Args:
+        co: The coordinator whose run suspended.
+        notifier: Where the event goes.
+        suspended: The suspend, naming the node and the payload hash it waits on.
+    """
+    payload = _suspend_payload(co, suspended)
+    emit_best_effort(
+        notifier,
+        RunEvent(
+            run_id=co.run_id,
+            workflow=co.workflow,
+            status=RunStatus.SUSPENDED,
+            at=stamp(co.clock),
+            node_id=suspended.node_id,
+            summary="" if payload is None else payload.text,
+            decide_by=None if payload is None else payload.decide_by,
+        ),
+    )
+
+
+def _suspend_payload(co: Coordinator, suspended: Suspended) -> ApprovePayload | None:
+    """Read the payload this suspend published, or ``None`` when it cannot be read.
+
+    Never raises: a notification that cannot be fully composed is still worth sending -
+    an operator told a run is waiting, without the question, can go and look, while a
+    suspend turned into a crash because the payload would not parse helps nobody. The
+    payload was written moments ago by this same process, so ``None`` here means
+    something is wrong with the run directory, not with the suspend.
+    """
+    if suspended.payload_hash is None:
+        return None
+    try:
+        text = co.run_dir.read_text(suspend_payload_rel(suspended.node_id, suspended.payload_hash))
+        return ApprovePayload.model_validate_json(text)
+    except (OSError, ValueError):
+        return None
 
 
 def _refuse_mismatched_args(workflow: WorkflowDef, args: BaseModel) -> None:

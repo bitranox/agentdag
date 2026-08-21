@@ -65,6 +65,7 @@ class TestGetConfig:
         assert data["credentials"]["claude_oauth_token_file"] == ""
         assert data["kernel"] == {
             "runs_dir": "/var/lib/agentdag/runs",
+            "notify": "none",
             "parallel": 2,
             "max_turns": 25,
             "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],

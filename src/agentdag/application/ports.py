@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..adapters.kernel.executor_claude import CredentialSource
     from ..domain.enums import DeployTarget, OutputFormat
     from .graph_a_ports import GraphAWiring
+    from .kernel.notify import Notifier
     from .kernel.ports import KernelWiring
 
 
@@ -129,6 +130,7 @@ class WireKernel(Protocol):
         parallel: int,
         max_turns: int,
         deny_bash: Sequence[str],
+        notifier: Notifier,
     ) -> KernelWiring: ...
 
 

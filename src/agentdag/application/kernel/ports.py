@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from ...domain.journal import JournalLine
     from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RunState
     from ..graph_a_ports import GatePort, GitPort
+    from .notify import Notifier
 
 __all__ = [
     "Clock",
@@ -496,4 +497,5 @@ class KernelWiring:
     policy: Policy
     scope: Scope
     sandbox: Sandbox
+    notifier: Notifier
     parallel: int

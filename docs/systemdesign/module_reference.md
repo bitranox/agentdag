@@ -31,6 +31,11 @@ the [documentation index](../README.md).
 - `src/agentdag/application/kernel/dispatch.py`  -  One dispatch: compute the key, serve from the journal or run the body between a started and a result line
 - `src/agentdag/application/kernel/replay.py`  -  Folding the journal into a replay index: results, crash window, decisions, key sequence
 - `src/agentdag/application/kernel/run.py`  -  Driving one launch of a run: lock, opening line, workflow, terminal state
+- `src/agentdag/application/kernel/approve.py`  -  The approve payload's default: what makes one valid, and applying it at its deadline
+- `src/agentdag/application/kernel/cancel.py`  -  Cancelling a run, verified, and sweeping a scope a dead coordinator left behind
+- `src/agentdag/application/kernel/crash.py`  -  Recording and announcing a run whose coordinator died without writing its own exit
+- `src/agentdag/application/kernel/notify.py`  -  The Notifier port and the run event it carries: suspended, done, failed, crashed
+- `src/agentdag/application/kernel/sandbox.py`  -  The Sandbox port and the isolation guarantees a run declares it had
 - `src/agentdag/application/kernel/summary.py`  -  The run summary line appended by every launch that reaches done
 - `src/agentdag/application/kernel/workflow_check.py`  -  The determinism check over a replay's dispatched keys
 - `src/agentdag/application/workflows/graph_a.py`  -  Graph A re-expressed as a kernel workflow: journaled, resumable, approve-bearing
@@ -60,7 +65,7 @@ the [documentation index](../README.md).
   - `commands/email/`  -  send-email and send-notification, plus their shared helpers
   - `commands/logging.py`  -  logdemo command
   - `commands/graph_a.py`  -  graph-a group: the scratch and run commands
-  - `commands/run.py`  -  run group: start, status, records, resume, approve, and the hidden coordinator entry point
+  - `commands/run.py`  -  run group: start, status, records, resume, approve, cancel, apply-deadlines, and the hidden coordinator entry point
 - `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
   - `git_cli.py`  -  GitPort over the git CLI (mirror, remove_mirror, clone, inspect, push)
   - `gate_make.py`  -  GatePort: the project's `make test` as a separate child process, given only its allowlisted environment
@@ -76,6 +81,9 @@ the [documentation index](../README.md).
   - `policy_yaml.py`  -  Loading the tier policy and content-hashing it into a policy version
   - `scope_none.py`, `scope_systemd.py`, `scope_common.py`  -  Launching and reaping the coordinator, as a process group or a systemd user scope
   - `isolation_scan.py`  -  Content manifests of the run tree, before and after a node
+  - `sandbox_none.py`  -  The Sandbox that adds no boundary of its own, and says so in its declaration
+  - `notify_none.py`  -  The default notification sink: accepts a run event and discards it
+  - `notify_mail.py`  -  The mail notification sink: one plain-text mail per run event, through the repo's email adapter
   - `clock_utc.py`  -  The one place the system reads the wall clock
 
 ### Adapters Layer (In-Memory / Testing)

@@ -58,6 +58,21 @@ claude_oauth_token_file = ""
 # .env: KERNEL__RUNS_DIR=/var/lib/agentdag/runs
 runs_dir = "/var/lib/agentdag/runs"
 
+# Purpose: where a run's own events (suspended, done, failed, crashed) are sent
+# Type: string, one of "none" or "mail"
+# Default: "none" (no notification; an operator who configured nothing is not
+#   signed up for mail)
+# Environment Variable: AGENTDAG___KERNEL__NOTIFY=mail
+# .env: KERNEL__NOTIFY=mail
+# Note: "mail" sends through the same btx_lib_mail adapter `agentdag email
+#   send-notification` uses, so it needs the [email] section configured -
+#   smtp_hosts, from_address and recipients at minimum. An explicit "mail" with
+#   no SMTP host configured FAILS the run command rather than falling back to
+#   silence: being told is what the operator asked for. The events are emitted by
+#   the coordinator (suspended, done, failed) and by `run apply-deadlines`
+#   (crashed) - never by a node, which has no handle on the port.
+notify = "none"
+
 # Purpose: how many map branches (or top-level nodes) a run may dispatch at once
 # Type: integer
 # Default: 2
