@@ -217,10 +217,12 @@ run_limits:
     work: deep
     synth: top
     planner: deep
-  # the kinds a PLANNER-emitted spec may carry (2.4); apply and approve are
-  # never planner-emitted - a planner may REQUEST an approve gate, the workflow
-  # decides
-  planner_kinds: [work, gate, synth, map, reduce, wait, batch]
+  # the kinds a PLANNER-emitted spec may carry (2.4). apply is never planner-emitted:
+  # it performs a staged side effect, so a hand-authored node owns every irreversible
+  # step. stage and approve ARE planner-emitted (DECISIONS.md item 8, 2026-08-22) - a
+  # plan may write an intent and may ask for a human gate, and the workflow still
+  # decides what that gate does
+  planner_kinds: [work, gate, synth, map, reduce, wait, batch, stage, approve]
   # a `top` request below this fraction of the row's remaining run budget is
   # downgraded and audited (2.3 rule 4 - the design's "5%")
   top_role_budget_floor: 0.05
