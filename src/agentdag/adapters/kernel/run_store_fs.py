@@ -3,7 +3,7 @@
 One run owns one directory, created owner-only (``0700``) with its whole
 first-level layout in place::
 
-    <runs_base>/<run_id>/{decisions,intents,artefacts,wt,nodes,manifest,done}
+    <runs_base>/<run_id>/{decisions,intents,artefacts,wt,nodes,manifest,done,attempted}
 
 Every write under the run dir lands in a sibling temp file first - fsynced
 and closed - and only then becomes visible in one atomic filesystem call, so
@@ -30,13 +30,13 @@ from ...application.kernel.cancel import WHOLE_RUN_NODE_ID
 from ...application.kernel.ports import DecisionFileRef
 from ...domain.kernel_errors import RunRefused
 from ...domain.keys import hash8
-from ...domain.models import Decision, RunState
+from ...domain.models import Decision, MarkerPhase, RunState
 
 __all__ = ["FsRunDir"]
 
 _OWNER_ONLY_DIR = 0o700
 _OWNER_ONLY_FILE = 0o600
-_SUBDIRS = ("decisions", "intents", "artefacts", "wt", "nodes", "manifest", "done")
+_SUBDIRS = ("decisions", "intents", "artefacts", "wt", "nodes", "manifest", "done", "attempted")
 _HEX8 = re.compile(r"[0-9a-f]{8}")
 """The shape a payload hash must shorten to before it may name a decision file."""
 
@@ -151,8 +151,8 @@ class FsRunDir:
         """Return (creating it) ``intents/<kind>/``."""
         return self._mkdir_owner_only(self.root / "intents" / kind)
 
-    def marker(self, kind: str, key: str) -> Path:
-        """Return ``done/<kind>/<key>``, creating the ``done/<kind>/`` directory.
+    def marker(self, kind: str, key: str, *, phase: MarkerPhase = MarkerPhase.DONE) -> Path:
+        """Return ``<phase>/<kind>/<key>``, creating the ``<phase>/<kind>/`` directory.
 
         The marker file itself is not created here; its existence is whatever
         the caller writes (or does not write) to the returned path.
@@ -164,8 +164,11 @@ class FsRunDir:
         ``directory`` entirely rather than joining to it.
 
         Args:
-            kind: The intent kind; the subdirectory under ``done/``.
+            kind: The intent kind; the subdirectory under the phase directory.
             key: The intent's dedup key; the marker file's name.
+            phase: Which half of the two-phase record this is - ``ATTEMPTED`` is written
+                before the effect and ``DONE`` after it, so the pair describes the window
+                in between that a single marker cannot.
 
         Returns:
             The path the marker would live at.
@@ -176,7 +179,7 @@ class FsRunDir:
         """
         _refuse_unsafe_path_component("marker kind", kind)
         _refuse_unsafe_path_component("marker key", key)
-        directory = self._mkdir_owner_only(self.root / "done" / kind)
+        directory = self._mkdir_owner_only(self.root / phase.value / kind)
         return directory / key
 
     def artefacts_dir(self) -> Path:

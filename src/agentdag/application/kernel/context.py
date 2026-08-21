@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from ...domain.journal import ApproveDecisionLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
-from ...domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord
+from ...domain.models import Decision, ErrorType, MarkerPhase, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scan import diff_manifests, stray_paths
 from .approve import validate_default
 from .ports import ExecutorRequest, stamp
@@ -53,6 +53,26 @@ class HasDedupKey(Protocol):
     """
 
     dedup_key: str
+
+
+class PerformIntent(Protocol):
+    """Does one intent's real effect, and owns what to do when it may already have happened.
+
+    The kernel cannot decide that for a workflow: whether a repeat is harmless depends on
+    what the effect IS. So :meth:`Coordinator.apply` supplies the fact and this callable
+    supplies the policy. ``may_have_landed`` is true exactly when a previous attempt on
+    this dedup key wrote its ``attempted`` marker and never reached ``done`` - a crash
+    between the effect and its record.
+
+    An effect whose target can be read back ignores the flag and simply reads (graph A's
+    ``perform_push`` compares the target ref, which answers the question for both cases).
+    An effect that CANNOT be read back - a mail, a non-idempotent API call - has no other
+    way to know, and should refuse rather than repeat.
+    """
+
+    def __call__(self, intent: HasDedupKey, *, may_have_landed: bool) -> str:
+        """Perform ``intent`` and return what happened, as a short outcome word."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,39 +718,45 @@ class Coordinator:
         self.run_dir.write_atomic(rel, payload_text)
 
     async def apply(
-        self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: Callable[[HasDedupKey], str]
+        self, spec: NodeSpec, *, intents: Sequence[HasDedupKey], kind: str, perform: PerformIntent
     ) -> ResultRecord:
-        """Perform each staged intent, guarded by its ``done/<kind>/<key>`` marker.
+        """Perform each staged intent, recorded in two phases around the effect.
 
-        The marker is written AFTER the effect, so it cannot be the whole guarantee: a
-        process death between the two leaves the effect applied and unrecorded, and the
-        replay re-dispatches the node and calls ``perform`` again. Closing that window is
-        ``perform``'s own job, not this method's.
+        ``attempted/<kind>/<key>`` is written BEFORE the effect and ``done/<kind>/<key>``
+        after it. A single done-marker cannot describe the window between them, because it
+        only exists once the effect has returned: a process death in there leaves an
+        irreversible effect applied with nothing recording it, and the replay re-dispatches
+        the node. The pair says, per dedup key, whether THIS effect may already have
+        happened - which the journal's own crash window cannot, since it is per NODE and
+        one apply node carries every intent its stage node staged.
+
+        The kernel supplies that fact and does not act on it: whether a repeat is harmless
+        depends on what the effect is, so the policy belongs to ``perform`` (see
+        :class:`PerformIntent`).
 
         Args:
             spec: The apply node's spec.
             intents: The same intents a prior :meth:`stage` call staged.
-            kind: The intent kind; also the marker subdirectory, ``done/<kind>/``.
-            perform: Does the one real effect (e.g. a push). The marker keeps it from
-                being called again once it has RECORDED one. Across the crash window it
-                is called again, so it must read the target's external state and decline
-                an effect already there - graph A's ``perform_push`` compares the target
-                REF, and reports ``"already-present"`` where the marker would have said
-                ``"already-done"``.
+            kind: The intent kind; also the marker subdirectory under each phase.
+            perform: Does the one real effect (e.g. a push), and decides what a possible
+                repeat means. It is not called again once ``done`` exists.
 
         Returns:
             ``done``, with ``key_facts["outcomes"]`` mapping each dedup key to either
-            what ``perform`` returned, or ``"already-done"`` when its marker existed.
+            what ``perform`` returned, or ``"already-done"`` when its ``done`` marker
+            existed, and ``key_facts["resumed"]`` listing the keys whose effect may have
+            landed before a crash.
         """
         keys = [intent.dedup_key for intent in intents]
         input_obj = {"kind": kind, "keys": keys}
 
         async def body(node_dir: Path) -> NodeOutcome:
+            resumed = [key for key in keys if self._may_have_landed(kind, key)]
             outcomes = {intent.dedup_key: self._apply_one(kind, intent, perform) for intent in intents}
             return NodeOutcome(
                 status=NodeStatus.DONE,
-                key_facts={"outcomes": outcomes},
-                typed_fields=["outcomes"],
+                key_facts={"outcomes": outcomes, "resumed": resumed},
+                typed_fields=["outcomes", "resumed"],
                 executor_used="code",
                 model_used="-",
                 effort_used="-",
@@ -738,13 +764,23 @@ class Coordinator:
 
         return await self._dispatch(spec, brief=f"apply: {kind}", input_obj=input_obj, body=body)
 
-    def _apply_one(self, kind: str, intent: HasDedupKey, perform: Callable[[HasDedupKey], str]) -> str:
-        """Perform ``intent`` exactly once, guarded by its ``done/<kind>/<dedup_key>`` marker."""
-        marker = self.run_dir.marker(kind, intent.dedup_key)
-        if marker.exists():
+    def _may_have_landed(self, kind: str, key: str) -> bool:
+        """Report whether a previous attempt on ``key`` reached its effect but not its record."""
+        attempted = self.run_dir.marker(kind, key, phase=MarkerPhase.ATTEMPTED)
+        done = self.run_dir.marker(kind, key, phase=MarkerPhase.DONE)
+        return attempted.exists() and not done.exists()
+
+    def _apply_one(self, kind: str, intent: HasDedupKey, perform: PerformIntent) -> str:
+        """Perform ``intent`` once, between its ``attempted`` and ``done`` markers."""
+        done = self.run_dir.marker(kind, intent.dedup_key, phase=MarkerPhase.DONE)
+        if done.exists():
             return "already-done"
-        outcome = perform(intent)
-        marker.touch()
+        may_have_landed = self._may_have_landed(kind, intent.dedup_key)
+        # Written BEFORE the effect: a crash after this point is what makes the next
+        # launch able to say the effect may have happened, rather than assuming it did not.
+        self.run_dir.marker(kind, intent.dedup_key, phase=MarkerPhase.ATTEMPTED).touch()
+        outcome = perform(intent, may_have_landed=may_have_landed)
+        done.touch()
         return outcome
 
     def fold_decisions(self) -> None:

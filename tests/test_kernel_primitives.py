@@ -47,6 +47,7 @@ from agentdag.domain.models import (
     Decision,
     Isolation,
     Kind,
+    MarkerPhase,
     NodeOutcome,
     NodeSpec,
     NodeStatus,
@@ -245,10 +246,10 @@ def test_stage_writes_intents_before_apply_and_apply_is_idempotent(tmp_path: Pat
     assert (rd.intents_dir("push") / ("a.git-" + "a" * 40 + ".json")).exists()
     assert s.key_facts["count"] == 1
 
-    performed: list[str] = []
+    performed: list[tuple[str, bool]] = []
 
-    def push_and_record(intent: HasDedupKey) -> str:
-        performed.append(intent.dedup_key)
+    def push_and_record(intent: HasDedupKey, *, may_have_landed: bool) -> str:
+        performed.append((intent.dedup_key, may_have_landed))
         return "pushed"
 
     a1 = asyncio.run(
@@ -258,9 +259,61 @@ def test_stage_writes_intents_before_apply_and_apply_is_idempotent(tmp_path: Pat
         co.apply(code("ap2", Kind.APPLY, deps=["s"]), intents=intents, kind="push", perform=push_and_record)
     )
 
-    assert performed == ["a.git-" + "a" * 40]
+    # Performed once, and told it was a FIRST attempt: the done marker short-circuits the
+    # second call, so nothing ever sees may_have_landed on a completed effect.
+    assert performed == [("a.git-" + "a" * 40, False)]
     assert a1.key_facts["outcomes"] == {"a.git-" + "a" * 40: "pushed"}
+    assert a1.key_facts["resumed"] == []
     assert a2.key_facts["outcomes"] == {"a.git-" + "a" * 40: "already-done"}
+
+
+@pytest.mark.os_agnostic
+def test_an_effect_that_cannot_be_read_back_refuses_the_repeat_the_next_launch_would_make(
+    tmp_path: Path,
+) -> None:
+    """The reason the attempted marker exists: a perform with no external state to consult.
+
+    Sending a mail or calling a non-idempotent API cannot ask the target whether it already
+    happened, so nothing the kernel does with markers alone makes a repeat safe. What the
+    kernel CAN do is tell it, and this pins that the fact arrives - a run that crashed inside
+    the effect refuses on the next launch instead of doing it twice.
+
+    The control is the first launch in the same test: told may_have_landed is false, the same
+    perform DOES the effect. Without it a perform that always refused would pass.
+    """
+    co, rd = coordinator(tmp_path)
+    key = "mail-" + "c" * 8
+    intents = [PushIntent(repo=Path("/s/origin/c.git"), head_sha="c" * 40, dedup_key=key)]
+    asyncio.run(co.stage(code("s3", Kind.STAGE), intents=intents, kind="mail"))
+    sent: list[str] = []
+
+    def send_or_refuse(intent: HasDedupKey, *, may_have_landed: bool) -> str:
+        if may_have_landed:
+            raise RuntimeError(f"{intent.dedup_key} may already have been sent; refusing to send it twice")
+        sent.append(intent.dedup_key)
+        raise SystemExit(9)  # the crash, after the effect and before the done marker
+
+    with pytest.raises(SystemExit):
+        asyncio.run(
+            co.apply(code("ap4", Kind.APPLY, deps=["s3"]), intents=intents, kind="mail", perform=send_or_refuse)
+        )
+
+    assert sent == [key]  # control: a first attempt is told false, and performs
+    assert rd.marker("mail", key, phase=MarkerPhase.ATTEMPTED).exists()
+    assert not rd.marker("mail", key).exists()
+
+    r = asyncio.run(
+        co.apply(code("ap5", Kind.APPLY, deps=["s3"]), intents=intents, kind="mail", perform=send_or_refuse)
+    )
+
+    assert sent == [key]  # not sent a second time
+    assert r.status == NodeStatus.FAILED
+    # Failed for the REFUSAL, not for some other error on the same path - and the record
+    # carries no key_facts at all when the body raised, which is why the reason is read here.
+    assert r.error is not None
+    assert "may already have been sent" in r.error.message
+    assert rd.marker("mail", key, phase=MarkerPhase.ATTEMPTED).exists()
+    assert not rd.marker("mail", key).exists()
 
 
 @pytest.mark.os_agnostic
@@ -269,13 +322,16 @@ def test_apply_with_a_raising_perform_yields_a_failed_record_and_no_marker(tmp_p
     intents = [PushIntent(repo=Path("/s/origin/b.git"), head_sha="b" * 40, dedup_key="b.git-" + "b" * 40)]
     asyncio.run(co.stage(code("s2", Kind.STAGE), intents=intents, kind="push2"))
 
-    def boom(intent: HasDedupKey) -> str:
+    def boom(intent: HasDedupKey, *, may_have_landed: bool) -> str:
         raise RuntimeError("push exploded")
 
     r = asyncio.run(co.apply(code("ap3", Kind.APPLY, deps=["s2"]), intents=intents, kind="push2", perform=boom))
 
     assert r.status == NodeStatus.FAILED
     assert not rd.marker("push2", "b.git-" + "b" * 40).exists()
+    # The attempted marker DOES stay: perform was entered, so whether the effect landed is
+    # exactly what nobody can know - which is the state the next launch has to be told about.
+    assert rd.marker("push2", "b.git-" + "b" * 40, phase=MarkerPhase.ATTEMPTED).exists()
 
 
 @pytest.mark.os_agnostic

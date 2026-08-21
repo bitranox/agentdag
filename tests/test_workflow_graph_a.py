@@ -36,6 +36,7 @@ from agentdag.domain.journal import ResultLine, RunSummaryLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError, SpecRejected
 from agentdag.domain.models import (
     ErrorType,
+    MarkerPhase,
     NodeError,
     NodeOutcome,
     NodeStatus,
@@ -446,9 +447,12 @@ def test_a_crash_between_the_push_and_its_marker_replays_without_pushing_twice(t
     origin = scratch / "origin" / "a.git"
     approved = git("rev-parse", "main", cwd=origin)
     key = dedup_key(origin, approved)
-    # The window is real, not hypothetical: the push landed, and nothing on disk knows.
+    # The window is real, not hypothetical: the push landed, and no done marker records it.
     assert len(crasher.pushes) == 1
     assert not run_dir.marker("push", key).exists()
+    # What the attempted marker buys: the state is now DESCRIBED rather than indistinguishable
+    # from an effect that never started. Per dedup key, which the node-level crash window is not.
+    assert run_dir.marker("push", key, phase=MarkerPhase.ATTEMPTED).exists()
     assert len(build_replay_index(journal_of(run_dir)).crash_window) == 1
 
     recorder = RecordingGit()
@@ -461,7 +465,11 @@ def test_a_crash_between_the_push_and_its_marker_replays_without_pushing_twice(t
     assert recorder.pushes == []
     assert git("rev-parse", "main", cwd=origin) == approved
     assert run_dir.marker("push", key).exists()
-    assert records_of(lines, "ap_push")[-1].key_facts["outcomes"] == {key: "already-present"}
+    record = records_of(lines, "ap_push")[-1]
+    assert record.key_facts["outcomes"] == {key: "already-present"}
+    # The record carries WHICH effects the replay could not vouch for, so an operator
+    # reading the run afterwards sees it without reconstructing it from marker files.
+    assert record.key_facts["resumed"] == [key]
     assert outcome.status is RunStatus.DONE
 
     behind = git("rev-parse", f"{approved}^", cwd=origin)

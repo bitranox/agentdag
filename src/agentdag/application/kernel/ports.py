@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from datetime import timezone
 from typing import TYPE_CHECKING, Protocol
 
+from ...domain.models import MarkerPhase  # runtime: it is a default argument value, not just an annotation
 from .sandbox import Sandbox, SandboxGuarantees, SandboxRequest
 
 if TYPE_CHECKING:
@@ -174,8 +175,8 @@ class RunDir(Protocol):
         """Return (creating it) ``intents/<kind>/``."""
         ...
 
-    def marker(self, kind: str, key: str) -> Path:
-        """Return ``done/<kind>/<key>``, creating the ``done/<kind>/`` directory."""
+    def marker(self, kind: str, key: str, *, phase: MarkerPhase = MarkerPhase.DONE) -> Path:
+        """Return ``<phase>/<kind>/<key>``, creating the ``<phase>/<kind>/`` directory."""
         ...
 
     def artefacts_dir(self) -> Path:

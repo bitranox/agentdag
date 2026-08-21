@@ -167,7 +167,12 @@ async def program(co: Coordinator, args: GraphAArgs) -> None:
     decision = await co.approve(_approve_spec(), payload=_payload(co, summary, intents))
     if decision.decision != "approve":
         return
-    await co.apply(_apply_spec(), intents=intents, kind="push", perform=lambda i: perform_push(co, args.scratch, i))
+
+    def push_one(intent: HasDedupKey, *, may_have_landed: bool) -> str:
+        """Bind this run's coordinator and scratch to the ``PerformIntent`` shape ``apply`` calls."""
+        return perform_push(co, args.scratch, intent, may_have_landed=may_have_landed)
+
+    await co.apply(_apply_spec(), intents=intents, kind="push", perform=push_one)
 
 
 async def _migrate(
@@ -516,7 +521,7 @@ def _decide_by(co: Coordinator) -> str:
     return format_stamp(datetime.fromisoformat(started.at) + timedelta(seconds=_DECIDE_BY_S))
 
 
-def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
+def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey, *, may_have_landed: bool = False) -> str:
     """Push one staged intent to its scratch clone, or report that it is already there.
 
     The worktree's HEAD is re-read and compared with ``intent.head_sha`` immediately
@@ -533,6 +538,12 @@ def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
         intent: The staged intent; the marker guard is
             :meth:`~agentdag.application.kernel.context.Coordinator.apply`'s job, and
             this is the external-state check that survives a crash between the two.
+        may_have_landed: Whether a previous attempt on this dedup key reached its effect
+            but not its record. A push does not need it to decide - reading the ref
+            answers the same question and answers it for a third party's push too - so it
+            changes only what the HEAD-moved refusal TELLS an operator, which is the one
+            case where nothing readable settles it. An effect that cannot be read back
+            has nothing else to go on and should refuse on it.
 
     Returns:
         ``"pushed"``, or ``"already-present"`` when the branch already points at the
@@ -556,8 +567,12 @@ def perform_push(co: Coordinator, scratch: Path, intent: HasDedupKey) -> str:
     worktree = co.run_dir.worktree(_worktree_name(intent.repo))
     head_now = co.git.head_sha(worktree)
     if head_now != intent.head_sha:
+        # The ref did not match and HEAD has moved, so nothing readable settles whether an
+        # earlier attempt got the commit out. That is exactly when the operator needs told.
+        prior = " A previous attempt on this key may already have pushed it." if may_have_landed else ""
         raise KernelError(
-            f"{worktree} is at {head_now}, not the approved {intent.head_sha}; nothing was pushed to {intent.repo}"
+            f"{worktree} is at {head_now}, not the approved {intent.head_sha};"
+            f" nothing was pushed to {intent.repo}.{prior}"
         )
     co.git.push(worktree, intent.repo, branch)
     return "pushed"

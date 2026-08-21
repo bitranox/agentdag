@@ -40,6 +40,7 @@ __all__ = [
     "Kind",
     "KnowledgeUsed",
     "LockHolder",
+    "MarkerPhase",
     "NodeError",
     "NodeOutcome",
     "NodeSpec",
@@ -121,6 +122,21 @@ class ExecutorKind(StrEnum):
 
     CLAUDE = "claude"
     CODE = "code"
+
+
+class MarkerPhase(StrEnum):
+    """Which half of an apply's two-phase record a marker file is (design 9, stage/apply).
+
+    ``ATTEMPTED`` is written BEFORE the effect and ``DONE`` after it. One done-marker
+    alone cannot describe the window between them, because it is written only once the
+    effect has returned: a crash in between leaves an effect applied and unrecorded. With
+    both, a replay can tell an effect that MAY already have landed from one that never
+    started, per dedup key rather than per node - which is the granularity that matters,
+    since one apply node carries every intent its stage node staged.
+    """
+
+    ATTEMPTED = "attempted"
+    DONE = "done"
 
 
 class RunStatus(StrEnum):
