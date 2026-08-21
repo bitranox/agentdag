@@ -148,3 +148,36 @@ def test_refuses_a_role_on_a_model_kind_with_no_ceiling_entry() -> None:
     reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.MECHANICAL), limits=uncapped)
 
     assert any("ceiling" in reason for reason in reasons), reasons
+
+
+def test_refuses_a_write_set_entry_that_escapes_the_run_root() -> None:
+    """Containment is lexical and must survive traversal, which Path.relative_to does not.
+
+    Measured in the insertion review: ``Path('/runs/r1/wt/../../../home/victim')
+    .relative_to('/runs/r1')`` returns a path and does NOT raise.
+    """
+    for escape in ("../../etc/passwd", "/etc/passwd", "wt/../../../etc", "wt/x/../../../../y"):
+        reasons = validate_spec(spec(write_set=[escape]), limits=limits())
+
+        assert any("write_set" in reason for reason in reasons), (escape, reasons)
+
+
+def test_refuses_a_write_set_entry_whose_first_segment_is_a_glob() -> None:
+    """``write_set: ["*"]`` is inside the root and still covers all of it.
+
+    Insertion review finding 6: Coordinator.scan adds every OTHER node's declared write sets to
+    its allow-list and fnmatch's ``*`` spans ``/``, so one such entry makes every later scan in
+    the run pass - hand-authored nodes included.
+    """
+    for wildcard in ("*", "**", "*.json"):
+        reasons = validate_spec(spec(write_set=[wildcard]), limits=limits())
+
+        assert any("write_set" in reason for reason in reasons), (wildcard, reasons)
+
+
+def test_admits_the_write_set_shapes_graph_a_actually_declares() -> None:
+    """The shipping graph is the control: these three must not be refused."""
+    for good in ("wt/repo-one/**", "manifest/m_fleet.json", "intents/push/*.json", "wt/../other/**"):
+        reasons = validate_spec(spec(write_set=[good]), limits=limits())
+
+        assert not any("write_set" in reason for reason in reasons), (good, reasons)

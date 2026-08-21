@@ -8,7 +8,16 @@ dispatch rather than trusting the tier alone. This module owns the 2.4 rules tha
 that slice 1 can express; a refusal is journaled as ``spec_rejected`` with its reasons, the
 planner is re-run once carrying them, and a second refusal suspends into ``approve``.
 
-Three rules are deliberately absent, and none of them is an oversight:
+Rules deliberately absent or partial, none of them an oversight:
+
+* ``write_set`` is enforced only for CONTAINMENT (relative, no traversal above the root, no
+  leading glob). 2.4's second half - "inside the node's own dir unless its kind is one the
+  run-root exception of 3.1 names" - is NOT implemented, because it does not describe the
+  shipping graph. 3.1 names ``manifest/`` for a ``reduce``, ``intents/`` for a ``stage`` and
+  ``artefacts/`` for ``reduce``/``synth``, and says every other node writes only under
+  ``nodes/<node_id>/<hash8>/``; graph A's ``work`` and ``gate`` nodes declare ``wt/<name>/**``,
+  which is neither. Implementing the sentence as written would refuse nodes that run today, so
+  the divergence is recorded rather than guessed at.
 
 * ``knowledge`` and ``stage_into`` against the workflow's grant - design 2.1 puts both outside
   slice 1 ("NOT IN SLICE 1: both need semdex 4.4 and 4.9, neither shipped").
@@ -79,7 +88,37 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits) -> tuple[str, ...]:
     reasons.extend(_executor_reasons(spec))
     reasons.extend(_tier_role_reasons(spec))
     reasons.extend(_ceiling_reasons(spec, limits))
+    reasons.extend(_write_set_reasons(spec))
     return tuple(reasons)
+
+
+def _write_set_reasons(spec: NodeSpec) -> list[str]:
+    """Return a reason per ``write_set`` entry that escapes the run root or covers all of it.
+
+    Lexical on purpose: the entries are relative to the isolation root, and no filesystem is
+    consulted, so this is pure. It does NOT implement 2.4's second half ("inside the node's own
+    dir unless its kind is one the run-root exception of 3.1 names") - see the module docstring.
+    """
+    return [reason for entry in spec.write_set for reason in _one_write_set_reason(entry)]
+
+
+def _one_write_set_reason(entry: str) -> list[str]:
+    """Return the single reason ``entry`` is not a containable relative path, if it is not."""
+    if entry.startswith("/"):
+        return [f"write_set {entry!r} is absolute; entries are relative to the run's isolation root"]
+    segments = [part for part in entry.split("/") if part not in ("", ".")]
+    if not segments:
+        return [f"write_set {entry!r} names no path"]
+    if any(char in segments[0] for char in "*?["):
+        # A leading glob is inside the root and still spans all of it: Coordinator.scan adds
+        # every OTHER node's write set to its allow-list, and fnmatch's `*` crosses `/`.
+        return [f"write_set {entry!r} starts with a glob, so it covers the whole run root"]
+    depth = 0
+    for part in segments:
+        depth += -1 if part == ".." else 1
+        if depth < 0:
+            return [f"write_set {entry!r} traverses above the run's isolation root"]
+    return []
 
 
 def _ceiling_reasons(spec: NodeSpec, limits: RunLimits) -> list[str]:
