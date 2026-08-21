@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from agentdag.adapters.kernel.policy_yaml import load_policy
-from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, Requirement, TierRole
 from agentdag.domain.policy import RunLimits
 from agentdag.domain.validate import SpecContext, validate_spec
 
@@ -215,3 +215,36 @@ def test_admits_a_dag_and_says_nothing_about_deps_with_no_context() -> None:
 
     assert not any("dep" in r for r in validate_spec(spec(deps=["a", "b"]), limits=limits(), context=context))
     assert not any("dep" in r for r in validate_spec(spec(deps=["anything"]), limits=limits()))
+
+
+def test_refuses_a_requirement_naming_an_unregistered_resource() -> None:
+    """2.4: requires must name only registered resources."""
+    context = SpecContext(resources={"bmk-tool-env": 1.0})
+
+    reasons = validate_spec(
+        spec(requires=[Requirement(resource="ghost", amount=1.0)]), limits=limits(), context=context
+    )
+
+    assert any("ghost" in reason for reason in reasons), reasons
+
+
+def test_refuses_a_requirement_asking_more_than_the_registered_capacity() -> None:
+    """2.4: amounts must be under their capacity. Asking for 3 of a capacity-1 mutex never runs."""
+    context = SpecContext(resources={"bmk-tool-env": 1.0})
+
+    reasons = validate_spec(
+        spec(requires=[Requirement(resource="bmk-tool-env", amount=3.0)]), limits=limits(), context=context
+    )
+
+    assert any("capacity" in reason for reason in reasons), reasons
+
+
+def test_admits_a_requirement_at_exactly_the_registered_capacity() -> None:
+    """A mutex of capacity 1 is taken by asking for exactly 1, so the bound is inclusive."""
+    context = SpecContext(resources={"bmk-tool-env": 1.0})
+
+    reasons = validate_spec(
+        spec(requires=[Requirement(resource="bmk-tool-env", amount=1.0)]), limits=limits(), context=context
+    )
+
+    assert not any("capacity" in reason or "bmk-tool-env" in reason for reason in reasons), reasons

@@ -55,7 +55,7 @@ from .models import Kind, TierRole
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from .models import NodeSpec
+    from .models import NodeSpec, Requirement
     from .policy import RunLimits
 
 __all__ = ["SpecContext", "validate_spec"]
@@ -74,6 +74,9 @@ class SpecContext(BaseModel):
 
     graph: dict[str, tuple[str, ...]] = Field(default_factory=dict[str, tuple[str, ...]])
     """Already-admitted node ids to their deps, for existence and acyclicity."""
+
+    resources: dict[str, float] = Field(default_factory=dict[str, float])
+    """Registered resource names to their capacity (``PolicyTable.resources``), for ``requires``."""
 
 
 CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPLY, Kind.APPROVE})
@@ -111,8 +114,31 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | N
     reasons.extend(_tier_role_reasons(spec))
     reasons.extend(_ceiling_reasons(spec, limits))
     reasons.extend(_write_set_reasons(spec))
-    reasons.extend(_dep_reasons(spec, context or SpecContext()))
+    resolved = context or SpecContext()
+    reasons.extend(_dep_reasons(spec, resolved))
+    reasons.extend(_requires_reasons(spec, resolved))
     return tuple(reasons)
+
+
+def _requires_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
+    """Return the reasons ``spec.requires`` names an unregistered resource or overruns it.
+
+    The bound is INCLUSIVE: a mutex of capacity 1 is taken by asking for exactly 1. Silent
+    when the caller registered nothing, per :class:`SpecContext`.
+    """
+    if not context.resources:
+        return []
+    return [reason for need in spec.requires for reason in _one_requirement_reason(need, context.resources)]
+
+
+def _one_requirement_reason(need: Requirement, resources: Mapping[str, float]) -> list[str]:
+    """Return the single reason ``need`` cannot be admitted against ``resources``, if any."""
+    capacity = resources.get(need.resource)
+    if capacity is None:
+        return [f"requires {need.resource!r}, which is not a registered resource"]
+    if need.amount > capacity:
+        return [f"requires {need.amount} of {need.resource!r}, over its registered capacity {capacity}"]
+    return []
 
 
 def _dep_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
