@@ -71,6 +71,10 @@ runs_dir = "/var/lib/agentdag/runs"
 #   silence: being told is what the operator asked for. The events are emitted by
 #   the coordinator (suspended, done, failed) and by `run apply-deadlines`
 #   (crashed) - never by a node, which has no handle on the port.
+# Note: `agentdag notify-test` sends one event through whatever this names and
+#   REPORTS a failure instead of containing it, which is the only place a broken
+#   sink is loud - during a run it is swallowed, so that a mail server being down
+#   cannot fail a run that otherwise succeeded.
 notify = "none"
 
 # Purpose: how many map branches (or top-level nodes) a run may dispatch at once

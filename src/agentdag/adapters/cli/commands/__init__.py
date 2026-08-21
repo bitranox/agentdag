@@ -19,6 +19,7 @@ from .email import cli_send_email, cli_send_notification
 from .graph_a import cli_graph_a
 from .info import cli_fail, cli_hello, cli_info
 from .logging import cli_logdemo
+from .notify import cli_notify_test
 from .run import cli_run
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "cli_hello",
     "cli_info",
     "cli_logdemo",
+    "cli_notify_test",
     "cli_run",
     "cli_send_email",
     "cli_send_notification",

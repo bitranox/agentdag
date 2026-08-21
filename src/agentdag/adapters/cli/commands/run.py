@@ -56,6 +56,7 @@ owns). A background relaunch's ``_coordinate`` re-derives them from config UNLES
 which it does exactly when they were given (see :func:`_launch_background`).
 
 Contents:
+    * :func:`resolve_notifier` - the sink ``kernel.notify`` names, shared with ``notify-test``.
     * :func:`cli_run` - the ``run`` group.
     * :func:`cli_run_start`, :func:`cli_run_status`, :func:`cli_run_records`,
       :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_cancel`,
@@ -637,7 +638,7 @@ def _resolve_credential(config: Config) -> tuple[CredentialSource, str]:
     return CredentialCopy(source_path=home_copy), f"a private copy of {home_copy}"
 
 
-def _resolve_notifier(ctx: click.Context) -> Notifier:
+def resolve_notifier(ctx: click.Context) -> Notifier:
     """Build the notification sink ``kernel.notify`` names.
 
     Two values, because there are two sinks: ``"none"`` (the default - an operator who
@@ -718,7 +719,7 @@ def _build_wiring(
         parallel=parallel,
         max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
         deny_bash=_config_deny_bash(config),
-        notifier=_resolve_notifier(ctx),
+        notifier=resolve_notifier(ctx),
     )
     return wiring, credential_desc
 

@@ -142,6 +142,7 @@ def _register_commands() -> None:
         cli_hello,
         cli_info,
         cli_logdemo,
+        cli_notify_test,
         cli_run,
         cli_send_email,
         cli_send_notification,
@@ -157,6 +158,7 @@ def _register_commands() -> None:
         cli_graph_a,
         cli_run,
         cli_logdemo,
+        cli_notify_test,
         cli_send_email,
         cli_send_notification,
     ):

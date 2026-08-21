@@ -64,6 +64,7 @@ the [documentation index](../README.md).
   - `commands/config.py`  -  config, config-deploy, config-generate-examples commands
   - `commands/email/`  -  send-email and send-notification, plus their shared helpers
   - `commands/logging.py`  -  logdemo command
+  - `commands/notify.py`  -  notify-test command: one event through the configured sink, reported rather than contained
   - `commands/graph_a.py`  -  graph-a group: the scratch and run commands
   - `commands/run.py`  -  run group: start, status, records, resume, approve, cancel, apply-deadlines, and the hidden coordinator entry point
 - `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
