@@ -135,3 +135,16 @@ def test_admits_a_tier_role_at_or_below_its_kinds_ceiling() -> None:
         reasons = validate_spec(spec(kind=Kind.WORK, tier_role=role), limits=limits())
 
         assert not any("ceiling" in reason for reason in reasons), (role, reasons)
+
+
+def test_refuses_a_role_on_a_model_kind_with_no_ceiling_entry() -> None:
+    """An absent ceiling fails CLOSED (user, 2026-08-22): unconfigured is not uncapped.
+
+    Otherwise the safety property is config-shaped rather than code-shaped, and deleting one
+    line from per_kind_ceiling silently removes the cap for that kind with no error anywhere.
+    """
+    uncapped = limits(per_kind_ceiling={})
+
+    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.MECHANICAL), limits=uncapped)
+
+    assert any("ceiling" in reason for reason in reasons), reasons

@@ -87,12 +87,17 @@ def _ceiling_reasons(spec: NodeSpec, limits: RunLimits) -> list[str]:
 
     REFUSES rather than clamping (DECISIONS.md item 9), which amends design 2.3 rule 4: a
     clamp is silent this milestone, so a judge quietly dropped from ``top`` to ``deep`` would
-    still return a verdict the coordinator branches on. A kind with no ceiling entry has no
-    ceiling to outrank.
+    still return a verdict the coordinator branches on.
+
+    An ABSENT ceiling entry fails CLOSED (user, 2026-08-22): unconfigured is not uncapped.
+    Failing open would make the cap config-shaped rather than code-shaped, so deleting one line
+    from ``per_kind_ceiling`` would silently remove it for that kind with no error anywhere.
     """
-    ceiling = limits.per_kind_ceiling.get(spec.kind.value)
-    if spec.tier_role is None or ceiling is None:
+    if spec.tier_role is None:
         return []
+    ceiling = limits.per_kind_ceiling.get(spec.kind.value)
+    if ceiling is None:
+        return [f"kind {spec.kind.value!r} declares no per_kind_ceiling, so it may not carry a tier_role"]
     if ROLE_ORDER.index(spec.tier_role) <= ROLE_ORDER.index(ceiling):
         return []
     return [f"tier_role {spec.tier_role.value!r} outranks the {spec.kind.value!r} ceiling {ceiling.value!r}"]
