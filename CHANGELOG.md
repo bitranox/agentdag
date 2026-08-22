@@ -57,6 +57,17 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   from the journal on replay keeps the declaration it was originally dispatched under,
   even when a later launch is wired with a different `Sandbox` adapter.
 
+### Fixed
+- The per-node token cap counted each API request once per content block, so it fired at
+  roughly 1.5x to 1.8x a dispatch's real usage. The CLI emits one `AssistantMessage` stream
+  event per content block and every one repeats that request's `message_id` and `usage`,
+  while the running sum added on every event. Measured across the stored dispatches under
+  the run store: 19 events over 12 distinct message ids, and 10/6, 24/16, 41/23, 26/17, with
+  the distinct-id count equal to `num_turns` in four of the five. The sum is now accumulated
+  per `message_id`, so a request is counted once however many blocks it arrives in. This is
+  why a node holding about 250000 tokens was interrupted against a 400000 cap and its
+  finished, correct work was discarded unexamined.
+
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.

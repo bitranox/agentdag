@@ -691,9 +691,18 @@ class ClaudeExecutor:
         ``AssistantMessage``s arrive before the stream actually stops - avoids a second,
         redundant ``interrupt()`` call on an already-interrupted client.
 
-        ``running_total`` is this dispatch's cumulative SPEND so far - every
-        ``AssistantMessage.usage`` seen this dispatch, :func:`input_total` plus
-        ``output_tokens`` each, added up turn by turn - kept here (not inside
+        ``running_total`` is this dispatch's cumulative SPEND so far: one entry per API
+        REQUEST, :func:`input_total` plus ``output_tokens``, summed. It is accumulated into
+        ``spend_by_request`` keyed by ``AssistantMessage.message_id`` rather than added per
+        event, because the CLI emits one ``AssistantMessage`` per CONTENT BLOCK and each of
+        them repeats the same request's ``message_id`` and the same ``usage``. Adding per
+        event therefore charges a request once per block: measured across the stored
+        dispatches under the run store, 19 events over 12 distinct ids, and 10/6, 24/16,
+        41/23, 26/17 - an inflation of 1.50x to 1.78x, with the distinct-id count equal to
+        ``num_turns`` in four of those five. That inflation is what interrupted a node
+        holding about 250000 against a 400000 cap and discarded its finished work. A later
+        event for a request REPLACES its entry rather than adding to it, so a usage that
+        arrives more complete on a subsequent block wins. It is kept here (not inside
         :meth:`_on_turn`, which has no state of its own across calls: this class is a
         frozen dataclass) because it is the loop that owns "one more turn arrived".
         This is the SAME unit :func:`outcome_from_usage` and :meth:`_budget_outcome`
@@ -722,6 +731,7 @@ class ClaudeExecutor:
         seen_first_turn = False
         cap_hit = False
         deadline_hit = False
+        spend_by_request: dict[str, int] = {}
         running_total = 0
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
@@ -732,7 +742,14 @@ class ClaudeExecutor:
                     if not seen_first_turn:
                         first_turn_input = input_total(usage)
                         seen_first_turn = True
-                    running_total += input_total(usage) + int(usage.get("output_tokens", 0))
+                    # Key by the API request, never by the event: the CLI emits one
+                    # AssistantMessage PER CONTENT BLOCK and every one of them repeats that
+                    # request's own message_id and usage, so adding per event charges a
+                    # request once per block. An event carrying no id cannot be attributed,
+                    # so it keeps a key of its own and is counted once, as before.
+                    request_key = message.message_id or f"unkeyed-{len(spend_by_request)}"
+                    spend_by_request[request_key] = input_total(usage) + int(usage.get("output_tokens", 0))
+                    running_total = sum(spend_by_request.values())
                     if not cap_hit and not deadline_hit:
                         cap_hit = await self._on_turn(running_total, client, request.token_cap)
                     if (

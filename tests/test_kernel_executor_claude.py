@@ -1038,3 +1038,52 @@ def test_a_node_may_still_write_in_the_worktree_it_was_given(tmp_path: Path) -> 
     assert fire(hook, "Write", {"file_path": str(request.cwd / "src" / "mod.py")}) is None
     assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
     assert fire(hook, "Write", {"file_path": str(request.isolation_root / "wt" / "other" / "mod.py")}) == "deny"
+
+
+def _turn_of_message(message_id: str, usage_input: int) -> AssistantMessage:
+    """One streamed event of the API request ``message_id``, carrying that request's usage.
+
+    The CLI emits one ``AssistantMessage`` event PER CONTENT BLOCK of a single
+    assistant message, and every one of them repeats the SAME ``message_id`` and the
+    SAME ``usage``. Measured on the stored dispatches under the run store: 19 events
+    over 12 distinct message ids, and 10/6, 24/16, 41/23, 26/17 - so a running sum that
+    adds every event counts each API request 1.5 to 1.8 times.
+    """
+    return AssistantMessage(content=[], model="sonnet", usage={"input_tokens": usage_input}, message_id=message_id)
+
+
+@pytest.mark.os_agnostic
+def test_the_running_total_counts_one_api_request_once_however_many_blocks_it_arrives_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two API requests of 100, the first arriving as two blocks: the total is 200, not 300.
+
+    Counting per EVENT instead of per REQUEST inflates the figure the cap compares, so a
+    node is interrupted while its real usage is well inside its cap - measured live, a
+    dispatch holding about 250000 read as past a 400000 cap and its correct work was
+    discarded unexamined.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    turns = [
+        _turn_of_message("msg_1", 100),  # request 1, block 1
+        _turn_of_message("msg_1", 100),  # request 1, block 2 - the SAME usage, not a second charge
+        _turn_of_message("msg_2", 100),  # request 2
+    ]
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=250)))
+
+    assert outcome.status == "done"  # two requests of 100 is 200, under the cap of 250
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+    # Control: the same stream against a cap BELOW the deduplicated total still interrupts,
+    # so the assertion above is about double counting and not about the cap being disarmed.
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    under = asyncio.run(executor.run(_request(tmp_path, token_cap=150)))
+    assert under.status == "failed"
+    assert under.error is not None
+    assert under.error.type == "budget_exceeded"
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
