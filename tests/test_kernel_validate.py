@@ -275,3 +275,15 @@ def test_skips_nothing_when_the_caller_supplied_what_the_rules_need() -> None:
     assert verdict.skipped == (), verdict
     assert verdict.complete, verdict
     assert verdict.ok, verdict
+
+
+def test_skips_nothing_when_the_spec_has_nothing_the_context_would_check() -> None:
+    """A rule with no input to check is not SKIPPED, it is vacuously satisfied.
+
+    Reporting it as skipped makes ``complete`` false for almost every verdict, which destroys
+    the distinction the field exists to draw.
+    """
+    verdict = validate_spec(spec(deps=[], requires=[]), limits=limits())
+
+    assert verdict.skipped == (), verdict
+    assert verdict.complete, verdict

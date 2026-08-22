@@ -149,7 +149,10 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | N
         reasons.extend(_dep_reasons(spec, resolved))
     else:
         reasons.extend(_self_dep_reasons(spec))
-        skipped.append("deps")
+        # Only SKIPPED when there was something to check: a rule with no input is vacuously
+        # satisfied, and reporting it would make `complete` false for nearly every verdict.
+        if spec.deps:
+            skipped.append("deps")
     if resolved.resources:
         reasons.extend(_requires_reasons(spec, resolved))
     elif spec.requires:
