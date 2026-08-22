@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from .models import NodeSpec, Requirement
     from .policy import RunLimits
 
-__all__ = ["SpecContext", "validate_spec"]
+__all__ = ["SpecContext", "SpecVerdict", "validate_spec"]
 
 
 class SpecContext(BaseModel):
@@ -79,6 +79,34 @@ class SpecContext(BaseModel):
     """Registered resource names to their capacity (``PolicyTable.resources``), for ``requires``."""
 
 
+class SpecVerdict(BaseModel):
+    """Why a spec was refused, AND which rules could not be run at all.
+
+    The two are different answers and must not share a shape: empty ``reasons`` with a
+    non-empty ``skipped`` means "nothing found, and some rules never ran", which is not the
+    same claim as "checked and clean". Reporting only the reasons made those identical, and a
+    caller that forgot a context field got a clean verdict that meant nothing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reasons: tuple[str, ...] = ()
+    """One human-readable reason per broken rule, in rule order."""
+
+    skipped: tuple[str, ...] = ()
+    """Rules that could not run because :class:`SpecContext` carried nothing to check against."""
+
+    @property
+    def ok(self) -> bool:
+        """Return whether no rule that RAN found anything. See :attr:`complete`."""
+        return not self.reasons
+
+    @property
+    def complete(self) -> bool:
+        """Return whether every rule ran, so :attr:`ok` is a full answer rather than a partial one."""
+        return not self.skipped
+
+
 CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPLY, Kind.APPROVE})
 """The kinds the coordinator runs as code, which carry ``executor: "code"`` (design 2.1)."""
 
@@ -93,7 +121,7 @@ it too, and should move it beside :class:`~agentdag.domain.models.TierRole` when
 """
 
 
-def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | None = None) -> tuple[str, ...]:
+def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | None = None) -> SpecVerdict:
     """Return every reason to refuse ``spec``, empty when it may be dispatched.
 
     Args:
@@ -103,8 +131,9 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | N
             means the rules that need it stay silent rather than guessing.
 
     Returns:
-        One human-readable reason per broken rule, in rule order. Empty means the spec
-        passes every refuse rule; it does not mean no clamp applies.
+        The reasons to refuse, plus the rules that could not run for want of context. No
+        reasons does not mean "clean" unless :attr:`SpecVerdict.complete` is also true, and it
+        never means no clamp applies.
     """
     reasons: list[str] = []
     if spec.kind not in limits.planner_kinds:
@@ -115,19 +144,26 @@ def validate_spec(spec: NodeSpec, *, limits: RunLimits, context: SpecContext | N
     reasons.extend(_ceiling_reasons(spec, limits))
     reasons.extend(_write_set_reasons(spec))
     resolved = context or SpecContext()
-    reasons.extend(_dep_reasons(spec, resolved))
-    reasons.extend(_requires_reasons(spec, resolved))
-    return tuple(reasons)
+    skipped: list[str] = []
+    if resolved.graph:
+        reasons.extend(_dep_reasons(spec, resolved))
+    else:
+        reasons.extend(_self_dep_reasons(spec))
+        skipped.append("deps")
+    if resolved.resources:
+        reasons.extend(_requires_reasons(spec, resolved))
+    elif spec.requires:
+        skipped.append("requires")
+    return SpecVerdict(reasons=tuple(reasons), skipped=tuple(skipped))
 
 
 def _requires_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
     """Return the reasons ``spec.requires`` names an unregistered resource or overruns it.
 
-    The bound is INCLUSIVE: a mutex of capacity 1 is taken by asking for exactly 1. Silent
-    when the caller registered nothing, per :class:`SpecContext`.
+    The bound is INCLUSIVE: a mutex of capacity 1 is taken by asking for exactly 1. The
+    caller-registered-nothing case is handled by :func:`validate_spec`, which records it as
+    SKIPPED rather than letting the silence read as a pass.
     """
-    if not context.resources:
-        return []
     return [reason for need in spec.requires for reason in _one_requirement_reason(need, context.resources)]
 
 
@@ -141,12 +177,18 @@ def _one_requirement_reason(need: Requirement, resources: Mapping[str, float]) -
     return []
 
 
-def _dep_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
-    """Return the reasons ``spec.deps`` name a missing node or close a cycle (design 2.4)."""
+def _self_dep_reasons(spec: NodeSpec) -> list[str]:
+    """Return the one-node cycle, which needs no graph and so runs even with no context."""
     if spec.node_id in spec.deps:
         return [f"node {spec.node_id!r} lists itself as a dep, which is a cycle of one"]
-    if not context.graph:
-        return []
+    return []
+
+
+def _dep_reasons(spec: NodeSpec, context: SpecContext) -> list[str]:
+    """Return the reasons ``spec.deps`` name a missing node or close a cycle (design 2.4)."""
+    self_dep = _self_dep_reasons(spec)
+    if self_dep:
+        return self_dep
     reasons = [f"dep {dep!r} names no admitted node" for dep in spec.deps if dep not in context.graph]
     if _reaches(spec.node_id, spec.deps, context.graph):
         reasons.append(f"deps of {spec.node_id!r} close a cycle; one of them already depends on it")

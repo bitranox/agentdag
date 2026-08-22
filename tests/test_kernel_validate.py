@@ -49,7 +49,7 @@ def spec(**over: Any) -> NodeSpec:
 
 def test_refuses_a_kind_outside_the_planner_allowlist() -> None:
     """``apply`` is never planner-emitted (2.4, and decision 8 keeps it out)."""
-    reasons = validate_spec(spec(kind=Kind.APPLY), limits=limits())
+    reasons = validate_spec(spec(kind=Kind.APPLY), limits=limits()).reasons
 
     assert any("apply" in reason for reason in reasons), reasons
 
@@ -57,14 +57,14 @@ def test_refuses_a_kind_outside_the_planner_allowlist() -> None:
 def test_admits_stage_and_approve_since_decision_8() -> None:
     """Decision 8 put ``stage`` and ``approve`` inside the allowlist; ``apply`` stays out."""
     for kind in (Kind.STAGE, Kind.APPROVE):
-        reasons = validate_spec(spec(kind=kind, executor="code"), limits=limits())
+        reasons = validate_spec(spec(kind=kind, executor="code"), limits=limits()).reasons
 
         assert not any("planner-emittable" in reason for reason in reasons), (kind, reasons)
 
 
 def test_refuses_a_code_kind_carrying_a_model_executor() -> None:
     """A ``gate`` runs code, so naming a model executor is a spec error (design 2.1)."""
-    reasons = validate_spec(spec(kind=Kind.GATE, executor="claude"), limits=limits())
+    reasons = validate_spec(spec(kind=Kind.GATE, executor="claude"), limits=limits()).reasons
 
     assert any("executor" in reason for reason in reasons), reasons
 
@@ -90,7 +90,7 @@ def test_refuses_a_role_on_a_kind_that_resolves_no_model_row() -> None:
     "resolves no model row at all" rule, which both design sections state the same way.
     """
     for kind, executor in ((Kind.GATE, "code"), (Kind.MAP, None)):
-        reasons = validate_spec(spec(kind=kind, executor=executor, tier_role=TierRole.DEEP), limits=limits())
+        reasons = validate_spec(spec(kind=kind, executor=executor, tier_role=TierRole.DEEP), limits=limits()).reasons
 
         assert any("tier_role" in reason for reason in reasons), (kind, reasons)
 
@@ -112,7 +112,7 @@ def test_admits_a_model_kind_that_leaves_the_executor_to_the_policy_row() -> Non
 
 def test_still_refuses_a_model_kind_that_claims_the_code_executor() -> None:
     """Omitting the executor is fine; naming the CODE runner for a model kind is not."""
-    reasons = validate_spec(spec(kind=Kind.WORK, executor="code"), limits=limits())
+    reasons = validate_spec(spec(kind=Kind.WORK, executor="code"), limits=limits()).reasons
 
     assert any("executor" in reason for reason in reasons), reasons
 
@@ -124,7 +124,7 @@ def test_refuses_a_tier_role_above_its_kinds_ceiling() -> None:
     ``{work: deep}`` while 2.3 rule 1 gives judge panels ``top`` - so a silently
     downgraded judge would return a verdict the coordinator branches on.
     """
-    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.TOP), limits=limits())
+    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.TOP), limits=limits()).reasons
 
     assert any("ceiling" in reason for reason in reasons), reasons
 
@@ -132,7 +132,7 @@ def test_refuses_a_tier_role_above_its_kinds_ceiling() -> None:
 def test_admits_a_tier_role_at_or_below_its_kinds_ceiling() -> None:
     """The ceiling is inclusive: ``deep`` is allowed where the ceiling IS ``deep``."""
     for role in (TierRole.MECHANICAL, TierRole.STANDARD, TierRole.DEEP):
-        reasons = validate_spec(spec(kind=Kind.WORK, tier_role=role), limits=limits())
+        reasons = validate_spec(spec(kind=Kind.WORK, tier_role=role), limits=limits()).reasons
 
         assert not any("ceiling" in reason for reason in reasons), (role, reasons)
 
@@ -145,7 +145,7 @@ def test_refuses_a_role_on_a_model_kind_with_no_ceiling_entry() -> None:
     """
     uncapped = limits(per_kind_ceiling={})
 
-    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.MECHANICAL), limits=uncapped)
+    reasons = validate_spec(spec(kind=Kind.WORK, tier_role=TierRole.MECHANICAL), limits=uncapped).reasons
 
     assert any("ceiling" in reason for reason in reasons), reasons
 
@@ -157,7 +157,7 @@ def test_refuses_a_write_set_entry_that_escapes_the_run_root() -> None:
     .relative_to('/runs/r1')`` returns a path and does NOT raise.
     """
     for escape in ("../../etc/passwd", "/etc/passwd", "wt/../../../etc", "wt/x/../../../../y"):
-        reasons = validate_spec(spec(write_set=[escape]), limits=limits())
+        reasons = validate_spec(spec(write_set=[escape]), limits=limits()).reasons
 
         assert any("write_set" in reason for reason in reasons), (escape, reasons)
 
@@ -170,7 +170,7 @@ def test_refuses_a_write_set_entry_whose_first_segment_is_a_glob() -> None:
     the run pass - hand-authored nodes included.
     """
     for wildcard in ("*", "**", "*.json"):
-        reasons = validate_spec(spec(write_set=[wildcard]), limits=limits())
+        reasons = validate_spec(spec(write_set=[wildcard]), limits=limits()).reasons
 
         assert any("write_set" in reason for reason in reasons), (wildcard, reasons)
 
@@ -178,7 +178,7 @@ def test_refuses_a_write_set_entry_whose_first_segment_is_a_glob() -> None:
 def test_admits_the_write_set_shapes_graph_a_actually_declares() -> None:
     """The shipping graph is the control: these three must not be refused."""
     for good in ("wt/repo-one/**", "manifest/m_fleet.json", "intents/push/*.json", "wt/../other/**"):
-        reasons = validate_spec(spec(write_set=[good]), limits=limits())
+        reasons = validate_spec(spec(write_set=[good]), limits=limits()).reasons
 
         assert not any("write_set" in reason for reason in reasons), (good, reasons)
 
@@ -187,7 +187,7 @@ def test_refuses_a_dep_that_names_no_admitted_node() -> None:
     """2.4: deps must name nodes that exist."""
     context = SpecContext(graph={"g_one": ()})
 
-    reasons = validate_spec(spec(deps=["g_one", "g_missing"]), limits=limits(), context=context)
+    reasons = validate_spec(spec(deps=["g_one", "g_missing"]), limits=limits(), context=context).reasons
 
     assert any("g_missing" in reason for reason in reasons), reasons
     assert not any("g_one" in reason for reason in reasons), reasons
@@ -197,14 +197,14 @@ def test_refuses_a_spec_that_would_close_a_cycle() -> None:
     """2.4: deps must leave the graph acyclic. w_new -> b -> a -> w_new is a cycle."""
     context = SpecContext(graph={"a": ("w_new",), "b": ("a",)})
 
-    reasons = validate_spec(spec(node_id="w_new", deps=["b"]), limits=limits(), context=context)
+    reasons = validate_spec(spec(node_id="w_new", deps=["b"]), limits=limits(), context=context).reasons
 
     assert any("cycle" in reason for reason in reasons), reasons
 
 
 def test_refuses_a_spec_that_depends_on_itself() -> None:
     """The one-node cycle, which a naive reachability walk misses."""
-    reasons = validate_spec(spec(node_id="w_self", deps=["w_self"]), limits=limits(), context=SpecContext())
+    reasons = validate_spec(spec(node_id="w_self", deps=["w_self"]), limits=limits(), context=SpecContext()).reasons
 
     assert any("cycle" in reason or "itself" in reason for reason in reasons), reasons
 
@@ -223,7 +223,7 @@ def test_refuses_a_requirement_naming_an_unregistered_resource() -> None:
 
     reasons = validate_spec(
         spec(requires=[Requirement(resource="ghost", amount=1.0)]), limits=limits(), context=context
-    )
+    ).reasons
 
     assert any("ghost" in reason for reason in reasons), reasons
 
@@ -234,7 +234,7 @@ def test_refuses_a_requirement_asking_more_than_the_registered_capacity() -> Non
 
     reasons = validate_spec(
         spec(requires=[Requirement(resource="bmk-tool-env", amount=3.0)]), limits=limits(), context=context
-    )
+    ).reasons
 
     assert any("capacity" in reason for reason in reasons), reasons
 
@@ -245,6 +245,33 @@ def test_admits_a_requirement_at_exactly_the_registered_capacity() -> None:
 
     reasons = validate_spec(
         spec(requires=[Requirement(resource="bmk-tool-env", amount=1.0)]), limits=limits(), context=context
-    )
+    ).reasons
 
     assert not any("capacity" in reason or "bmk-tool-env" in reason for reason in reasons), reasons
+
+
+def test_names_the_rules_it_could_not_run_for_want_of_context() -> None:
+    """An empty verdict must not read the same as a checked one (user, 2026-08-22).
+
+    Silence was the defect: a caller that forgets the graph got a clean tuple that meant
+    nothing, the same shape as the fail-open ceiling bug fixed earlier today.
+    """
+    verdict = validate_spec(spec(deps=["anything"], requires=[Requirement(resource="r", amount=1.0)]), limits=limits())
+
+    assert verdict.reasons == (), verdict
+    assert "deps" in verdict.skipped, verdict
+    assert "requires" in verdict.skipped, verdict
+    assert not verdict.complete, verdict
+
+
+def test_skips_nothing_when_the_caller_supplied_what_the_rules_need() -> None:
+    """Supplying the context removes the rule from skipped, whether or not it then refuses."""
+    context = SpecContext(graph={"a": ()}, resources={"r": 1.0})
+
+    verdict = validate_spec(
+        spec(deps=["a"], requires=[Requirement(resource="r", amount=1.0)]), limits=limits(), context=context
+    )
+
+    assert verdict.skipped == (), verdict
+    assert verdict.complete, verdict
+    assert verdict.ok, verdict
