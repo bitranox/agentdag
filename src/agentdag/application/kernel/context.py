@@ -121,7 +121,11 @@ class Coordinator:
             semaphore behind it is built once here and shared by every :meth:`map`
             call, so two maps running at the same time still admit ``parallel``
             branches between them, not ``parallel`` each.
-        tokens_by_row: Tokens charged per model row so far, summed from every record.
+        tokens_by_row: Tokens charged per model row so far, summed from every record's
+            ``charged_tokens`` - and so denominated in dispatch SPEND (each dispatch's
+            per-turn input-plus-output totals added up), the same unit a node's own cap is
+            enforced in. :meth:`_run_cap_refusal` depends on that: it adds a node cap to
+            this total.
         declared_write_sets: Every dispatched spec's node id -> its ``write_set``, as
             given at dispatch time (design C8) - what :meth:`scan` judges a write
             against, so it never mistakes another node's own declared writes (a
@@ -188,8 +192,10 @@ class Coordinator:
 
         The token cap has two call sites (design 7, M3): this method threads
         ``spec.budget.tokens.get(row.alias)`` through as ``ExecutorRequest.token_cap``,
-        which the executor enforces per TURN by calling ``client.interrupt()`` once a
-        turn's own usage passes it; and its ``body`` closure calls
+        which the executor enforces AT each turn seam by calling ``client.interrupt()``
+        once the dispatch's RUNNING SPEND TOTAL passes it (the sum across turns, never a
+        single turn's own usage - a turn's usage is a context size, which no spend cap can
+        usefully threshold); and its ``body`` closure calls
         :meth:`_run_cap_refusal` first, which refuses the dispatch OUTRIGHT (a FAILED,
         ``BUDGET_EXCEEDED`` record, the executor never called) when this node's own cap
         would push the run's row total past ``policy.tokens_per_row``. Both checks are a
@@ -301,16 +307,25 @@ class Coordinator:
         been allowed to start once its cap alone would tip the row over, because the
         coordinator has no way to promise it will not use the whole of what it declared.
 
-        Both sides of the comparison are the SAME unit: a dispatch's total SPEND (input
-        total plus output tokens, summed across its whole turn stream), never a single
-        turn's context size. ``tokens_by_row`` is built by summing each recorded
-        ``charged_tokens`` (:func:`~agentdag.adapters.kernel.executor_claude.outcome_from_usage`
-        and :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._budget_outcome`
-        both compute that as one dispatch's input-plus-output total), and ``node_cap``
-        is ``request.token_cap`` - the same figure
-        :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._on_turn` enforces
-        against its own running sum of that dispatch's turns (see that method's
-        docstring for why a per-turn context figure could not serve here instead).
+        Both sides of the comparison are the SAME unit, and they are so BY CONSTRUCTION
+        rather than by an argument about what the SDK reports: ``node_cap`` is
+        ``request.token_cap``, the figure
+        :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._on_turn` compares
+        against its running sum of the dispatch's turns, and ``tokens_by_row`` accumulates
+        each record's ``charged_tokens``, which
+        :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._run` builds from
+        THAT VERY running sum (it hands it to every exit as ``spend_total``). One quantity,
+        measured once, used on both sides.
+
+        This is what makes the reservation sound. A node interrupted at its cap has charged
+        about its cap, so ``charged`` never lags what the run really spent, and reserving
+        ``node_cap`` for the node about to start is a reservation the node cannot silently
+        exceed. Deriving ``charged_tokens`` from the terminal ``ResultMessage.usage``
+        instead - a snapshot of the last turn - broke exactly that: a live run recorded
+        503614 for two dispatches that had each already passed a 400000 cap, so the run's
+        own total read at most about 63 percent of what it had spent, and the ceiling would
+        have admitted work the operator had already paid for
+        (``2026-08-22-graph-a-first-live-run`` in RESEARCH, findings 2 and 3).
 
         Args:
             row: The resolved model row alias (``ResolvedRow.alias``).

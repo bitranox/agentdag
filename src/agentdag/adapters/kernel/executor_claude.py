@@ -400,6 +400,7 @@ def outcome_from_usage(
     text: str,
     usage: Mapping[str, Any],
     first_turn_input: int,
+    spend_total: int,
     cwd_rel: str,
 ) -> NodeOutcome:
     """Translate one dispatch's terminal usage into the outcome the coordinator branches on.
@@ -418,7 +419,20 @@ def outcome_from_usage(
         text: ``ResultMessage.result`` (or ``""`` when the SDK reported none) - scanned
             for the CLI's own "Not logged in" text to name an auth failure specifically.
         usage: ``ResultMessage.usage`` (or ``{}``); only the four cache/token fields
-            are read, each defaulting to 0 if this SDK version does not emit it.
+            are read, each defaulting to 0 if this SDK version does not emit it. This is
+            a SNAPSHOT of the terminal turn, so it feeds ``tokens`` (what the model saw
+            at the end) and never ``charged_tokens`` (what the dispatch spent).
+        spend_total: What this dispatch actually spent: :meth:`ClaudeExecutor._run`'s
+            running sum of every turn's own :func:`input_total` plus ``output_tokens``.
+            This is the sole source of ``charged_tokens``, because it is the quantity
+            :meth:`ClaudeExecutor._on_turn` enforces the node cap against and therefore
+            the only one the run-level ceiling
+            (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`)
+            may add a node cap to. Deriving it from ``usage`` instead under-reports a
+            multi-turn dispatch by the whole conversation prefix: measured on a live run,
+            a completed 12-turn dispatch's terminal usage read 254465 while the same
+            workload's running sum passed 400000 (``2026-08-22-graph-a-first-live-run``
+            in RESEARCH, finding 4).
         first_turn_input: :func:`input_total` of the FIRST ``AssistantMessage.usage``
             this dispatch saw (design 3.8: what the model just saw), recorded by
             :meth:`ClaudeExecutor._run` as it streams - a distinct figure from the
@@ -434,13 +448,16 @@ def outcome_from_usage(
         ``EXECUTOR_ERROR`` (transient).
 
     Example:
-        >>> outcome_from_usage(
+        >>> o = outcome_from_usage(
         ...     model="sonnet", num_turns=1, is_error=False, text="ok",
         ...     usage={"input_tokens": 1, "cache_creation_input_tokens": 0,
         ...            "cache_read_input_tokens": 0, "output_tokens": 2},
-        ...     first_turn_input=1, cwd_rel="wt/r",
-        ... ).status
+        ...     first_turn_input=1, spend_total=3, cwd_rel="wt/r",
+        ... )
+        >>> o.status
         <NodeStatus.DONE: 'done'>
+        >>> o.charged_tokens
+        {'sonnet': 3}
     """
     in_tokens = input_total(usage)
     out_tokens = int(usage.get("output_tokens", 0))
@@ -453,7 +470,7 @@ def outcome_from_usage(
         key_facts={"turns": num_turns, "first_turn_input_tokens": first_turn_input},
         typed_fields=["turns"],
         tokens=tokens,
-        charged_tokens={model: in_tokens + out_tokens},
+        charged_tokens={model: spend_total},
         executor_used="claude",
         model_used=model,
         effort_used=_NO_VALUE,
@@ -696,11 +713,17 @@ class ClaudeExecutor:
         ``output_tokens`` each, added up turn by turn - kept here (not inside
         :meth:`_on_turn`, which has no state of its own across calls: this class is a
         frozen dataclass) because it is the loop that owns "one more turn arrived".
-        This is the SAME unit :func:`outcome_from_usage` and :meth:`_budget_outcome`
-        use to build ``charged_tokens`` (also input_total + output_tokens, just of a
-        single terminal usage snapshot rather than summed turn by turn) - see
-        :meth:`_on_turn`'s own docstring for why a per-turn figure alone can never
-        serve as a spend cap.
+        It is also the figure every exit below hands on as ``spend_total``, and so the
+        sole source of the record's ``charged_tokens``. That is deliberate and it is the
+        reason this local exists past the loop: the terminal ``ResultMessage.usage`` is a
+        SNAPSHOT of the last turn, a strictly smaller and workload-dependent quantity
+        (measured 1.6x smaller on a live 12-turn dispatch, and the gap widens with turn
+        count, because summing per-turn context sizes counts an early turn once per later
+        turn). Charging the snapshot would report a spend the cap never compared and would
+        under-fill the run-level ceiling that adds these records up. The snapshot is still
+        recorded, on ``tokens``, where it answers its own question: how full the context
+        was when the dispatch ended. See :meth:`_on_turn`'s docstring for why a per-turn
+        figure alone can never serve as a spend cap.
 
         The node deadline (design 7, M3) is checked at the SAME turn seam, right after
         the token cap and only when the cap itself did not already fire this turn (no
@@ -744,14 +767,18 @@ class ClaudeExecutor:
                         deadline_hit = True
                 if isinstance(message, ResultMessage):
                     if deadline_hit:
-                        return self._deadline_outcome(request, first_turn_input, message.usage or {})
+                        return self._deadline_outcome(
+                            request, first_turn_input, message.usage or {}, spend_total=running_total
+                        )
                     if cap_hit:
-                        return self._budget_outcome(request, first_turn_input, message.usage or {})
-                    return self._outcome_for(request, message, first_turn_input, cwd_rel)
+                        return self._budget_outcome(
+                            request, first_turn_input, message.usage or {}, spend_total=running_total
+                        )
+                    return self._outcome_for(request, message, first_turn_input, cwd_rel, spend_total=running_total)
         if deadline_hit:
-            return self._deadline_outcome(request, first_turn_input, {})
+            return self._deadline_outcome(request, first_turn_input, {}, spend_total=running_total)
         if cap_hit:
-            return self._budget_outcome(request, first_turn_input, {})
+            return self._budget_outcome(request, first_turn_input, {}, spend_total=running_total)
         return NodeOutcome(
             status=NodeStatus.FAILED,
             executor_used="claude",
@@ -811,7 +838,7 @@ class ClaudeExecutor:
         )
 
     def _outcome_for(
-        self, request: ExecutorRequest, message: ResultMessage, first_turn_input: int, cwd_rel: str
+        self, request: ExecutorRequest, message: ResultMessage, first_turn_input: int, cwd_rel: str, *, spend_total: int
     ) -> NodeOutcome:
         """Translate a terminal :class:`ResultMessage` via :func:`outcome_from_usage`, effort folded in.
 
@@ -826,6 +853,7 @@ class ClaudeExecutor:
             text=message.result or "",
             usage=message.usage or {},
             first_turn_input=first_turn_input,
+            spend_total=spend_total,
             cwd_rel=cwd_rel,
         )
         if request.effort:
@@ -853,9 +881,13 @@ class ClaudeExecutor:
         * A per-node cap, in contrast, is a SPEND budget, and spend is charged per
           request: every turn re-charges its whole input again (prompt caching
           discounts the cost of a cache read, not the TOKEN COUNT this module sums), so
-          a dispatch's true spend is the SUM across turns - exactly what the terminal
-          ``ResultMessage.usage`` already reports and what :func:`outcome_from_usage`
-          and :meth:`_budget_outcome` record as ``charged_tokens``. Comparing a single
+          a dispatch's true spend is the SUM across turns, which is what
+          :func:`outcome_from_usage` and :meth:`_budget_outcome` record as
+          ``charged_tokens`` (handed to them as ``spend_total``). The terminal
+          ``ResultMessage.usage`` does NOT already report that sum - it is one turn's
+          snapshot, and an earlier revision of this docstring asserted otherwise, which
+          is how the record and the cap came to be denominated differently until a live
+          run measured them apart. Comparing a single
           turn's context size against a spend cap has no usable threshold: set the cap
           near what a node actually spends and no single turn's context ever reaches
           it (the node runs to completion, unbounded); set it below one turn's context
@@ -894,7 +926,9 @@ class ClaudeExecutor:
         await client.interrupt()
         return True
 
-    def _budget_outcome(self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]) -> NodeOutcome:
+    def _budget_outcome(
+        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any], *, spend_total: int
+    ) -> NodeOutcome:
         """Build the record a cap-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
         This is the ONLY place that gets to decide a capped node's outcome - never the
@@ -924,7 +958,8 @@ class ClaudeExecutor:
 
         Returns:
             A ``FAILED`` outcome, ``error.type=BUDGET_EXCEEDED``, ``transient=False``,
-            ``key_facts["cap_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
+            ``key_facts["cap_hit"] = True``, ``tokens`` from ``usage`` (the terminal
+            snapshot) and ``charged_tokens`` from ``spend_total`` (what the cap compared).
         """
         in_tokens = input_total(usage)
         out_tokens = int(usage.get("output_tokens", 0))
@@ -935,7 +970,7 @@ class ClaudeExecutor:
             key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["cap_hit"],
             tokens=tokens,
-            charged_tokens={request.model: in_tokens + out_tokens},
+            charged_tokens={request.model: spend_total},
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
@@ -1002,7 +1037,7 @@ class ClaudeExecutor:
         return elapsed_s > deadline_s
 
     def _deadline_outcome(
-        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]
+        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any], *, spend_total: int
     ) -> NodeOutcome:
         """Build the record a deadline-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
@@ -1028,7 +1063,9 @@ class ClaudeExecutor:
         Returns:
             A ``CANCELLED`` outcome (design 2.2: "cancelled: the scheduler stopped it -
             deadline or cancel"), ``error.type=DEADLINE``, ``transient=False``,
-            ``key_facts["deadline_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
+            ``key_facts["deadline_hit"] = True``, ``tokens`` from ``usage`` (the terminal
+            snapshot) and ``charged_tokens`` from ``spend_total`` (what the dispatch spent
+            before the clock stopped it).
         """
         in_tokens = input_total(usage)
         out_tokens = int(usage.get("output_tokens", 0))
@@ -1039,7 +1076,7 @@ class ClaudeExecutor:
             key_facts={"deadline_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["deadline_hit"],
             tokens=tokens,
-            charged_tokens={request.model: in_tokens + out_tokens},
+            charged_tokens={request.model: spend_total},
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,

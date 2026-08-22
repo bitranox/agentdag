@@ -364,7 +364,18 @@ class ExecutorRequest:
     """This node's own token cap for its resolved row (``NodeSpec.budget.tokens[row]``),
     or ``None`` when the node declares no cap for this row - nothing for the executor to
     enforce at the turn seam (design 7, M3). Defaults to ``None`` so every call site and
-    test fixture that predates this field still constructs without naming it."""
+    test fixture that predates this field still constructs without naming it.
+
+    An obligation on the OUTCOME side comes with this field, and it binds any executor
+    written against this port: whatever quantity you enforce this cap against, report that
+    SAME quantity as :attr:`~agentdag.domain.models.NodeOutcome.charged_tokens`. The
+    coordinator adds a node's cap to the accumulated charged totals to decide whether the
+    run can afford the next dispatch
+    (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`), so a charge
+    denominated in anything else makes that addition meaningless while every type still
+    checks out. Reporting a per-turn snapshot where the cap bounds a running sum is the
+    specific way this was got wrong once: it under-reported a live run's spend to about 63
+    percent of the truth."""
 
     deadline_s: float | None = None
     """This node's own wall-clock deadline (``NodeSpec.deadline_s``, already clamped to
