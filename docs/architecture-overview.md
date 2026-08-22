@@ -195,7 +195,8 @@ Full comparison, including which side of each row is built, in
 ## 7. What a node may touch, and what stops it
 
 A node works in its own worktree. It declares a write set. Two tool hooks refuse edits that resolve
-outside its isolation root and refuse a list of forbidden shell commands. After the node finishes, a
+outside its isolation root or outside that declared set, and refuse a list of forbidden shell
+commands. After the node finishes, a
 scan compares the whole run tree before and after and fails the branch on anything it wrote that
 nobody declared.
 

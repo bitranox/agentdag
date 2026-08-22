@@ -147,7 +147,7 @@ taken from a reviewer's citation without re-opening it.
 | A decision is keyed by node id and payload hash together                                                                            | `application/kernel/context.py`, approve                            | read here   |
 | An apply is guarded by a marker touched only after the effect succeeded                                                             | `application/kernel/context.py`, `_apply_one`                       | cited       |
 | The isolation scan compares content manifests and cannot attribute a write into a sibling's declared region                         | `application/kernel/context.py`, scan                               | cited       |
-| Nothing intersects two nodes' declared write sets                                                                                   | whole tree: `write_set` has two consumers                           | read here   |
+| Nothing intersects two nodes' declared write sets                                                                                   | whole tree: `write_set` has three consumers                         | read here   |
 | `charged_tokens` sums input and output where input already includes cached reads, so the run-level total cannot be priced correctly | `executor_claude.py`, `outcome_from_usage`                          | read here   |
 | The Messages API is stateless; the full conversation is resent on every request                                                     | Anthropic API documentation                                         | read here   |
 | A subagent starts in a fresh isolated context and returns only its summary                                                          | Claude Code documentation                                           | read here   |
@@ -163,9 +163,11 @@ read it as a floor rather than the set. Nobody has gone looking for the rest.
 - **Whether the coordinator survives the failure it is designed around, in production.** Crash and
   resume are proven by tests that kill a run between two journal lines. No real run has crashed on
   its own and been resumed.
-- **Whether a node's write set means anything.** The kernel never intersects two nodes' declared
-  sets, and the isolation scan deliberately excuses a write into any declared region. Two branches
-  given the same declared path would collide silently.
+- **Whether two nodes' write sets can be trusted not to collide.** A node can no longer write through
+  the edit tools into a region it did not declare, but the kernel still never intersects two nodes'
+  declared sets, and the isolation scan still excuses a write into any declared region. Two branches
+  given the same declared path would collide silently, and a write made by shell redirection is seen
+  by neither hook.
 - **Whether the caching result holds for real work.** Measured on single-turn nodes; a real node
   runs many turns.
 - **How long a cached prefix survives.** Untested.

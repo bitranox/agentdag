@@ -29,9 +29,11 @@ because pushing is what you do after committing, cannot land anywhere that matte
 
 Every dispatched agent node gets two hooks that run before a tool call.
 
-The first refuses any file edit whose target resolves outside the node's isolation root. It resolves
+The first refuses any file edit whose target resolves outside the node's isolation root, and then any
+edit that lands inside the root but outside the paths that node declared it would write. It resolves
 the path fully first, so symbolic links and parent-directory traversal do not get around it, and it
-fails closed: a matched call that names no path at all is denied rather than allowed.
+fails closed twice over: a matched call that names no path at all is denied rather than allowed, and a
+node that declared nothing may write nothing except its own node directory.
 
 The second refuses shell commands containing any of a configured list of forbidden shapes, matched
 after collapsing whitespace.
@@ -52,7 +54,9 @@ changed or vanished and that no declared write set covers. A branch whose scan f
 
 What it compares against is the node's own declared write set plus every other write set declared so
 far in the run plus a few housekeeping areas, so a sibling branch's legitimate work is not reported as
-a stray.
+a stray. That is a wider list than the hook's, deliberately: the hook decides at the moment of a write
+and knows whose it is, while the scan works from a content diff afterwards and does not. Both judge a
+path against a glob the same way, so a write one permits is never a write the other calls stray.
 
 That is also where the limit is. Under parallelism greater than one, a stray write that lands inside
 a *sibling's* declared region cannot be attributed to either node by content comparison alone, and
