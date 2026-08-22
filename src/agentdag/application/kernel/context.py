@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from ...domain.handover import HANDOVER_FILENAME, prompt_with_stop_duty
 from ...domain.journal import ApproveDecisionLine, RetryGrantLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
@@ -270,11 +271,17 @@ class Coordinator:
                     effort_used="-",
                     error=refusal,
                 )
+            # The duty rides in the PROMPT, not the brief and not a hook. Measured over 40
+            # dispatches (RESEARCH probes/handover-nudge-inject.md, decision 14): a stop
+            # notice with no prior standing in the task is refused 4 of 4 as prompt
+            # injection, and a hook cannot confer that standing because a hook is the very
+            # channel the node discounts. The path is absolute and inside node_dir, which
+            # `allowed_writes` already grants, so the write-set hook cannot deny it.
             request = ExecutorRequest(
                 node_dir=node_dir,
                 cwd=cwd,
                 brief=brief,
-                prompt=prompt,
+                prompt=prompt_with_stop_duty(prompt, handover_path=str(node_dir / HANDOVER_FILENAME)),
                 model=row.alias,
                 effort=spec.effort,
                 max_turns=self.policy.max_turns,

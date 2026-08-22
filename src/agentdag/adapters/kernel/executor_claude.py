@@ -69,14 +69,15 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage
 
+from ...domain.handover import HANDOVER_FILENAME
 from ...domain.kernel_errors import KernelError
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
-from .hooks_claude import deny_bash_commands, deny_outside_write_set
+from .hooks_claude import deny_bash_commands, deny_outside_write_set, inject_stop_notice
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from datetime import datetime
     from pathlib import Path
 
@@ -461,6 +462,60 @@ def outcome_from_usage(
     )
 
 
+HANDOVER_GRACE_TURNS = 3
+"""How many further turns a node gets to write its handover after being asked to (design 3.8).
+
+Bounded rather than open-ended because compliance is not guaranteed: the probe behind
+decision 14 measured 4 of 4 under the right framing and 0 of 4 under the wrong one, so a
+node that simply carries on must still be stopped. Three turns is enough for a node to
+finish its current tool call, write one JSON file and report - and short enough that an
+ignoring node does not spend a whole extra window past its ceiling.
+"""
+
+
+@dataclass
+class _Handover:
+    """The context-ceiling handover's own state across one dispatch's turns (design 3.8).
+
+    A small object rather than three locals in :meth:`ClaudeExecutor._run` because the
+    arm-then-grace rule is a state machine, and inlining it pushed that method past its
+    branch limit. It also gives the stop-notice hook something stable to read: the hook is
+    installed before the dispatch starts and armed part-way through it.
+    """
+
+    armed: bool = False
+    """Whether the node has been asked to hand over. The hook's predicate reads this."""
+
+    grace_used: int = 0
+    """Turns seen since arming; the node is interrupted once this reaches the grace."""
+
+    context_at: int = 0
+    """The turn context that crossed the ceiling, recorded for the record's key_facts."""
+
+    def observe(self, usage: Mapping[str, Any], ceiling: int | None) -> bool:
+        """Fold one turn in, and say whether the dispatch should now be interrupted.
+
+        Arming does NOT interrupt: the node is being asked to WRITE its handover, so
+        stopping it at the moment of asking guarantees no record exists for the successor
+        (decision 14). Only the grace running out interrupts.
+
+        Args:
+            usage: This turn's own usage.
+            ceiling: The row's ``handover_at_tokens``, or None when it declares none.
+
+        Returns:
+            Whether to interrupt now.
+        """
+        if not self.armed:
+            if not _past_context_ceiling(usage, ceiling):
+                return False
+            self.armed = True
+            self.context_at = input_total(usage)
+            return False
+        self.grace_used += 1
+        return self.grace_used >= HANDOVER_GRACE_TURNS
+
+
 def _past_context_ceiling(usage: Mapping[str, Any], ceiling: int | None) -> bool:
     """Whether THIS turn's own context has passed the row's ``handover_at_tokens`` (design 3.8).
 
@@ -757,15 +812,18 @@ class ClaudeExecutor:
         is what the run keeps, since a node that ran too long is what actually happened
         even when it also happened to be spending too much.
         """
-        options = self._options_for(request)
+        # Built with a predicate rather than a flag: the hook is installed before the
+        # dispatch starts and armed part-way through it, so it has to read the state at
+        # CALL time. `stopping` is a one-element list because the loop below rebinds it.
+        handover = _Handover()
+        options = self._options_for(request, is_stopping=lambda: handover.armed)
         transcript_path = request.node_dir / "transcript.jsonl"
         dispatch_started = self.clock.now()
         first_turn_input = 0
         seen_first_turn = False
         cap_hit = False
         deadline_hit = False
-        handover_hit = False
-        context_at_handover = 0
+        handover = _Handover()
         spend_by_request: dict[str, int] = {}
         running_total = 0
         terminal: ResultMessage | None = None
@@ -800,10 +858,8 @@ class ClaudeExecutor:
                     # good, and offering it a successor would hand the chain a way to
                     # outlive the bound that just stopped it. It compares THIS turn's own
                     # context, never the running sum above.
-                    if not cap_hit and not deadline_hit and _past_context_ceiling(usage, request.handover_at_tokens):
+                    if not cap_hit and not deadline_hit and handover.observe(usage, request.handover_at_tokens):
                         await client.interrupt()
-                        handover_hit = True
-                        context_at_handover = input_total(usage)
                 if isinstance(message, ResultMessage):
                     terminal = message
                     break
@@ -816,8 +872,8 @@ class ClaudeExecutor:
             return self._deadline_outcome(request, first_turn_input, usage)
         if cap_hit:
             return self._budget_outcome(request, first_turn_input, usage)
-        if handover_hit:
-            return self._handover_outcome(request, first_turn_input, usage, cwd_rel, context_at_handover)
+        if handover.armed:
+            return self._handover_outcome(request, first_turn_input, usage, cwd_rel, handover.context_at)
         if terminal is not None:
             return self._outcome_for(request, terminal, first_turn_input, cwd_rel)
         return NodeOutcome(
@@ -849,8 +905,16 @@ class ClaudeExecutor:
         known = self.credentials.child_env(request.node_dir)
         return {**_blank_everything_else(known), **known}
 
-    def _options_for(self, request: ExecutorRequest) -> ClaudeAgentOptions:
-        """Build this dispatch's SDK options: hooks, credential, a TRUE-allowlisted env, a validated effort."""
+    def _options_for(self, request: ExecutorRequest, *, is_stopping: Callable[[], bool]) -> ClaudeAgentOptions:
+        """Build this dispatch's SDK options: hooks, credential, a TRUE-allowlisted env, a validated effort.
+
+        Args:
+            request: The dispatch to build options for.
+            is_stopping: Read on every matched tool use by the stop-notice hook; true once
+                the node has crossed its context ceiling and should hand over. A predicate
+                rather than a bool because the value changes DURING the dispatch these
+                options are already driving.
+        """
         effort = _validated_effort(request.effort)  # raises KernelError BEFORE the call on an unknown value
         env = self.build_options_env(request)
         return ClaudeAgentOptions(
@@ -872,6 +936,15 @@ class ClaudeExecutor:
                     ),
                     HookMatcher(
                         matcher="Bash", hooks=_as_sdk_hooks(deny_bash_commands(request.deny_bash or self.deny_bash))
+                    ),
+                    # The third hook is not a guard: it decides nothing and blocks nothing,
+                    # it puts the stop notice in front of the model once armed. Matched
+                    # broadly so the notice reaches a node whatever tool it reaches for.
+                    HookMatcher(
+                        matcher="Write|Edit|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob",
+                        hooks=_as_sdk_hooks(
+                            inject_stop_notice(is_stopping, handover_path=str(request.node_dir / HANDOVER_FILENAME))
+                        ),
                     ),
                 ]
             },

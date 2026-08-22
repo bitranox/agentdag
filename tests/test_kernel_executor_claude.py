@@ -16,7 +16,7 @@ import stat
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage
@@ -28,6 +28,7 @@ from claude_agent_sdk import AssistantMessage, ResultMessage
 # review, exactly because they are tested this way.
 from agentdag.adapters.kernel import executor_claude as executor_claude_module
 from agentdag.adapters.kernel.executor_claude import (
+    HANDOVER_GRACE_TURNS,
     ClaudeExecutor,
     CredentialCopy,
     OAuthTokenFile,
@@ -36,8 +37,14 @@ from agentdag.adapters.kernel.executor_claude import (
     input_total,
     outcome_from_usage,
 )
-from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_write_set
+from agentdag.adapters.kernel.hooks_claude import (
+    HookCallback,
+    deny_bash_commands,
+    deny_outside_write_set,
+    inject_stop_notice,
+)
 from agentdag.application.kernel.ports import ExecutorRequest
+from agentdag.domain.handover import HANDOVER_FILENAME
 from agentdag.domain.kernel_errors import KernelError
 
 if TYPE_CHECKING:
@@ -230,10 +237,14 @@ def test_options_for_passes_a_validated_effort_and_rejects_an_unknown_one(tmp_pa
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
-    options = executor._options_for(_request(tmp_path, effort="high"))  # pyright: ignore[reportPrivateUsage]
+    options = executor._options_for(  # pyright: ignore[reportPrivateUsage]
+        _request(tmp_path, effort="high"), is_stopping=lambda: False
+    )
     assert options.effort == "high"
     with pytest.raises(KernelError):
-        executor._options_for(_request(tmp_path, effort="bogus"))  # pyright: ignore[reportPrivateUsage]
+        executor._options_for(  # pyright: ignore[reportPrivateUsage]
+            _request(tmp_path, effort="bogus"), is_stopping=lambda: False
+        )
 
 
 @pytest.mark.os_agnostic
@@ -1119,7 +1130,12 @@ def test_a_node_past_its_context_ceiling_ends_needs_continuation_and_keeps_its_w
     assert outcome.error is None  # a handover is not a failure
     assert outcome.artefact_refs == ["wt/r"]  # the work survives, unlike the cap path
     assert outcome.key_facts.get("context_at_handover") == 200
-    assert FakeStreamClient.instances[0].interrupt_calls == 1
+    # Crossing ARMS the stop notice, it does not interrupt (decision 14): the node is being
+    # asked to write its handover, so stopping it here would guarantee no record exists.
+    # It is interrupted only if it works on past HANDOVER_GRACE_TURNS, which this two-turn
+    # stream never reaches - see
+    # test_a_node_that_ignores_the_stop_notice_is_interrupted_once_the_grace_runs_out.
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
 
     # Control: the same stream under a ceiling no single turn reaches runs to completion,
     # even though the SUM of the two turns (300) is well past it. The ceiling is per turn.
@@ -1129,3 +1145,161 @@ def test_a_node_past_its_context_ceiling_ends_needs_continuation_and_keeps_its_w
     )
     assert under.status == "done"
     assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+
+@pytest.mark.os_agnostic
+def test_stop_notice_hook_says_nothing_until_it_is_armed() -> None:
+    """Before the ceiling is crossed the hook must be silent, not merely harmless.
+
+    A node under its ceiling never sees the nudge - that is design 3.8's own control row.
+    """
+    hook = inject_stop_notice(lambda: False, handover_path="/r/nodes/n1/handover.json")
+
+    assert asyncio.run(_await_hook(hook, "Write", {"file_path": "/r/wt/a/f.py"})) == {}
+
+
+@pytest.mark.os_agnostic
+def test_stop_notice_hook_injects_the_notice_once_armed() -> None:
+    """Armed, it puts the authorised stop notice in front of the model."""
+    hook = inject_stop_notice(lambda: True, handover_path="/r/nodes/n1/handover.json")
+
+    result = asyncio.run(_await_hook(hook, "Write", {"file_path": "/r/wt/a/f.py"}))
+
+    specific = result["hookSpecificOutput"]
+    assert specific["hookEventName"] == "PreToolUse"
+    assert "/r/nodes/n1/handover.json" in specific["additionalContext"]
+    assert "run coordinator" in specific["additionalContext"].lower()
+
+
+@pytest.mark.os_agnostic
+def test_stop_notice_hook_never_carries_a_permission_decision() -> None:
+    """The measured shape: inject only, so the call still runs (decision 14).
+
+    The probe measured the hooked call running in 40 of 40 dispatches with an inject-only
+    return. A ``permissionDecision`` here would turn the nudge into a block, and the node
+    would be stopped before it could write the very handover it is being asked for.
+    """
+    hook = inject_stop_notice(lambda: True, handover_path="/r/nodes/n1/handover.json")
+
+    result = asyncio.run(_await_hook(hook, "Write", {"file_path": "/r/wt/a/f.py"}))
+
+    assert "permissionDecision" not in result["hookSpecificOutput"]
+    assert fire(hook, "Write", {"file_path": "/r/wt/a/f.py"}) is None
+
+
+@pytest.mark.os_agnostic
+def test_stop_notice_hook_reads_the_flag_at_call_time_not_at_build_time() -> None:
+    """The executor arms it mid-dispatch, so the hook must re-read the predicate.
+
+    A closure that captured the value at build time would be armed never or always - the
+    same class of bug as the body closure that captured ``work()``'s original spec.
+    """
+    armed = False
+    hook = inject_stop_notice(lambda: armed, handover_path="/r/h.json")
+
+    assert asyncio.run(_await_hook(hook, "Write", {"file_path": "/r/wt/a/f.py"})) == {}
+    armed = True
+    assert "hookSpecificOutput" in asyncio.run(_await_hook(hook, "Write", {"file_path": "/r/wt/a/f.py"}))
+
+
+def _fire_every_pretooluse_hook(options: object, tool_name: str, tool_input: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fire every ``PreToolUse`` hook the built options carry, and collect what they returned.
+
+    Deliberately not "reach into matcher number three": which matcher holds which hook is
+    an ordering detail, and a test that hard-codes it passes while the wiring rots. Firing
+    all of them and asking what came back tests the property that matters - is the stop
+    notice REACHABLE from the options this dispatch actually built.
+    """
+    hooks_by_event = cast("dict[str, list[Any]]", getattr(options, "hooks", {}) or {})
+    return [
+        asyncio.run(_await_hook(hook, tool_name, tool_input))
+        for matcher in hooks_by_event.get("PreToolUse", [])
+        for hook in cast("list[HookCallback]", matcher.hooks)
+    ]
+
+
+@pytest.mark.os_agnostic
+def test_crossing_the_ceiling_asks_the_node_to_hand_over_before_interrupting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Crossing arms the notice; it does not stop the node on the spot (decision 14).
+
+    An immediate ``interrupt()`` is what the code did before, and it cannot work: the node
+    is being asked to WRITE its handover, so stopping it at the moment of asking guarantees
+    there is no record for the successor to read.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 200)]  # turn 2 crosses a 150 ceiling
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    assert outcome.status == "needs_continuation"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # the stream ended inside the grace
+
+
+@pytest.mark.os_agnostic
+def test_a_node_that_ignores_the_stop_notice_is_interrupted_once_the_grace_runs_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grace is bounded: a node that keeps working is stopped anyway.
+
+    Compliance is not guaranteed - measured 4 of 4 under the right framing, but the same
+    probe measured 0 of 4 under the wrong one - so the grace must expire rather than let a
+    node run on indefinitely after being asked to stop.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    # turn 2 crosses; every later turn stays over, and there are more of them than the grace
+    turns = [_turn_of_message(f"m{n}", 100 if n == 1 else 200) for n in range(1, HANDOVER_GRACE_TURNS + 4)]
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=len(turns)))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    assert outcome.status == "needs_continuation"
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_the_stop_notice_hook_is_wired_into_the_dispatch_and_armed_by_the_crossing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The notice is reachable from the options this dispatch built, and silent until crossed.
+
+    Without this the executor would carry a stop-notice hook nothing ever installs - a
+    producer with no consumer, which reads as a working mechanism and is not one.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    in_root_write = {"file_path": str(tmp_path / "run" / "wt" / "r" / "f.py")}
+
+    # A dispatch that never reaches the ceiling: every hook stays silent.
+    FakeStreamClient.configure([_turn_of_message("m1", 100)], _result(is_error=False, subtype="success", num_turns=1))
+    asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=10_000)))
+    quiet = _fire_every_pretooluse_hook(FakeStreamClient.instances[0].options, "Write", in_root_write)
+    assert all("hookSpecificOutput" not in r or "additionalContext" not in r["hookSpecificOutput"] for r in quiet)
+
+    # A dispatch that crosses it: one of the wired hooks now carries the notice.
+    FakeStreamClient.configure(
+        [_turn_of_message("m1", 100), _turn_of_message("m2", 200)],
+        _result(is_error=False, subtype="success", num_turns=2),
+    )
+    request = _request(tmp_path, token_cap=100_000, handover_at_tokens=150)
+    asyncio.run(executor.run(request))
+    fired = _fire_every_pretooluse_hook(FakeStreamClient.instances[0].options, "Write", in_root_write)
+
+    notices = [
+        r["hookSpecificOutput"]["additionalContext"]
+        for r in fired
+        if "additionalContext" in (r.get("hookSpecificOutput") or {})
+    ]
+    assert len(notices) == 1
+    assert str(request.node_dir / HANDOVER_FILENAME) in notices[0]
+    assert "run coordinator" in notices[0].lower()

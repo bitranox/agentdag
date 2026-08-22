@@ -56,9 +56,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ...domain.handover import stop_notice
 from ...domain.scan import is_covered
 
-__all__ = ["HookCallback", "HookResult", "deny_bash_commands", "deny_outside_write_set"]
+__all__ = ["HookCallback", "HookResult", "deny_bash_commands", "deny_outside_write_set", "inject_stop_notice"]
 
 HookResult = dict[str, Any]
 """What a hook returns: ``{}`` to allow, or a ``hookSpecificOutput`` deny payload."""
@@ -160,5 +161,49 @@ def deny_bash_commands(patterns: tuple[str, ...]) -> HookCallback:
             if pattern in command:
                 return _deny(f"command matches denylist pattern {pattern!r}")
         return {}
+
+    return hook
+
+
+def inject_stop_notice(is_stopping: Callable[[], bool], *, handover_path: str) -> HookCallback:
+    """Build a ``PreToolUse`` hook that asks the node to hand over, without blocking it.
+
+    The third hook shape in this module, and the only one that is not a guard: it does not
+    decide anything, it puts text in front of the model. Once ``is_stopping()`` returns
+    true, every matched tool call carries the authorised stop notice
+    (:func:`~agentdag.domain.handover.stop_notice`) as ``additionalContext``.
+
+    It deliberately sends NO ``permissionDecision``. Measured over 40 dispatches
+    (RESEARCH ``workflow/design/probes/handover-nudge-inject.md``, decision 14): an
+    inject-only return reaches the model in 19 of 20 injecting repeats and the hooked call
+    still runs in 40 of 40, so the node stays able to act - which is the point, since what
+    it is being asked to do is WRITE its handover. Returning a deny here would stop the node
+    before it could produce the record the successor needs.
+
+    ``is_stopping`` is a predicate rather than a flag so it is read at CALL time. The
+    executor arms it part-way through a dispatch, and a hook that captured the value when
+    it was built would be armed either never or always - the same defect as a body closure
+    capturing its spec before the dispatch loop increments it.
+
+    Args:
+        is_stopping: Called on every matched tool use; true once the node has crossed its
+            context ceiling and should hand over.
+        handover_path: Absolute path the node writes its handover record to, repeated in
+            the notice so a node whose context no longer holds the duty still knows it.
+
+    Returns:
+        The hook callback, closed over the predicate and the path.
+    """
+
+    async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
+        del input_data, tool_use_id, context  # the notice does not depend on which tool ran
+        if not is_stopping():
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": stop_notice(handover_path=handover_path),
+            }
+        }
 
     return hook

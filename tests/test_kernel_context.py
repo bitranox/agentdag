@@ -21,6 +21,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow, stamp
+from agentdag.domain.handover import HANDOVER_FILENAME
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
@@ -204,7 +205,10 @@ def test_work_runs_the_resolved_row_s_executor_and_charges_what_it_reported(tmp_
     assert request.write_set == ("wt/a/**",)
     assert request.isolation_root == run_dir.root
     assert request.cwd == run_dir.worktree("a")
-    assert request.prompt == Coordinator.DEFAULT_PROMPT
+    # The task is no longer the WHOLE prompt: every dispatched node carries the standing
+    # stop duty ahead of it (decision 14). Containment, not equality - the duty's own
+    # content is asserted by test_work_gives_the_node_the_standing_stop_duty.
+    assert Coordinator.DEFAULT_PROMPT in request.prompt
     written = (request.node_dir / "input.json").read_text(encoding="utf-8")
     assert '"cwd":"wt/a"' in written  # the run root's own location is not part of the key
     assert '"model":"sonnet"' in written
@@ -760,3 +764,45 @@ def test_a_chain_past_max_continuations_ends_failed_rather_than_handing_over_for
     assert record.error.type == "continuation_limit"
     assert record.error.transient is False  # more tries cannot help; the chain is out of links
     assert record.continuation == 3
+
+
+@pytest.mark.os_agnostic
+def test_work_gives_the_node_the_standing_stop_duty(tmp_path: Path) -> None:
+    """A dispatched work node carries the handover duty in its own prompt (decision 14).
+
+    The duty has to be present from DISPATCH: measured over 40 dispatches
+    (RESEARCH ``workflow/design/probes/handover-nudge-inject.md``), a stop notice arriving
+    with no prior standing in the task is refused 4 times out of 4 as prompt injection,
+    while the same notice against a brief that pre-authorises it is obeyed 4 of 4.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert len(executor.requests) == 1
+    prompt = executor.requests[0].prompt
+    assert "authoritative" in prompt.lower()
+    assert "Apply the change described in your system prompt" in prompt  # the task survives
+
+
+@pytest.mark.os_agnostic
+def test_work_names_an_absolute_handover_path_in_the_duty(tmp_path: Path) -> None:
+    """The duty names the node's own artefact dir, absolutely.
+
+    Absolute because the probe measured a node resolving a bare filename against the wrong
+    directory; and inside ``node_dir`` because that is the one place besides its declared
+    write set the node is already permitted to write (``allowed_writes``), so the handover
+    cannot be denied by the write-set hook.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    request = executor.requests[0]
+    expected = str(request.node_dir / HANDOVER_FILENAME)
+    assert expected in request.prompt
+    assert request.node_dir.is_absolute()
