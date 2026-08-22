@@ -25,7 +25,8 @@ Eight verbs over one run directory (design 3.1/3.4, Task 17; ``cancel``,
     Grant a FAILED node one more attempt, then relaunch unless ``--no-relaunch``. Its own
     verb rather than a flag on ``resume``, because the run is usually ``done`` - graph A
     routes a red gate into a tally row rather than failing the run - and ``resume`` refuses
-    a done run by design.
+    a done run by design. Refuses a grant the relaunch could not reach, which a run started
+    under a HIGHER ``max_attempts`` than this process resolves would otherwise produce.
 
 ``agentdag run cancel RUN_ID [--runs DIR]``
     Write the whole-run cancel intent and return AT ONCE with ``cancelling`` (mcp-surface
@@ -100,8 +101,16 @@ from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import RunRefused, WorkflowNotFound
-from agentdag.domain.keys import content_hash
-from agentdag.domain.models import ApprovePayload, Decision, NodeStatus, RetryGrant, RunState, RunStatus
+from agentdag.domain.keys import content_hash, hash8
+from agentdag.domain.models import (
+    ApprovePayload,
+    Decision,
+    NodeStatus,
+    ResultRecord,
+    RetryGrant,
+    RunState,
+    RunStatus,
+)
 from agentdag.domain.scrub import scrub
 
 from .. import safe_console
@@ -407,9 +416,10 @@ def cli_run_retry(
     status = run_dir.read_state().status
     if status in (RunStatus.CANCELLED, RunStatus.CANCELLING):
         _fail(f"run {run_id} is {status.value}; nothing to retry")
+    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
     grant = RetryGrant(
         node_id=node_id,
-        key=_failed_key_of(run_dir, run_id=run_id, node_id=node_id),
+        key=_grantable_key_of(run_dir, run_id=run_id, node_id=node_id, max_attempts=wiring.policy.max_attempts),
         reason=reason_text,
         by=getpass.getuser(),
         token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
@@ -429,8 +439,8 @@ def cli_run_retry(
     _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason="retry", foreground=foreground)
 
 
-def _failed_key_of(run_dir: FsRunDir, *, run_id: str, node_id: str) -> str:
-    """Return the journal key of ``node_id``'s LATEST record, or exit unless that record failed.
+def _grantable_key_of(run_dir: FsRunDir, *, run_id: str, node_id: str, max_attempts: int) -> str:
+    """Return the journal key of ``node_id``'s LATEST record, or exit saying why it cannot be granted.
 
     Latest, not latest-FAILED: a node that failed and later succeeded must not be dragged
     back, and a grant may only ever buy an attempt for a failure. A record's ``input_hash``
@@ -444,7 +454,51 @@ def _failed_key_of(run_dir: FsRunDir, *, run_id: str, node_id: str) -> str:
     latest = records[-1]
     if latest.status is not NodeStatus.FAILED:
         _fail(f"node {node_id!r} is {latest.status.value}, not failed; nothing to retry")
+    _refuse_an_unreachable_grant(records, node_id=node_id, run_dir=run_dir, max_attempts=max_attempts)
     return latest.input_hash
+
+
+def _refuse_an_unreachable_grant(
+    records: Sequence[ResultRecord], *, node_id: str, run_dir: FsRunDir, max_attempts: int
+) -> None:
+    """Exit if the next launch cannot even REACH the attempt this grant would name.
+
+    A grant names one exact key, but how far a relaunch walks is decided by the policy resolved
+    at THAT launch: the automatic rule stops once ``attempt + 1`` reaches ``max_attempts``, and
+    the only thing that carries it further is a grant on the previous attempt's key. Nothing
+    records which table a run started under, and neither this verb nor ``_relaunch`` forwards
+    ``--policy``, so a run started under a higher ceiling leaves records the current ceiling can
+    no longer walk to. The grant would fold and never be matched, and the write-once refusal
+    would then block a second one - the node unreachable from this CLI's own surface. Refusing
+    here is the moment the operator can still do something about it.
+
+    The walk is deliberately OPTIMISTIC about the automatic step: it checks the attempt ceiling
+    but not transience or kind, which live on a spec this process does not have. So it can only
+    over-estimate how far a launch reaches, which means it never refuses a grant that would have
+    worked - it just catches fewer of the dead ones than a coordinator-side check could.
+
+    Args:
+        records: Every record for this node, in journal order.
+        node_id: The node being granted.
+        run_dir: The run, for the grants already recorded (read from FILENAMES, not parsed).
+        max_attempts: The retry ceiling the policy this process resolved carries.
+
+    Raises:
+        SystemExit: the relaunch stops short of the attempt the grant would name.
+    """
+    granted = {(ref.node_id, ref.short_hash) for ref in run_dir.retry_grant_files()}
+    key_by_attempt = {record.attempt: record.input_hash for record in records}
+    target = records[-1].attempt
+    for attempt in range(target):
+        key = key_by_attempt.get(attempt)
+        carried = key is not None and (node_id, hash8(key)) in granted
+        if attempt + 1 < max_attempts or carried:
+            continue
+        _fail(
+            f"node {node_id!r} has a record at attempt {target}, but this run's policy allows "
+            f"{max_attempts} attempts, so a relaunch stops at attempt {attempt} and would never "
+            f"reach it; re-run under the policy the run started with, or grant that attempt first"
+        )
 
 
 @click.command("cancel", context_settings=CLICK_CONTEXT_SETTINGS)

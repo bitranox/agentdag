@@ -148,6 +148,11 @@ grant buys one attempt; if that one fails too, the operator grants again.
 It is its own verb rather than a flag on `resume` because a red gate does not fail the run - graph A
 routes it into a tally row and the run reaches `done` - and `resume` refuses a done run by design.
 
+How far a relaunch walks is decided by the policy resolved at THAT launch, and nothing records
+which table a run started under. So a run started under a higher `max_attempts` can hold records
+the current ceiling can no longer walk to, and a grant naming one would fold and never be matched.
+`run retry` refuses that grant rather than writing it, naming the attempt the relaunch stops at.
+
 **Not yet:** nothing withdraws a grant, and nothing shows an operator which grants a run carries
 other than reading its journal.
 

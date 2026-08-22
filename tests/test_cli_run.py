@@ -33,13 +33,16 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
 from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
+from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.adapters.kernel.scope_none import NoScope
 from agentdag.application.kernel.approve import DEADLINE_REASON, SYSTEM_IDENTITY, TIMER_TOKEN_ID
 from agentdag.application.kernel.cancel import scope_unit
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
+from agentdag.domain.journal import ResultLine
 from agentdag.domain.keys import hash8
+from agentdag.domain.models import ErrorType, NodeError, NodeStatus, ResultRecord, RetryGrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -1017,6 +1020,74 @@ def test_the_hidden_coordinate_entry_point_accepts_the_reason_a_background_retry
         cli_mod.cli,
         ["run", "_coordinate", run_id, "--runs", str(tmp_path / "runs"), "--reason", "retry"],
         obj=obj,
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def _append_failed_attempts(run_dir: Path, node_id: str, attempts: range) -> list[str]:
+    """Append one failed result line per attempt for ``node_id``; return the keys, in order.
+
+    This is the on-disk state a run left under a HIGHER ``max_attempts`` than the one the
+    next launch will resolve - the policy is not recorded on the run, and neither ``run retry``
+    nor the relaunch it fires carries ``--policy``.
+    """
+    journal = JsonlJournal(run_dir / "journal.jsonl", run_dir / "audit.jsonl")
+    keys: list[str] = []
+    for attempt in attempts:
+        key = "v2:sha256:" + f"{attempt:02x}" * 32  # distinct in the LEADING hex, which names the file
+        keys.append(key)
+        record = ResultRecord(
+            node_id=node_id,
+            attempt=attempt,
+            status=NodeStatus.FAILED,
+            input_hash=key,
+            duration_s=0.0,
+            executor_used="code",
+            model_used="-",
+            effort_used="-",
+            error=NodeError(type=ErrorType.EXECUTOR_ERROR, message="fell over", transient=True),
+        )
+        journal.append(ResultLine(key=key, record=record, at="2026-08-22T09:12:03+00:00"))
+    return keys
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_refuses_a_grant_the_relaunch_could_never_reach(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The retry ceiling comes from the policy resolved AT THE RELAUNCH, not the one the run
+    started under. A grant naming an attempt beyond that ceiling folds and is never matched, and
+    the write-once refusal then blocks a second grant - so refuse while the operator can still act.
+    """
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+    _append_failed_attempts(tmp_path / "runs" / run_id, "g_spent", range(3))  # shipped table allows 2
+
+    result = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "g_spent", "--runs", str(tmp_path / "runs")], obj=obj
+    )
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "attempt 2" in result.output and "attempt 1" in result.output
+    assert not list((tmp_path / "runs" / run_id / "retries").glob("g_spent.*.json"))
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_allows_a_late_attempt_the_existing_grants_do_reach(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The guard is reachability, not the attempt number: a chain the recorded grants already
+    carry past the automatic ceiling is grantable again."""
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+    keys = _append_failed_attempts(tmp_path / "runs" / run_id, "g_spent", range(3))
+    runs_arg = str(tmp_path / "runs")
+    granted = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "g_spent", "--runs", runs_arg, "--no-relaunch"], obj=obj
+    )
+    assert granted.exit_code == ExitCode.INVALID_ARGUMENT  # attempt 2 is out of reach ...
+
+    FsRunDir.open(tmp_path / "runs", run_id).write_retry_grant(
+        RetryGrant(node_id="g_spent", key=keys[1], reason="", by="me", token_id="local")
+    )  # ... until the step into it is granted
+
+    result = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "g_spent", "--runs", runs_arg, "--no-relaunch"], obj=obj
     )
 
     assert result.exit_code == 0, result.output
