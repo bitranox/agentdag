@@ -44,7 +44,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.graph_a import GraphAArgs
-from agentdag.domain.models import Decision, NodeOutcome, NodeStatus, Tokens
+from agentdag.domain.models import Decision, ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
 
 if TYPE_CHECKING:
     from agentdag.application.kernel.notify import Notifier, RunEvent
@@ -122,13 +122,19 @@ class CommittingExecutor:
         crash_after: A node id whose dispatch raises ``SystemExit`` AFTER its commit -
             the harder half of the crash window, where the side effect landed and only
             the ``result`` line is missing.
+        fail_on: A node id whose dispatch returns a FAILED outcome rather than raising -
+            a node that ran and reported it could not do the job, which is what leaves a
+            failed RECORD in the journal for a later ``run retry`` to be granted against.
+            Cleared once it has fired, so the attempt an operator grants succeeds and a
+            test can tell a retry that ran from one that never happened.
         calls: The node id of every dispatch this executor was handed, in order.
     """
 
-    def __init__(self, crash_on: str | None = None, crash_after: str | None = None) -> None:
-        """Bind the optional crash nodes; ``calls`` starts empty."""
+    def __init__(self, crash_on: str | None = None, crash_after: str | None = None, fail_on: str | None = None) -> None:
+        """Bind the optional crash and failure nodes; ``calls`` starts empty."""
         self.crash_on = crash_on
         self.crash_after = crash_after
+        self.fail_on = fail_on
         self.calls: list[str] = []
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
@@ -147,6 +153,15 @@ class CommittingExecutor:
         self.calls.append(node_id)
         if node_id == self.crash_on:
             raise SystemExit(9)
+        if node_id == self.fail_on:
+            self.fail_on = None
+            return NodeOutcome(
+                status=NodeStatus.FAILED,
+                executor_used="claude",
+                model_used=request.model,
+                effort_used="-",
+                error=NodeError(type=ErrorType.EXECUTOR_ERROR, message="the model would not do it", transient=True),
+            )
         # A real executor awaits its model; without a suspension point here every map
         # branch would run to completion before the next one started, so `parallel > 1`
         # would be serial and nothing that depends on branches overlapping is exercised.

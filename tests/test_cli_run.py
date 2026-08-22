@@ -931,3 +931,92 @@ def test_the_shipped_timer_unit_runs_the_command_that_applies_the_default() -> N
     assert "Unit=agentdag-approve-timer.service" in timer
     assert "WantedBy=timers.target" in timer
     assert "Persistent=true" in timer  # a machine off across a decide_by still applies the default
+
+
+def _started_with_a_failed_work_node(cli_runner: CliRunner, tmp_path: Path) -> tuple[str, CommittingExecutor, object]:
+    """Drive graph A once with ``w_migrate@0`` reporting failure, and return the run id.
+
+    A work node's failure is the case the automatic rule deliberately never retries
+    (design 2.3 rule 5 owns a model node's retry), so it is exactly what ``run retry``
+    exists for.
+    """
+    (tmp_path / "runs").mkdir()
+    ex = CommittingExecutor(fail_on="w_migrate@0")
+    obj = services_with(ex, tmp_path)
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=obj)
+    assert started.exit_code == 0, started.output
+    m = re.search(r"run (\S+) ", started.output)
+    assert m, started.output
+    return m.group(1), ex, obj
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_grants_a_failed_node_another_attempt_and_relaunches(cli_runner: CliRunner, tmp_path: Path) -> None:
+    run_id, ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+    runs_arg = str(tmp_path / "runs")
+    assert ex.calls.count("w_migrate@0") == 1
+
+    retried = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "w_migrate@0", "--runs", runs_arg, "--foreground"], obj=obj
+    )
+
+    assert retried.exit_code == 0, retried.output
+    assert "w_migrate@0" in retried.output
+    assert ex.calls.count("w_migrate@0") == 2  # the granted attempt really ran
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_refuses_a_node_the_run_has_no_record_for(cli_runner: CliRunner, tmp_path: Path) -> None:
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+
+    result = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "w_nonesuch", "--runs", str(tmp_path / "runs")], obj=obj
+    )
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "no record" in result.output and "w_nonesuch" in result.output
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_refuses_a_node_whose_latest_record_passed(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """Latest, not latest-failed: a node that failed and later succeeded is not dragged back."""
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+
+    result = cli_runner.invoke(
+        cli_mod.cli, ["run", "retry", run_id, "g_discover", "--runs", str(tmp_path / "runs")], obj=obj
+    )
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "nothing to retry" in result.output and "done" in result.output
+
+
+@pytest.mark.os_agnostic
+def test_run_retry_refuses_a_second_grant_for_the_same_failure(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """One grant buys one attempt, so a doubled command must not mint a second."""
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+    runs_arg = str(tmp_path / "runs")
+    args = ["run", "retry", run_id, "w_migrate@0", "--runs", runs_arg, "--no-relaunch"]
+    first = cli_runner.invoke(cli_mod.cli, args, obj=obj)
+    assert first.exit_code == 0, first.output
+
+    second = cli_runner.invoke(cli_mod.cli, args, obj=obj)
+
+    assert second.exit_code == ExitCode.INVALID_ARGUMENT
+    assert "already" in second.output
+
+
+@pytest.mark.os_agnostic
+def test_the_hidden_coordinate_entry_point_accepts_the_reason_a_background_retry_forwards(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """``_relaunch`` builds ``_coordinate``'s argv, so its ``--reason`` choice has to accept
+    what a retry passes - a foreground-only test never goes near that argv."""
+    run_id, _ex, obj = _started_with_a_failed_work_node(cli_runner, tmp_path)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        ["run", "_coordinate", run_id, "--runs", str(tmp_path / "runs"), "--reason", "retry"],
+        obj=obj,
+    )
+
+    assert result.exit_code == 0, result.output

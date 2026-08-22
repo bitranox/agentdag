@@ -1,7 +1,7 @@
-"""``agentdag run``: start, inspect, resume, approve and cancel a kernel coordinator run.
+"""``agentdag run``: start, inspect, resume, approve, retry and cancel a kernel coordinator run.
 
-Seven verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` and
-``apply-deadlines`` added M3):
+Eight verbs over one run directory (design 3.1/3.4, Task 17; ``cancel``,
+``apply-deadlines`` and ``retry`` added M3):
 
 ``agentdag run start WORKFLOW [--arg key=value]... [--runs DIR] [--parallel N] [--policy FILE] [--foreground]``
     Validate WORKFLOW's arguments, mint a run id, create the run directory, and either
@@ -20,6 +20,12 @@ Seven verbs over one run directory (design 3.1/3.4, Task 17; ``cancel`` and
 ``agentdag run approve RUN_ID NODE_ID --decision ID [--reason TEXT] [--runs DIR] [--no-relaunch] [--foreground]``
     Record a human decision for a suspended approve node, then relaunch unless
     ``--no-relaunch``.
+
+``agentdag run retry RUN_ID NODE_ID [--reason TEXT] [--runs DIR] [--no-relaunch] [--foreground]``
+    Grant a FAILED node one more attempt, then relaunch unless ``--no-relaunch``. Its own
+    verb rather than a flag on ``resume``, because the run is usually ``done`` - graph A
+    routes a red gate into a tally row rather than failing the run - and ``resume`` refuses
+    a done run by design.
 
 ``agentdag run cancel RUN_ID [--runs DIR]``
     Write the whole-run cancel intent and return AT ONCE with ``cancelling`` (mcp-surface
@@ -59,9 +65,9 @@ Contents:
     * :func:`resolve_notifier` - the sink ``kernel.notify`` names, shared with ``notify-test``.
     * :func:`cli_run` - the ``run`` group.
     * :func:`cli_run_start`, :func:`cli_run_status`, :func:`cli_run_records`,
-      :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_cancel`,
-      :func:`cli_run_apply_deadlines`, :func:`cli_run_coordinate` - the seven verbs,
-      plus the hidden relaunch entry point.
+      :func:`cli_run_resume`, :func:`cli_run_approve`, :func:`cli_run_retry`,
+      :func:`cli_run_cancel`, :func:`cli_run_apply_deadlines`,
+      :func:`cli_run_coordinate` - the eight verbs, plus the hidden relaunch entry point.
 """
 
 from __future__ import annotations
@@ -95,7 +101,7 @@ from agentdag.application.workflows import get_workflow
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import RunRefused, WorkflowNotFound
 from agentdag.domain.keys import content_hash
-from agentdag.domain.models import ApprovePayload, Decision, RunState, RunStatus
+from agentdag.domain.models import ApprovePayload, Decision, NodeStatus, RetryGrant, RunState, RunStatus
 from agentdag.domain.scrub import scrub
 
 from .. import safe_console
@@ -125,11 +131,20 @@ __all__ = [
     "cli_run_coordinate",
     "cli_run_records",
     "cli_run_resume",
+    "cli_run_retry",
     "cli_run_start",
     "cli_run_status",
 ]
 
 _RESUME_REASONS = ("decision", "crash", "restart", "manual")
+"""What an operator may claim on a bare ``run resume``. ``retry`` is deliberately absent:
+it names a relaunch that carries a grant, which only ``run retry`` can record, so allowing
+it here would let a resume journal a reason nothing in the run backs up."""
+
+_COORDINATE_REASONS = (*_RESUME_REASONS, "retry")
+"""What the hidden ``_coordinate`` accepts, which is every reason ANY relaunch path forwards -
+``_relaunch`` builds its argv, so a reason this choice rejects is a background launch that
+dies at argument parsing while the same relaunch works in the foreground."""
 
 _LAUNCH_CONFIRM_TIMEOUT_S = 2.0
 """How long :func:`_launch_background` waits for a background launch to prove itself."""
@@ -360,6 +375,78 @@ def cli_run_resume(
     _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason=reason_option, foreground=foreground)
 
 
+@click.command("retry", context_settings=CLICK_CONTEXT_SETTINGS)
+@argument("run_id")
+@argument("node_id")
+@option("--reason", "reason_text", default="", help="A free-text reason, recorded alongside the grant.")
+@_RUNS_OPTION
+@option("--no-relaunch", is_flag=True, default=False, help="Record the grant but do not relaunch the coordinator.")
+@_FOREGROUND_OPTION
+@click.pass_context
+def cli_run_retry(
+    ctx: click.Context,
+    *,
+    run_id: str,
+    node_id: str,
+    reason_text: str,
+    runs_option: Path | None,
+    no_relaunch: bool,
+    foreground: bool,
+) -> None:
+    """Grant RUN_ID's NODE_ID one more attempt, and relaunch unless --no-relaunch.
+
+    Its own verb rather than a flag on ``resume``, because the run this is for is usually
+    ``done``: graph A routes a red gate into a tally row rather than failing the run, and
+    ``resume`` refuses a done run by design (``mcp-surface.md`` states two properties in terms
+    of that refusal). A grant is new information entering the run, which is what ``approve``
+    does and what ``resume`` does not, so this takes ``approve``'s shape.
+    """
+    config = get_cli_context(ctx).config
+    runs_dir = _resolve_runs_dir(config, runs_option)
+    run_dir = _open_run_dir(runs_dir, run_id)
+    status = run_dir.read_state().status
+    if status in (RunStatus.CANCELLED, RunStatus.CANCELLING):
+        _fail(f"run {run_id} is {status.value}; nothing to retry")
+    grant = RetryGrant(
+        node_id=node_id,
+        key=_failed_key_of(run_dir, run_id=run_id, node_id=node_id),
+        reason=reason_text,
+        by=getpass.getuser(),
+        token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
+    )
+    try:
+        run_dir.write_retry_grant(grant)
+    except FileExistsError:
+        _fail(f"run {run_id} already granted {node_id!r} another attempt for that failure")
+    safe_console.echo(f"run {run_id} granted {node_id!r} another attempt")
+    if no_relaunch:
+        return
+    if status is RunStatus.RUNNING:
+        # A live coordinator folded its inbox at startup, so it will not see this one. Saying
+        # so beats a relaunch that dies on the lock, and beats silence, which reads as a no-op.
+        safe_console.echo(f"run {run_id} is running; the grant applies at its next launch")
+        return
+    _relaunch(ctx, run_dir=run_dir, runs_dir=runs_dir, reason="retry", foreground=foreground)
+
+
+def _failed_key_of(run_dir: FsRunDir, *, run_id: str, node_id: str) -> str:
+    """Return the journal key of ``node_id``'s LATEST record, or exit unless that record failed.
+
+    Latest, not latest-FAILED: a node that failed and later succeeded must not be dragged
+    back, and a grant may only ever buy an attempt for a failure. A record's ``input_hash``
+    IS its own journal key, so nothing has to be recomputed here - which matters, because the
+    CLI knows node ids and never node specs.
+    """
+    lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
+    records = [line.record for line in lines if isinstance(line, ResultLine) and line.record.node_id == node_id]
+    if not records:
+        _fail(f"run {run_id} has no record for node {node_id!r}")
+    latest = records[-1]
+    if latest.status is not NodeStatus.FAILED:
+        _fail(f"node {node_id!r} is {latest.status.value}, not failed; nothing to retry")
+    return latest.input_hash
+
+
 @click.command("cancel", context_settings=CLICK_CONTEXT_SETTINGS)
 @argument("run_id")
 @_RUNS_OPTION
@@ -515,7 +602,7 @@ def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring) -> int:
 @click.command("_coordinate", context_settings=CLICK_CONTEXT_SETTINGS, hidden=True)
 @argument("run_id")
 @option("--runs", "runs_option", type=click.Path(file_okay=False, path_type=Path), required=True)
-@option("--reason", "reason_option", type=click.Choice(_RESUME_REASONS), default=None)
+@option("--reason", "reason_option", type=click.Choice(_COORDINATE_REASONS), default=None)
 @_PARALLEL_OPTION
 @_POLICY_OPTION
 @click.pass_context
@@ -1031,6 +1118,7 @@ cli_run.add_command(cli_run_status)
 cli_run.add_command(cli_run_records)
 cli_run.add_command(cli_run_resume)
 cli_run.add_command(cli_run_approve)
+cli_run.add_command(cli_run_retry)
 cli_run.add_command(cli_run_cancel)
 cli_run.add_command(cli_run_apply_deadlines)
 cli_run.add_command(cli_run_coordinate)
