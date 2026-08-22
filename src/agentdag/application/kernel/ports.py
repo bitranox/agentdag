@@ -363,6 +363,12 @@ class Policy(Protocol):
 
     version: str
     max_turns: int
+    max_attempts: int
+    """How many times ONE code node may be dispatched before a transient failure stands
+    (``Thresholds.max_attempts``). Read by :meth:`Coordinator._dispatch
+    <agentdag.application.kernel.context.Coordinator._dispatch>`; ``1`` disables retrying.
+    A model node is NOT retried here - design 2.3 rule 5 owns that, and it escalates a rank
+    rather than repeating in place."""
     deny_bash: tuple[str, ...]
     tokens_per_row: Mapping[str, int]
     deadline_ceiling_s: float

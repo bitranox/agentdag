@@ -29,6 +29,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 __all__ = [
+    "CODE_KINDS",
+    "FAN_OUT_KINDS",
     "ApproveOption",
     "ApprovePayload",
     "Budget",
@@ -69,6 +71,13 @@ class Kind(StrEnum):
     BATCH = "batch"
     STAGE = "stage"
     APPLY = "apply"
+
+
+CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPLY, Kind.APPROVE})
+"""The kinds the coordinator runs as code, which carry ``executor: "code"`` (design 2.1)."""
+
+FAN_OUT_KINDS = frozenset({Kind.MAP, Kind.BATCH})
+"""Fan-out and fold performed by the coordinator itself, which carry NO executor (design 2.1)."""
 
 
 class NodeStatus(StrEnum):

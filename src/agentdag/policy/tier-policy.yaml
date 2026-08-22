@@ -197,6 +197,12 @@ thresholds:
   journal_max_lines: 5000
   # how many handovers a node chain may take before it ends failed/continuation_limit (3.8)
   max_continuations: 3
+  # how many times ONE code node may be dispatched before its transient failure stands. 2 means
+  # one retry, mirroring design 2.3 rule 5, which re-dispatches ONCE and suspends on the second
+  # failure rather than climbing. Only a FAILED record carrying a TRANSIENT error retries: a red
+  # gate carries no error at all (it ran and answered), and a KernelError is stamped
+  # non-transient because the same inputs reproduce it. 1 disables retrying entirely.
+  max_attempts: 2
 
 # Run-level ceilings the coordinator validates and clamps against (design 2.3
 # "Run limits", 2.4, 3.4). Per-node budgets live in the node spec; these bound

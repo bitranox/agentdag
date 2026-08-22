@@ -21,13 +21,25 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
+from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import KernelError
-from agentdag.domain.models import Budget, ErrorType, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, TierRole
+from agentdag.domain.models import (
+    Budget,
+    ErrorType,
+    Isolation,
+    Kind,
+    NodeError,
+    NodeOutcome,
+    NodeSpec,
+    NodeStatus,
+    TierRole,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from agentdag.application.graph_a_ports import GatePort
     from agentdag.application.kernel.ports import ExecutorRequest
 
 
@@ -43,6 +55,7 @@ class OneRowPolicy:
 
     version: str = "sha256:test"
     max_turns: int = 5
+    max_attempts: int = 1
     deny_bash: tuple[str, ...] = ("git push",)
     tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
     deadline_ceiling_s: float = 999_999.0
@@ -52,6 +65,12 @@ class OneRowPolicy:
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
         return ResolvedRow(alias="sonnet", executor="claude")
+
+
+class RetryingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a run that gives a transiently-failing node three tries."""
+
+    max_attempts: int = 3
 
 
 class LowCeilingPolicy(OneRowPolicy):
@@ -140,6 +159,7 @@ def wire(
     *,
     executors: Mapping[str, RecordingExecutor] | None = None,
     policy: OneRowPolicy | None = None,
+    gate_port: GatePort | None = None,
 ) -> Coordinator:
     """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
 
@@ -157,7 +177,7 @@ def wire(
         run_dir=run_dir,
         clock=UtcClock(),
         executors={"claude": executor} if executors is None else executors,
-        gate_port=MakeTestGate(),
+        gate_port=MakeTestGate() if gate_port is None else gate_port,
         git=GitCli(),
         scanner=scanner,
         policy=OneRowPolicy() if policy is None else policy,
@@ -368,3 +388,152 @@ def test_work_dispatches_normally_when_the_node_s_cap_fits_under_the_run_ceiling
     assert record.status == NodeStatus.DONE
     assert executor.requests[0].token_cap == 400_000
     assert coordinator.tokens_by_row == {"sonnet": 120}
+
+
+class FlakyGate:
+    """A gate port that raises for its first ``fails`` calls, then reports a green gate."""
+
+    def __init__(self, *, fails: int, raising: type[Exception] = OSError) -> None:
+        self.fails = fails
+        self.raising = raising
+        self.calls = 0
+
+    def run(self, worktree: Path, log: Path) -> int:
+        """Count the call, raise while the failure budget lasts, else report success."""
+        del worktree, log
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise self.raising("the gate runner fell over")
+        return 0
+
+
+class RedGate:
+    """A gate port that runs to completion and reports a real, non-zero answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, worktree: Path, log: Path) -> int:
+        """Count the call and report a red gate."""
+        del worktree, log
+        self.calls += 1
+        return 1
+
+
+def gate_spec() -> NodeSpec:
+    """Build the gate node spec the retry tests dispatch."""
+    return NodeSpec(
+        node_id="g_test@1",
+        kind=Kind.GATE,
+        executor="code",
+        isolation=Isolation.NONE,
+        deadline_s=60,
+        budget=Budget(),
+    )
+
+
+def gated(run_dir: FsRunDir, gate_port: FlakyGate | RedGate, *, policy: OneRowPolicy | None = None) -> Coordinator:
+    """Wire a coordinator whose gate port is the test's own, everything else as ``wire`` builds it."""
+    return wire(run_dir, RecordingExecutor(outcome({})), FakeScanner(), policy=policy, gate_port=gate_port)
+
+
+@pytest.mark.os_agnostic
+def test_a_transient_code_failure_is_retried_and_the_second_attempt_stands(tmp_path: Path) -> None:
+    """A gate runner that falls over is infrastructure, not an answer, so the node runs again."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = FlakyGate(fails=1)
+    coordinator = gated(run_dir, gate, policy=RetryingPolicy())
+
+    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 2
+    assert record.status == NodeStatus.DONE
+    assert record.attempt == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_red_gate_is_never_retried(tmp_path: Path) -> None:
+    """A red gate ran to completion and reported a real answer; re-running it would loop on it."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    coordinator = gated(run_dir, gate, policy=RetryingPolicy())
+
+    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 1
+    assert record.status == NodeStatus.FAILED
+    assert record.error is None
+
+
+@pytest.mark.os_agnostic
+def test_a_config_bug_is_never_retried(tmp_path: Path) -> None:
+    """A KernelError is stamped non-transient: the same inputs reproduce it, so a retry burns budget."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = FlakyGate(fails=9, raising=KernelError)
+    coordinator = gated(run_dir, gate, policy=RetryingPolicy())
+
+    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 1
+    assert record.error is not None
+    assert record.error.transient is False
+
+
+@pytest.mark.os_agnostic
+def test_the_attempt_cap_bounds_a_failure_that_never_clears(tmp_path: Path) -> None:
+    run_dir = fresh_run_dir(tmp_path)
+    gate = FlakyGate(fails=9)
+    coordinator = gated(run_dir, gate, policy=RetryingPolicy())
+
+    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 3  # RetryingPolicy.max_attempts
+    assert record.status == NodeStatus.FAILED
+    assert record.attempt == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_policy_allowing_one_attempt_retries_nothing(tmp_path: Path) -> None:
+    """The knob's floor is the shipped behaviour before it existed, so a run can opt out."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = FlakyGate(fails=1)
+    coordinator = gated(run_dir, gate)
+
+    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 1
+    assert record.status == NodeStatus.FAILED
+
+
+@pytest.mark.os_agnostic
+def test_every_attempt_is_journaled_under_its_own_key(tmp_path: Path) -> None:
+    """attempt is an identity field, so a retry is a new call and the failure is never overwritten."""
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = gated(run_dir, FlakyGate(fails=1), policy=RetryingPolicy())
+
+    asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
+    results = [line for line in lines if isinstance(line, ResultLine)]
+    assert [line.record.attempt for line in results] == [0, 1]
+    assert len({line.key for line in results}) == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_work_node_is_not_retried_in_place(tmp_path: Path) -> None:
+    """Design 2.3 rule 5 owns a model node's retry, and it escalates a rank rather than repeating."""
+    run_dir = fresh_run_dir(tmp_path)
+    failed = NodeOutcome(
+        status=NodeStatus.FAILED,
+        executor_used="claude",
+        model_used="sonnet",
+        effort_used="-",
+        error=NodeError(type=ErrorType.EXECUTOR_ERROR, message="the model call fell over", transient=True),
+    )
+    executor = RecordingExecutor(failed)
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=RetryingPolicy())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert len(executor.requests) == 1
+    assert record.status == NodeStatus.FAILED

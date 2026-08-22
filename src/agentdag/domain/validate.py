@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import Kind, TierRole
+from .models import CODE_KINDS, FAN_OUT_KINDS, TierRole
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -111,12 +111,6 @@ class SpecVerdict(BaseModel):
         """Return whether every rule ran, so :attr:`ok` is a full answer rather than a partial one."""
         return not self.skipped
 
-
-CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPLY, Kind.APPROVE})
-"""The kinds the coordinator runs as code, which carry ``executor: "code"`` (design 2.1)."""
-
-FAN_OUT_KINDS = frozenset({Kind.MAP, Kind.BATCH})
-"""Fan-out and fold performed by the coordinator itself, which carry NO executor (design 2.1)."""
 
 ROLE_ORDER = (TierRole.MECHANICAL, TierRole.STANDARD, TierRole.DEEP, TierRole.TOP)
 """Ascending role order, stated by design 2.3 rule 2 as ``mechanical < standard < deep < top``.

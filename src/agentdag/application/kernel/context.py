@@ -22,7 +22,16 @@ from pydantic import BaseModel
 from ...domain.journal import ApproveDecisionLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
-from ...domain.models import Decision, ErrorType, MarkerPhase, NodeError, NodeOutcome, NodeStatus, ResultRecord
+from ...domain.models import (
+    CODE_KINDS,
+    Decision,
+    ErrorType,
+    MarkerPhase,
+    NodeError,
+    NodeOutcome,
+    NodeStatus,
+    ResultRecord,
+)
 from ...domain.scan import diff_manifests, stray_paths
 from .approve import validate_approve_payload
 from .ports import ExecutorRequest, stamp
@@ -857,17 +866,77 @@ class Coordinator:
             input_obj: The assembled input.
             body: What to run when the journal has no result for this key.
 
+        Also where a transient failure earns another attempt (M3): the loop below re-dispatches
+        the SAME spec with ``attempt + 1`` while :meth:`_retries` says so, which is a different
+        journal key and therefore a genuine re-run rather than the old record served back. The
+        decision is a pure function of the record just returned, so a replay makes the same
+        choices in the same order.
+
         Returns:
-            The record :meth:`~agentdag.application.kernel.dispatch.Dispatcher.dispatch`
-            returned, already charged: freshly built with :attr:`sandbox`'s guarantees on
-            it, or served from the journal with its own original declaration intact.
+            The record of the LAST attempt, already charged: freshly built with
+            :attr:`sandbox`'s guarantees on it, or served from the journal with its own
+            original declaration intact. Every earlier attempt keeps its own record and its
+            own journal lines.
         """
         self.declared_write_sets[spec.node_id] = tuple(spec.write_set)
+        record = await self._dispatch_once(spec, brief=brief, input_obj=input_obj, body=body)
+        while self._retries(spec, record):
+            spec = spec.model_copy(update={"attempt": spec.attempt + 1})
+            record = await self._dispatch_once(spec, brief=brief, input_obj=input_obj, body=body)
+        return record
+
+    async def _dispatch_once(
+        self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body
+    ) -> ResultRecord:
+        """Run ONE attempt through the dispatcher and charge whatever it returned.
+
+        Args:
+            spec: The node being dispatched, carrying the attempt number.
+            brief: The node's brief.
+            input_obj: The assembled input.
+            body: What to run when the journal has no result for this key.
+
+        Returns:
+            The record, freshly built or served from the journal, already charged.
+        """
         record = await self.dispatcher.dispatch(
             spec, brief=brief, input_obj=input_obj, body=body, sandbox=self.sandbox.guarantees()
         )
         self._charge(record)
         return record
+
+    def _retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
+        """Return whether this failure earns another attempt (M3's code-node retry).
+
+        Three conditions, and each is load-bearing. The record must carry a TRANSIENT
+        error: a red gate is ``FAILED`` with no ``error`` at all because it ran and
+        reported a real answer, so retrying it would loop on a genuine test failure, and
+        a :class:`~agentdag.domain.kernel_errors.KernelError` is stamped
+        ``transient=False`` because the same inputs reproduce it
+        (:func:`~agentdag.application.kernel.dispatch._run_body`). The kind must be one
+        the coordinator runs as CODE: design 2.3 rule 5 owns a model node's retry and
+        escalates a rank rather than repeating in place, so retrying one here would
+        quietly do the thing that rule declined to do. And the attempt number must be
+        under ``policy.max_attempts``, which is 2 in the shipped table - one retry,
+        mirroring rule 5's single re-dispatch.
+
+        This is deliberately NOT a new journal event. ``attempt`` is an identity field
+        (design 3.2), so each attempt already appends its own ``started`` and ``result``
+        lines under its own key: the failure is never overwritten, and a replay is served
+        both records in order. A replay does depend on the POLICY, though - a table whose
+        ``max_attempts`` was lowered since the run stops retrying earlier than the run it
+        is replaying did, the same way every other policy-read value behaves.
+
+        Args:
+            spec: The spec as dispatched, whose ``attempt`` is the one just run.
+            record: What that attempt produced.
+
+        Returns:
+            Whether to dispatch ``attempt + 1``.
+        """
+        if spec.attempt + 1 >= self.policy.max_attempts or spec.kind not in CODE_KINDS:
+            return False
+        return record.status is NodeStatus.FAILED and record.error is not None and record.error.transient
 
     def _charge(self, record: ResultRecord) -> None:
         """Add a record's charged tokens to the run's per-row totals.

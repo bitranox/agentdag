@@ -125,9 +125,16 @@ the index is consulted, a replay that serves everything must produce the same mu
 journal's own started lines already hold. If it does not, the workflow program is not deterministic,
 and that is caught rather than discovered later.
 
-**Not yet:** a failed code node is final in this version. Its record is served from the journal on
-every resume and no command mints a new attempt, so a run that failed on a gate can only be started
-again as a new run. The retry path is a later milestone.
+A code node whose failure was TRANSIENT is re-dispatched in place, as a new attempt, up to a limit
+the policy table carries (two attempts as shipped, so one retry). The record decides it, not the
+status: a red gate is a failure with no error at all, because it ran and reported a real answer, and
+a configuration or program bug is stamped not transient because the same inputs reproduce it.
+Neither is retried. A model node is not retried here either - the rule for climbing a rank is a
+later milestone.
+
+**Not yet:** once those attempts are spent, the failure is final. The record is served from the
+journal on every resume and no command mints a further attempt, so a run that exhausted a gate's
+attempts can still only be started again as a new run.
 
 ## 6. Suspend and resume: a human decision as control flow
 

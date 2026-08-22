@@ -106,6 +106,7 @@ class Thresholds(BaseModel):
     reduce_tree_fanin: int
     journal_max_lines: int
     max_continuations: int
+    max_attempts: int
 
 
 class RunLimits(BaseModel):
@@ -181,7 +182,7 @@ def resolve_row(table: PolicyTable, *, tier_role: TierRole | None, model: str | 
         ...     "escalation": {"max_hops": 1, "then": "approve", "no_higher_row": "approve",
         ...                    "on_auth_failure": "fail_run"},
         ...     "thresholds": {"min_node_tokens": 1, "reduce_tree_fanin": 1, "journal_max_lines": 1,
-        ...                    "max_continuations": 1},
+        ...                    "max_continuations": 1, "max_attempts": 1},
         ...     "run_limits": {"tokens_per_row": {}, "deadline_ceiling_s": 1.0, "per_kind_ceiling": {},
         ...                    "planner_kinds": [], "top_role_budget_floor": 0.0},
         ...     "resources": [],
