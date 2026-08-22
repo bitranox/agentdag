@@ -475,7 +475,15 @@ def _refuse_an_unreachable_grant(
     The walk is deliberately OPTIMISTIC about the automatic step: it checks the attempt ceiling
     but not transience or kind, which live on a spec this process does not have. So it can only
     over-estimate how far a launch reaches, which means it never refuses a grant that would have
-    worked - it just catches fewer of the dead ones than a coordinator-side check could.
+    worked - it just catches fewer of the dead ones than a coordinator-side check could. That is
+    the direction to be wrong in: a missed dead grant is what the coordinator meets anyway, while
+    a wrong refusal blocks an operator who is standing right there.
+
+    Every attempt BELOW the target has a record by construction - reaching attempt ``a`` required
+    attempt ``a - 1`` to return one - with one exception, the dedup case: a served record names
+    whichever node ran the work FIRST, so a twin's chain has a hole here and the walk refuses. That
+    is the same unreachable case ``_granted`` documents, and it fails toward a refusal rather than
+    a dead grant.
 
     Args:
         records: Every record for this node, in journal order.
