@@ -32,7 +32,7 @@ from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
 from agentdag.domain.journal import ResultLine, RunSummaryLine, dump_journal_line, parse_journal_line
 from agentdag.domain.kernel_errors import LockHeld, RunRefused, WorkflowNotFound
-from agentdag.domain.models import NodeStatus, ResultRecord, RunStatus, Tokens
+from agentdag.domain.models import NodeStatus, ResultRecord, RetryGrant, RunStatus, Tokens
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -322,3 +322,24 @@ def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_p
     assert not run_dir.journal_path.exists()
     assert not run_dir.state_path.exists()
     assert not (run_dir.root / "lock").exists()
+
+
+@pytest.mark.os_agnostic
+def test_a_launch_folds_the_retry_grants_an_operator_recorded_while_nothing_was_running(tmp_path: Path) -> None:
+    """The fold has to be WIRED, not merely to exist: an operator records a grant with no
+    coordinator running, so the launch that acts on it is the one that must journal it -
+    before anything dispatches, so it is already in the index when the failure is served back.
+    """
+    executor = CommittingExecutor()
+    _, run_dir = launch(tmp_path, executor)
+    granted_key = "v2:sha256:" + "ab" * 32
+    run_dir.write_retry_grant(
+        RetryGrant(node_id="g_test@0", key=granted_key, reason="fixed by hand", by="me", token_id="local")
+    )
+
+    launch(tmp_path, executor, resume="retry")
+
+    lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
+    grants = [line for line in lines if line.event == "retry_grant"]
+    assert [line.key for line in grants] == [granted_key]
+    assert [line.reason for line in lines if line.event == "resume"] == ["retry"]

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ...domain.journal import JournalLine
-    from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RunState
+    from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RetryGrant, RunState
     from ..graph_a_ports import GatePort, GitPort
     from .notify import Notifier
 
@@ -66,6 +66,7 @@ __all__ = [
     "PathResolver",
     "Policy",
     "ResolvedRow",
+    "RetryGrantFileRef",
     "RunDir",
     "RunLock",
     "Sandbox",
@@ -154,8 +155,8 @@ class RunDir(Protocol):
 
     One run owns one directory (``root``); everything else is a path under it,
     created on demand by the method that names it. ``journal_path``,
-    ``audit_path``, ``state_path`` and ``decisions_dir`` are plain attributes
-    rather than methods because every caller needs the same fixed path, not a
+    ``audit_path``, ``state_path``, ``decisions_dir`` and ``retries_dir`` are plain
+    attributes rather than methods because every caller needs the same fixed path, not a
     fresh one built from an argument.
     """
 
@@ -164,6 +165,7 @@ class RunDir(Protocol):
     audit_path: Path
     state_path: Path
     decisions_dir: Path
+    retries_dir: Path
 
     def node_dir(self, node_id: str, hash8: str) -> Path:
         """Return (creating it, owner-only) ``nodes/<node_id>/<hash8>/``."""
@@ -257,6 +259,33 @@ class RunDir(Protocol):
         """Return every recorded decision in a deterministic order; reserved cancel files excluded."""
         ...
 
+    def write_retry_grant(self, grant: RetryGrant) -> None:
+        """Publish ``grant`` write-once per (node id, key); refuses a second write for the same pair.
+
+        One grant buys exactly one attempt, so a doubled ``run retry`` must refuse rather
+        than mint a second. A LATER failure of the same node is a different key and so a
+        different file, which is what lets an operator grant again after a granted attempt
+        fails.
+
+        Raises:
+            ValueError: ``grant.node_id`` could escape ``retries/``, or ``grant.key`` does
+                not shorten to eight hex characters.
+            FileExistsError: this (node id, key) already has a grant.
+        """
+        ...
+
+    def retry_grant_files(self) -> list[RetryGrantFileRef]:
+        """Every retry grant file's (node id, short hash, path), sorted; no file is opened."""
+        ...
+
+    def read_retry_grant_file(self, ref: RetryGrantFileRef) -> RetryGrant:
+        """Parse the grant at ``ref.path``, naming the path when it cannot be read.
+
+        Raises:
+            RunRefused: the file is empty or does not parse as a retry grant.
+        """
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class DecisionFileRef:
@@ -265,6 +294,20 @@ class DecisionFileRef:
     Returned by :meth:`RunDir.decision_files`, and handed straight back to
     :meth:`RunDir.read_decision_file` once a caller has decided the file is worth
     opening.
+    """
+
+    node_id: str
+    short_hash: str
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class RetryGrantFileRef:
+    """One retry grant file's (node id, short hash) read from its FILENAME alone - no parse, no I/O.
+
+    ``short_hash`` is ``hash8`` of the granted journal KEY, which is what the coordinator
+    compares against the keys it has already folded, so a grant file that becomes unreadable
+    after folding never blocks a later launch.
     """
 
     node_id: str

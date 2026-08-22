@@ -65,8 +65,8 @@ if TYPE_CHECKING:
 
 __all__ = ["RunOutcome", "run_coordinator"]
 
-_ResumeReason = Literal["decision", "crash", "restart", "manual"]
-_RESUME_REASONS: tuple[_ResumeReason, ...] = ("decision", "crash", "restart", "manual")
+_ResumeReason = Literal["decision", "crash", "restart", "manual", "retry"]
+_RESUME_REASONS: tuple[_ResumeReason, ...] = ("decision", "crash", "restart", "manual", "retry")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +133,7 @@ async def run_coordinator(
         by: Who launched this; recorded on the opening journal line and, on a first
             start only, as the run's owner.
         token_id: The credential this launch authenticated with, recorded likewise.
-        resume_reason: Why this launch is a resume (``decision``, ``crash``,
+        resume_reason: Why this launch is a resume (``decision``, ``crash``, ``retry``,
             ``restart`` or ``manual``); ignored on a run's first start.
         notifier: Where this launch's run events go. Required, not defaulted: every
             other port here is, and a notification channel that can be silently
@@ -147,7 +147,7 @@ async def run_coordinator(
         LockHeld: another live coordinator holds ``run_dir``.
         NondeterministicCallError: ``workflow``'s module reaches for the clock or randomness.
         RunRefused: ``args`` is not the workflow's own args model, or ``resume_reason``
-            is not one of the four known reasons.
+            is not one of the known reasons.
         Exception: whatever the program raised, after the run is marked ``failed``.
     """
     token = lock.acquire(run_dir.root, holder)
@@ -184,6 +184,7 @@ async def run_coordinator(
             parallel=parallel,
         )
         co.fold_decisions()
+        co.fold_retry_grants()
         _write_state(co, status=RunStatus.RUNNING, cursor=None, by=by)
         return await _drive(co, workflow=workflow, args=args, by=by, replay_seconds=replay_seconds, notifier=notifier)
     finally:
@@ -351,7 +352,7 @@ def _bookend(
 
 
 def _reason(resume_reason: str | None) -> _ResumeReason:
-    """Narrow a caller's resume reason to the four the journal line accepts.
+    """Narrow a caller's resume reason to the ones the journal line accepts.
 
     Args:
         resume_reason: The reason given, or ``None`` for the unremarkable case.
@@ -360,7 +361,7 @@ def _reason(resume_reason: str | None) -> _ResumeReason:
         The reason, defaulting to ``"manual"``.
 
     Raises:
-        RunRefused: the reason is not one of the four.
+        RunRefused: the reason is not one of the known ones.
 
     Example:
         >>> _reason(None), _reason("crash")

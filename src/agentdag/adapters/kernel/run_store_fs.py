@@ -27,16 +27,16 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from ...application.kernel.cancel import WHOLE_RUN_NODE_ID
-from ...application.kernel.ports import DecisionFileRef
+from ...application.kernel.ports import DecisionFileRef, RetryGrantFileRef
 from ...domain.kernel_errors import RunRefused
 from ...domain.keys import hash8
-from ...domain.models import Decision, MarkerPhase, RunState
+from ...domain.models import Decision, MarkerPhase, RetryGrant, RunState
 
 __all__ = ["FsRunDir"]
 
 _OWNER_ONLY_DIR = 0o700
 _OWNER_ONLY_FILE = 0o600
-_SUBDIRS = ("decisions", "intents", "artefacts", "wt", "nodes", "manifest", "done", "attempted")
+_SUBDIRS = ("decisions", "retries", "intents", "artefacts", "wt", "nodes", "manifest", "done", "attempted")
 _HEX8 = re.compile(r"[0-9a-f]{8}")
 """The shape a payload hash must shorten to before it may name a decision file."""
 
@@ -82,6 +82,7 @@ class FsRunDir:
         self.audit_path = root / "audit.jsonl"
         self.state_path = root / "state.json"
         self.decisions_dir = root / "decisions"
+        self.retries_dir = root / "retries"
 
     @classmethod
     def create(cls, runs_base: Path, run_id: str) -> FsRunDir:
@@ -401,6 +402,85 @@ class FsRunDir:
             RunRefused: one of the files exists but is empty or fails to parse.
         """
         return [self.read_decision_file(ref) for ref in self.decision_files()]
+
+    def write_retry_grant(self, grant: RetryGrant) -> None:
+        """Publish ``grant`` as ``retries/<node_id>.<hash8(key)>.json``, once.
+
+        The same temp-then-``os.link`` publish :meth:`write_decision` uses, and for the same
+        reason: the reader-visible path is either absent or complete, never an empty stub a
+        later write would mistake for a real grant.
+
+        Write-once is per (node id, KEY). One grant buys exactly one attempt, so a doubled
+        ``run retry`` raises rather than minting a second. A LATER failure of the same node is
+        a different key and therefore a different file, which is what lets an operator grant
+        again after a granted attempt fails.
+
+        ``retries/`` is created on demand rather than assumed: run directories laid out before
+        this inbox existed have no such directory, and one of them must still be able to take
+        a grant.
+
+        Args:
+            grant: The grant to record; ``grant.node_id`` and ``grant.key`` name its file.
+
+        Raises:
+            ValueError: ``grant.node_id`` could escape ``retries/`` (a path separator, ``..``,
+                or the whole-run cancel sentinel), or ``grant.key`` does not shorten to eight
+                hex characters.
+            FileExistsError: this (node id, key) already has a grant.
+        """
+        final = self._retry_grant_path(grant.node_id, grant.key)
+        self._mkdir_owner_only(self.retries_dir)
+        tmp_path = self._write_temp_file(self.retries_dir, grant.model_dump_json(indent=1))
+        try:
+            os.link(tmp_path, final)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def retry_grant_files(self) -> list[RetryGrantFileRef]:
+        """Every retry grant file's (node id, short hash, path), ascending by filename.
+
+        Identity only, read from each FILENAME - no file is opened - so the coordinator can
+        skip a grant it has already folded before paying to parse it, and a file corrupted
+        AFTER folding never blocks a later launch. Sorted rather than in directory order, so
+        folding the same directory twice appends its journal lines in the same order both
+        times; directory order is filesystem-dependent.
+
+        ``retries/`` holds nothing but grants - unlike ``decisions/``, which also carries the
+        reserved cancel shapes - so there is nothing to exclude here.
+
+        Returns:
+            Every grant file's identity, ascending by filename; empty when the directory does
+            not exist, which is what a run laid out before this inbox looks like.
+        """
+        return [self._retry_grant_file_ref(path) for path in sorted(self.retries_dir.glob("*.json"))]
+
+    @staticmethod
+    def _retry_grant_file_ref(path: Path) -> RetryGrantFileRef:
+        """Split ``<node_id>.<short_hash>.json`` from ``path``'s name alone; no I/O."""
+        stem = path.name.removesuffix(".json")
+        node_id, _, short_hash = stem.rpartition(".")
+        return RetryGrantFileRef(node_id=node_id, short_hash=short_hash, path=path)
+
+    def read_retry_grant_file(self, ref: RetryGrantFileRef) -> RetryGrant:
+        """Parse the grant at ``ref.path``, naming the path when it cannot be read.
+
+        Raises:
+            RunRefused: the file is empty or does not parse as a retry grant.
+        """
+        try:
+            return RetryGrant.model_validate_json(ref.path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise RunRefused(f"retry grant file {ref.path} is unreadable: {exc}") from exc
+
+    def _retry_grant_path(self, node_id: str, key: str) -> Path:
+        """Return ``retries/<node_id>.<hash8(key)>.json``, both halves validated.
+
+        Raises:
+            ValueError: ``node_id`` contains a path separator or ``..``, or ``key`` does not
+                shorten to eight hex characters (which a traversal attempt never does).
+        """
+        self._validate_node_id(node_id)
+        return self.retries_dir / f"{node_id}.{self._short_hash(key)}.json"
 
     @staticmethod
     def _parse_decision(path: Path) -> Decision:

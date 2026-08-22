@@ -21,7 +21,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow, stamp
-from agentdag.domain.journal import ResultLine, RetryGrantLine
+from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
     Budget,
@@ -621,3 +621,22 @@ def test_a_grant_naming_a_key_whose_record_passed_changes_nothing(tmp_path: Path
     asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
 
     assert gate.calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_replay_after_a_granted_attempt_dispatches_nothing_new(tmp_path: Path) -> None:
+    """The folded grant stays in the journal for ever, so a later replay re-makes the same
+    decision in the same order and the key sequence still matches the journal's own."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    grant_last_failure(run_dir, node_id="g_test@1")
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    replay = gated(run_dir, gate)
+    asyncio.run(replay.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    started = [line.key for line in journal.lines() if isinstance(line, StartedLine)]
+    assert replay.dispatcher.dispatched_keys == started
+    assert gate.calls == 2

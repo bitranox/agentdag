@@ -17,6 +17,8 @@ Contents:
     * :class:`LockHolder`, :class:`RunState` - the run's own state.
     * :class:`ApproveOption`, :class:`ApprovePayload`, :class:`Decision` - the approve
       node's suspend payload and its recorded decision (3.4).
+    * :class:`RetryGrant` - an operator granting a failed node one more attempt, written
+      as ``retries/<node_id>.<hash8>.json`` before it is folded into the journal.
     * :class:`CancelIntent` - a whole-run cancel request, written as
       ``decisions/_run.cancel.json`` before it is folded into the journal (3.4, O25).
 """
@@ -49,6 +51,7 @@ __all__ = [
     "NodeStatus",
     "Requirement",
     "ResultRecord",
+    "RetryGrant",
     "RunState",
     "RunStatus",
     "SandboxGuarantees",
@@ -447,6 +450,37 @@ class Decision(BaseModel):
     by: str
     token_id: str
     payload_hash: str = Field(min_length=1)
+
+
+class RetryGrant(BaseModel):
+    """An operator granting ONE more attempt to a failed node (``agentdag run retry``).
+
+    Written as ``retries/<node_id>.<hash8(key)>.json`` and folded into the journal as a
+    :class:`~agentdag.domain.journal.RetryGrantLine` by the next launch, the way an approve
+    :class:`Decision` is folded from ``decisions/``. Carries no ``at``: the timestamp is
+    stamped by whatever FOLDS it, from the injected clock at that moment (design 3.3), never
+    by the CLI process, which has no coordinator clock to read.
+
+    ``key`` is the journal key of the FAILED attempt this grant answers for, and it is the
+    grant's operative half. Because the attempt it authorises runs under ``attempt + 1`` - an
+    identity field - that attempt lands on a DIFFERENT key, so the grant can never be matched
+    twice. One grant, one attempt, with no counter to keep and no way for an unattended run to
+    loop on it.
+
+    ``node_id`` is what the operator named and what the file is called. It is deliberately NOT
+    part of the match the coordinator makes: a journal key carries no node id (design 3.2's
+    identity table), so two nodes whose work is identical share one key and the second is served
+    the first's record. Matching the pair strictly would retry one twin and leave the other on
+    the stale failure.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    node_id: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+    reason: str = ""
+    by: str = Field(min_length=1)
+    token_id: str = Field(min_length=1)
 
 
 class CancelIntent(BaseModel):

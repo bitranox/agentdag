@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ from agentdag.domain.models import (
     NodeSpec,
     NodeStatus,
     ResultRecord,
+    RetryGrant,
     RunState,
     RunStatus,
 )
@@ -922,3 +924,69 @@ def test_approve_accepts_a_push_list_at_the_bounds(tmp_path: Path) -> None:
 
     with pytest.raises(Suspended):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text=at_the_line_bound)))
+
+
+def grant(node_id: str, key: str, *, reason: str = "fixed by hand") -> RetryGrant:
+    """Build the grant ``run retry`` records for a failed attempt."""
+    return RetryGrant(node_id=node_id, key=key, reason=reason, by="me", token_id="local")
+
+
+@pytest.mark.os_agnostic
+def test_a_retry_grant_is_write_once_per_node_and_key(tmp_path: Path) -> None:
+    """One grant buys one attempt, so a doubled command must not mint a second."""
+    _co, rd = coordinator(tmp_path)
+    key = "v2:sha256:" + "ab" * 32
+
+    rd.write_retry_grant(grant("g_test@1", key))
+
+    with pytest.raises(FileExistsError):
+        rd.write_retry_grant(grant("g_test@1", key))
+
+
+@pytest.mark.os_agnostic
+def test_a_second_grant_for_a_later_failure_of_the_same_node_is_a_new_file(tmp_path: Path) -> None:
+    """A grant is bound to the KEY, so the attempt it authorises can itself be granted."""
+    _co, rd = coordinator(tmp_path)
+
+    rd.write_retry_grant(grant("g_test@1", "v2:sha256:" + "ab" * 32))
+    rd.write_retry_grant(grant("g_test@1", "v2:sha256:" + "cd" * 32))
+
+    assert len(rd.retry_grant_files()) == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_retry_grant_refuses_a_node_id_that_could_escape_its_directory(tmp_path: Path) -> None:
+    _co, rd = coordinator(tmp_path)
+
+    with pytest.raises(ValueError, match="unsafe node id"):
+        rd.write_retry_grant(grant("../../etc/passwd", "v2:sha256:" + "ab" * 32))
+
+
+@pytest.mark.os_agnostic
+def test_a_run_directory_laid_out_before_retries_existed_still_takes_a_grant(tmp_path: Path) -> None:
+    """Runs already on disk predate this inbox, so the directory is made on demand."""
+    _co, rd = coordinator(tmp_path)
+    shutil.rmtree(rd.retries_dir)
+
+    assert rd.retry_grant_files() == []
+
+    rd.write_retry_grant(grant("g_test@1", "v2:sha256:" + "ab" * 32))
+
+    assert len(rd.retry_grant_files()) == 1
+
+
+@pytest.mark.os_agnostic
+def test_folding_journals_every_grant_once_and_a_second_fold_adds_nothing(tmp_path: Path) -> None:
+    co, rd = coordinator(tmp_path)
+    key = "v2:sha256:" + "ab" * 32
+    rd.write_retry_grant(grant("g_test@1", key))
+
+    co.fold_retry_grants()
+
+    assert co.dispatcher.index.grants == {key}
+    lines = [line for line in co.dispatcher.journal.lines() if line.event == "retry_grant"]
+    assert [line.node_id for line in lines] == ["g_test@1"]
+
+    co.fold_retry_grants()
+
+    assert len([line for line in co.dispatcher.journal.lines() if line.event == "retry_grant"]) == 1

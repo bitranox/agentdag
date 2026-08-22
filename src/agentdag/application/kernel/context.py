@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from ...domain.journal import ApproveDecisionLine
+from ...domain.journal import ApproveDecisionLine, RetryGrantLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import (
@@ -837,6 +837,42 @@ class Coordinator:
                 )
             )
         self.dispatcher.reload_decisions()
+
+    def fold_retry_grants(self) -> None:
+        """Journal every retry grant file not already folded, then refresh the index.
+
+        Called by ``run.py`` on a relaunch beside :meth:`fold_decisions`, and for the same
+        reason: an operator records a grant while no coordinator is running, so the launch
+        that acts on it is the one that must fold it in - before anything dispatches, so the
+        grant is already in the index when the failed node's record is served back.
+
+        A grant is identified by the KEY it names, matched against the keys already folded, so
+        a grant file that becomes unreadable AFTER it was folded is skipped before anything
+        tries to open it. Which files under ``retries/`` are grants at all is
+        :meth:`~agentdag.application.kernel.ports.RunDir.retry_grant_files`'s job; the layout
+        belongs to the port.
+
+        Nothing is ever removed. A folded grant stays in the journal for ever, which is what
+        makes a later replay re-make the same decisions in the same order, and it cannot cause
+        a second retry: the attempt it authorises runs under ``attempt + 1`` and so lands on a
+        different key.
+        """
+        folded = {hash8(key) for key in self.dispatcher.index.grants}
+        for ref in self.run_dir.retry_grant_files():
+            if ref.short_hash in folded:
+                continue
+            granted = self.run_dir.read_retry_grant_file(ref)
+            self.dispatcher.journal.append(
+                RetryGrantLine(
+                    node_id=granted.node_id,
+                    key=granted.key,
+                    reason=granted.reason,
+                    by=granted.by,
+                    token_id=granted.token_id,
+                    at=stamp(self.clock),
+                )
+            )
+        self.dispatcher.reload_grants()
 
     async def _dispatch(self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body) -> ResultRecord:
         """Dispatch through the run's dispatcher, then charge - the ONE path every primitive uses.

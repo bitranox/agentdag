@@ -106,6 +106,21 @@ class Dispatcher:
         """
         self.index.decisions = build_replay_index(self.journal.lines()).decisions
 
+    def reload_grants(self) -> None:
+        """Re-fold :attr:`journal`'s lines and refresh ONLY :attr:`index`'s retry grants.
+
+        Called by :meth:`~agentdag.application.kernel.context.Coordinator.fold_retry_grants`
+        right after appending fresh ``retry_grant`` lines. The index was built at
+        construction, BEFORE those lines existed, so without this the grants an operator
+        recorded while no coordinator ran would be invisible to the launch that folded them.
+
+        Replaces only ``index.grants``, for the reason :meth:`reload_decisions` states about
+        its own field: nothing else in the journal can have changed since construction, and
+        re-deriving the other fields here would paper over a violation of that rather than
+        leaving it visible.
+        """
+        self.index.grants = build_replay_index(self.journal.lines()).grants
+
     @classmethod
     def from_journal(cls, *, journal: Journal, run_dir: RunDir, clock: Clock) -> Dispatcher:
         """Build a dispatcher whose replay index is folded from ``journal``'s current lines.
