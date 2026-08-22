@@ -866,11 +866,12 @@ class Coordinator:
             input_obj: The assembled input.
             body: What to run when the journal has no result for this key.
 
-        Also where a transient failure earns another attempt (M3): the loop below re-dispatches
-        the SAME spec with ``attempt + 1`` while :meth:`_retries` says so, which is a different
-        journal key and therefore a genuine re-run rather than the old record served back. The
-        decision is a pure function of the record just returned, so a replay makes the same
-        choices in the same order.
+        Also where a failure earns another attempt (M3): the loop below re-dispatches the SAME
+        spec with ``attempt + 1`` while :meth:`_retries` says so, which is a different journal
+        key and therefore a genuine re-run rather than the old record served back. The decision
+        is a pure function of the record just returned and of what the JOURNAL holds - the
+        automatic rule plus any folded ``retry_grant`` - so a replay makes the same choices in
+        the same order.
 
         Returns:
             The record of the LAST attempt, already charged: freshly built with
@@ -906,7 +907,50 @@ class Coordinator:
         return record
 
     def _retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
-        """Return whether this failure earns another attempt (M3's code-node retry).
+        """Return whether this failure earns another attempt: the automatic rule, or an operator's grant.
+
+        Two INDEPENDENT reasons, deliberately not one widened rule. :meth:`_auto_retries` is
+        decision 11 exactly as it shipped, so an unattended run behaves as it did before the
+        grant existed; :meth:`_granted` is a person answering for a failure the automatic rule
+        is right to refuse.
+
+        Args:
+            spec: The spec as dispatched, whose ``attempt`` is the one just run.
+            record: What that attempt produced.
+
+        Returns:
+            Whether to dispatch ``attempt + 1``.
+        """
+        return self._auto_retries(spec, record) or self._granted(record)
+
+    def _granted(self, record: ResultRecord) -> bool:
+        """Return whether an operator has granted this exact failed key another attempt (``run retry``).
+
+        The only guard is that the record FAILED. Transience, kind and the attempt cap are
+        :meth:`_auto_retries`'s business and are bypassed here on purpose: a red gate is a real
+        answer to the machine, but a person who fixed the repo by hand changed something no
+        journal key can see, and without this the failure is served back on every later launch.
+
+        The match is on the key ALONE, though the grant records the node id the operator named.
+        A journal key carries no node id (design 3.2's identity table), so two nodes whose work
+        is identical share one key and the second is SERVED the first's record - matching the
+        pair strictly would retry one twin and strand the other on the stale failure.
+
+        This cannot loop. The attempt it authorises is dispatched under ``attempt + 1``, which
+        is an identity field, so it produces a different key and the grant never matches twice.
+        That is why a grant needs no counter and no consumed flag: one grant buys one attempt,
+        and the journal line can stay folded for ever without changing a later replay.
+
+        Args:
+            record: The record just returned, freshly built or served from the journal.
+
+        Returns:
+            Whether an operator has granted ``record``'s key another attempt.
+        """
+        return record.status is NodeStatus.FAILED and record.input_hash in self.dispatcher.index.grants
+
+    def _auto_retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
+        """Return whether this failure earns another attempt on its own (M3's code-node retry).
 
         Three conditions, and each is load-bearing. The record must carry a TRANSIENT
         error: a red gate is ``FAILED`` with no ``error`` at all because it ran and

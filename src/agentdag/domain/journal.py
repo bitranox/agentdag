@@ -1,4 +1,4 @@
-"""Journal lines (design 3.1/3.2): the eight events slice 1 and M3's cancel add, one JSON object per line.
+"""Journal lines (design 3.1/3.2): the nine events slice 1 and M3 add, one JSON object per line.
 
 Contents:
     * :class:`StartedLine`, :class:`ResultLine`, :class:`RunStartedLine`,
@@ -7,7 +7,9 @@ Contents:
     * :class:`CancelRequestedLine`, :class:`CancelLine` - the two M3 adds for
       ``run cancel`` (design 3.4, O25): the intent folded into the journal, and its
       later, VERIFIED outcome once the run's scope is confirmed empty.
-    * :data:`JournalLine` - the discriminated union of the eight.
+    * :class:`RetryGrantLine` - M3's ``run retry``: an operator granting one spent node
+      another attempt, folded in from ``retries/<node_id>.<hash8>.json``.
+    * :data:`JournalLine` - the discriminated union of the nine.
     * :func:`parse_journal_line` - one JSON object -> the typed line.
     * :func:`dump_journal_line` - the typed line -> one compact, sorted-key JSON line.
 """
@@ -28,6 +30,7 @@ __all__ = [
     "JournalLine",
     "ResultLine",
     "ResumeLine",
+    "RetryGrantLine",
     "RunStartedLine",
     "RunSummaryLine",
     "StartedLine",
@@ -83,7 +86,7 @@ class ResumeLine(_Line):
 
     event: Literal["resume"] = "resume"
     run_id: str
-    reason: Literal["decision", "crash", "restart", "manual"]
+    reason: Literal["decision", "crash", "restart", "manual", "retry"]
     by: str
     token_id: str
 
@@ -149,6 +152,34 @@ class CancelLine(_Line):
     verified: bool
 
 
+class RetryGrantLine(_Line):
+    """An operator granting ONE more attempt to a node whose attempts are spent (``run retry``).
+
+    Folded in from ``retries/<node_id>.<hash8(key)>.json`` by
+    :meth:`~agentdag.application.kernel.context.Coordinator.fold_retry_grants`, the way an
+    approve :class:`ApproveDecisionLine` is folded from ``decisions/``. Once folded it stays
+    in the journal, so every later replay re-makes the same decision in the same order.
+
+    ``key`` is the journal key of the FAILED attempt being granted another go, and it is the
+    grant's operative half: the retry is dispatched under ``attempt + 1``, which is an identity
+    field, so it produces a DIFFERENT key and this grant can never match twice. That is what
+    makes it self-limiting - no counter, no consumed flag, and no way for an unattended run to
+    loop on a grant nobody withdrew.
+
+    ``node_id`` is what the operator NAMED and what the grant file is called; it is deliberately
+    not part of the match. A journal key carries no node id (design 3.2's identity table), so two
+    nodes whose work is identical share one key and the second is served the first's record -
+    matching the pair strictly would retry one twin and strand the other on the stale failure.
+    """
+
+    event: Literal["retry_grant"] = "retry_grant"
+    node_id: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+    reason: str
+    by: str
+    token_id: str
+
+
 class RunSummaryLine(_Line):
     """The drift signals of design 3.5, written at the end of every launch that reaches ``done``.
 
@@ -182,10 +213,11 @@ JournalLine = Annotated[
     | ApproveDecisionLine
     | CancelRequestedLine
     | CancelLine
+    | RetryGrantLine
     | RunSummaryLine,
     Field(discriminator="event"),
 ]
-"""The discriminated union of every journal line slice 1 and M3's cancel emit, keyed on ``event``."""
+"""The discriminated union of every journal line slice 1 and M3 emit, keyed on ``event``."""
 
 _ADAPTER: TypeAdapter[JournalLine] = TypeAdapter(JournalLine)
 

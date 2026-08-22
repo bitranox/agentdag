@@ -9,7 +9,7 @@ import pytest
 
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.application.kernel.replay import build_replay_index
-from agentdag.domain.journal import ApproveDecisionLine, ResultLine, RunStartedLine, StartedLine
+from agentdag.domain.journal import ApproveDecisionLine, ResultLine, RetryGrantLine, RunStartedLine, StartedLine
 from agentdag.domain.models import NodeStatus, ResultRecord
 
 if TYPE_CHECKING:
@@ -110,3 +110,21 @@ def test_journal_files_are_owner_only_and_a_torn_last_line_is_reported_not_swall
 
     with pytest.raises(ValueError, match="line 2"):
         j.lines()
+
+
+@pytest.mark.os_agnostic
+def test_a_retry_grant_line_round_trips_and_folds_into_the_index_by_key(tmp_path: Path) -> None:
+    j = JsonlJournal(tmp_path / "journal.jsonl", tmp_path / "audit.jsonl")
+    j.append(
+        RetryGrantLine(node_id="g_test@0", key=key(7), reason="fixed the import", by="me", token_id="local", at=AT)
+    )
+
+    line = j.lines()[0]
+    assert line.event == "retry_grant"
+    assert line.node_id == "g_test@0"
+    assert line.key == key(7)
+
+    idx = build_replay_index(j.lines())
+    # the MATCH is on the key alone: a key carries no node id, so two nodes sharing one
+    # key share the grant rather than one twin retrying and the other keeping the failure
+    assert idx.grants == {key(7)}

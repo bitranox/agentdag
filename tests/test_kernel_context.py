@@ -20,8 +20,8 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
-from agentdag.application.kernel.ports import ResolvedRow
-from agentdag.domain.journal import ResultLine
+from agentdag.application.kernel.ports import ResolvedRow, stamp
+from agentdag.domain.journal import ResultLine, RetryGrantLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
     Budget,
@@ -537,3 +537,87 @@ def test_a_work_node_is_not_retried_in_place(tmp_path: Path) -> None:
 
     assert len(executor.requests) == 1
     assert record.status == NodeStatus.FAILED
+
+
+def grant_last_failure(run_dir: FsRunDir, *, node_id: str) -> str:
+    """Append a retry grant for the journal's LATEST failed result, as ``run retry`` does.
+
+    Returns:
+        The granted key, so a test can assert the attempt that follows is a different one.
+    """
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    failed = [
+        line for line in journal.lines() if isinstance(line, ResultLine) and line.record.status is NodeStatus.FAILED
+    ]
+    key = failed[-1].key
+    journal.append(
+        RetryGrantLine(
+            node_id=node_id, key=key, reason="fixed the repo by hand", by="me", token_id="local", at=stamp(UtcClock())
+        )
+    )
+    return key
+
+
+@pytest.mark.os_agnostic
+def test_a_red_gate_runs_again_when_a_person_grants_it(tmp_path: Path) -> None:
+    """The case the automatic rule cannot reach: a red gate ran and reported a real answer,
+    so nothing retries it - but a person who fixed the repo by hand changed something no
+    journal key can see, and the failure is otherwise served back for ever."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    assert gate.calls == 1
+
+    granted = grant_last_failure(run_dir, node_id="g_test@1")
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 2
+    assert record.attempt == 1
+    assert record.input_hash != granted  # attempt is an identity field, so this is a NEW key
+
+
+@pytest.mark.os_agnostic
+def test_a_relaunch_without_a_grant_serves_the_failure_back(tmp_path: Path) -> None:
+    """The control the test above needs: without the grant, the second launch runs nothing."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 1
+    assert record.attempt == 0
+
+
+@pytest.mark.os_agnostic
+def test_a_grant_is_spent_by_the_attempt_it_authorises(tmp_path: Path) -> None:
+    """Self-limiting by construction: the granted attempt has a DIFFERENT key, so the grant
+    cannot match a second time and an unattended run can never loop on it."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    grant_last_failure(run_dir, node_id="g_test@1")
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    assert gate.calls == 2
+
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_grant_naming_a_key_whose_record_passed_changes_nothing(tmp_path: Path) -> None:
+    """The scope guard is the RECORD: a grant can only ever buy an attempt for a failure."""
+    run_dir = fresh_run_dir(tmp_path)
+    gate = FlakyGate(fails=0)
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    assert record.status == NodeStatus.DONE
+
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    journal.append(
+        RetryGrantLine(
+            node_id="g_test@1", key=record.input_hash, reason="", by="me", token_id="local", at=stamp(UtcClock())
+        )
+    )
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == 1
