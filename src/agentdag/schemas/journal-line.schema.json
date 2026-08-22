@@ -445,7 +445,7 @@
     },
     "retry_grant_line": {
       "type": "object",
-      "description": "An operator granting ONE more attempt to a node whose attempts are spent (agentdag run retry). Folded in from retries/<node_id>.<hash8(key)>.json the way an approve decision is folded from decisions/. `key` is the journal key of the FAILED attempt and is the grant's operative half: the retry is dispatched under attempt + 1, an identity field, so it produces a DIFFERENT key and the grant can never match twice. `node_id` is what the operator named and what the file is called; it is deliberately not part of the match, because a key carries no node id and two nodes whose work is identical share one.",
+      "description": "An operator granting ONE more attempt to a node whose attempts are spent (agentdag run retry). Folded in from retries/<node_id>.<hash8(key)>.json the way an approve decision is folded from decisions/. The grant is matched on the (node_id, key) PAIR. `key` is the journal key of the FAILED attempt being granted, and it is what makes the grant self-limiting: the retry is dispatched under attempt + 1, an identity field, so it produces a DIFFERENT key and the grant can never match twice. `node_id` is the other half, not decoration - a key carries no node id, so two nodes whose work is identical share one, and matching the key alone would run the authorised attempt once per twin.",
       "properties": {
         "event": {
           "const": "retry_grant"

@@ -462,16 +462,16 @@ class RetryGrant(BaseModel):
     by the CLI process, which has no coordinator clock to read.
 
     ``key`` is the journal key of the FAILED attempt this grant answers for, and it is the
-    grant's operative half. Because the attempt it authorises runs under ``attempt + 1`` - an
+    grant's self-limiting half. Because the attempt it authorises runs under ``attempt + 1`` - an
     identity field - that attempt lands on a DIFFERENT key, so the grant can never be matched
     twice. One grant, one attempt, with no counter to keep and no way for an unattended run to
     loop on it.
 
-    ``node_id`` is what the operator named and what the file is called. It is deliberately NOT
-    part of the match the coordinator makes: a journal key carries no node id (design 3.2's
-    identity table), so two nodes whose work is identical share one key and the second is served
-    the first's record. Matching the pair strictly would retry one twin and leave the other on
-    the stale failure.
+    ``node_id`` names the file and is the other HALF of the match the coordinator makes. A
+    journal key carries no node id (design 3.2's identity table), so two nodes whose work is
+    identical share one key; matching the key alone would run the authorised attempt once PER
+    twin - one grant buying N dispatches and N charges - because a freshly granted key is one
+    the journal does not hold yet, so nothing serves the retried record to the second node.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

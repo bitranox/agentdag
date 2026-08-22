@@ -624,6 +624,27 @@ def test_a_grant_naming_a_key_whose_record_passed_changes_nothing(tmp_path: Path
 
 
 @pytest.mark.os_agnostic
+def test_a_grant_reaches_only_the_node_it_names(tmp_path: Path) -> None:
+    """A journal key carries no node id, so two nodes whose work is identical share one. The
+    grant must still buy ONE attempt: matching the key alone would run the granted attempt once
+    per twin - N model dispatches and N charges from one grant, and two bodies in one worktree.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    gate = RedGate()
+    twin = gate_spec().model_copy(update={"node_id": "g_test@2"})
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(twin, argv=["make", "test"], cwd=run_dir.root))
+    grant_last_failure(run_dir, node_id="g_test@1")
+    calls_before = gate.calls
+
+    coordinator = gated(run_dir, gate)
+    asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(coordinator.gate(twin, argv=["make", "test"], cwd=run_dir.root))
+
+    assert gate.calls == calls_before + 1
+
+
+@pytest.mark.os_agnostic
 def test_a_replay_after_a_granted_attempt_dispatches_nothing_new(tmp_path: Path) -> None:
     """The folded grant stays in the journal for ever, so a later replay re-makes the same
     decision in the same order and the key sequence still matches the journal's own."""

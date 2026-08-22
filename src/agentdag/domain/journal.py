@@ -161,15 +161,16 @@ class RetryGrantLine(_Line):
     in the journal, so every later replay re-makes the same decision in the same order.
 
     ``key`` is the journal key of the FAILED attempt being granted another go, and it is the
-    grant's operative half: the retry is dispatched under ``attempt + 1``, which is an identity
+    grant's self-limiting half: the retry is dispatched under ``attempt + 1``, which is an identity
     field, so it produces a DIFFERENT key and this grant can never match twice. That is what
     makes it self-limiting - no counter, no consumed flag, and no way for an unattended run to
     loop on a grant nobody withdrew.
 
-    ``node_id`` is what the operator NAMED and what the grant file is called; it is deliberately
-    not part of the match. A journal key carries no node id (design 3.2's identity table), so two
-    nodes whose work is identical share one key and the second is served the first's record -
-    matching the pair strictly would retry one twin and strand the other on the stale failure.
+    ``node_id`` is the other half of the match, not decoration. A journal key carries no node id
+    (design 3.2's identity table), so two nodes whose work is identical share one key; matching
+    the key alone would run the authorised attempt once PER twin, because a freshly granted key
+    is one the journal does not hold yet and so nothing serves the retried record to the second.
+    The cost of the pair is that a twin keeps the stale failure until it is granted too.
     """
 
     event: Literal["retry_grant"] = "retry_grant"

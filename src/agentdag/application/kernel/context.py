@@ -458,11 +458,20 @@ class Coordinator:
         allowed = [
             *write_set,
             *other_declared,
+            # Everything the COORDINATOR or an OPERATOR writes inside the run root. The scan
+            # works from a content diff and cannot say whose write it saw, so a path here that
+            # no node can reach is a path a node must never be blamed for. `decisions/` and
+            # `retries/` are the two an operator writes into a LIVE run (run approve, run
+            # cancel, run retry), so leaving either out fails whichever branch's scan window
+            # happens to span the moment somebody answered.
             "nodes/**",
             "manifest/**",
             "intents/**",
             "artefacts/**",
             "done/**",
+            "attempted/**",
+            "decisions/**",
+            "retries/**",
             "wt/.partial-*/**",  # a staging clone mid-rename: coordinator bookkeeping, not a node write
         ]
         input_obj = {"watched": watched, "write_set": list(write_set)}
@@ -846,9 +855,12 @@ class Coordinator:
         that acts on it is the one that must fold it in - before anything dispatches, so the
         grant is already in the index when the failed node's record is served back.
 
-        A grant is identified by the KEY it names, matched against the keys already folded, so
-        a grant file that becomes unreadable AFTER it was folded is skipped before anything
-        tries to open it. Which files under ``retries/`` are grants at all is
+        A grant is identified by (node id, KEY), matched against the pairs already folded the
+        same way :meth:`fold_decisions` matches its own, so a grant file that becomes unreadable
+        AFTER it was folded is skipped before anything tries to open it. Matching the short hash
+        alone would be strictly weaker than the decision fold: two grants for different nodes
+        whose keys collide in eight hex characters would leave the second unfolded for ever.
+        Which files under ``retries/`` are grants at all is
         :meth:`~agentdag.application.kernel.ports.RunDir.retry_grant_files`'s job; the layout
         belongs to the port.
 
@@ -857,9 +869,9 @@ class Coordinator:
         a second retry: the attempt it authorises runs under ``attempt + 1`` and so lands on a
         different key.
         """
-        folded = {hash8(key) for key in self.dispatcher.index.grants}
+        folded = {(node_id, hash8(key)) for node_id, key in self.dispatcher.index.grants}
         for ref in self.run_dir.retry_grant_files():
-            if ref.short_hash in folded:
+            if (ref.node_id, ref.short_hash) in folded:
                 continue
             granted = self.run_dir.read_retry_grant_file(ref)
             self.dispatcher.journal.append(
@@ -957,9 +969,9 @@ class Coordinator:
         Returns:
             Whether to dispatch ``attempt + 1``.
         """
-        return self._auto_retries(spec, record) or self._granted(record)
+        return self._auto_retries(spec, record) or self._granted(spec, record)
 
-    def _granted(self, record: ResultRecord) -> bool:
+    def _granted(self, spec: NodeSpec, record: ResultRecord) -> bool:
         """Return whether an operator has granted this exact failed key another attempt (``run retry``).
 
         The only guard is that the record FAILED. Transience, kind and the attempt cap are
@@ -967,10 +979,16 @@ class Coordinator:
         answer to the machine, but a person who fixed the repo by hand changed something no
         journal key can see, and without this the failure is served back on every later launch.
 
-        The match is on the key ALONE, though the grant records the node id the operator named.
-        A journal key carries no node id (design 3.2's identity table), so two nodes whose work
-        is identical share one key and the second is SERVED the first's record - matching the
-        pair strictly would retry one twin and strand the other on the stale failure.
+        The match is on the (node id, key) PAIR, and the node id half is load-bearing. A
+        journal key carries no node id (design 3.2's identity table), so two nodes whose work is
+        identical share one key and the second is SERVED the first's record; matching the key
+        alone would make one grant run the authorised attempt once PER twin - N dispatches and N
+        charges - because a freshly granted key is by definition one the journal does not hold,
+        so nothing serves the retried record to the second node. The cost of the pair is that a
+        twin keeps the stale failure until it is granted too: a stale record, not repeated work.
+
+        The node id compared is the SPEC's - the node being dispatched now - never the served
+        record's, which in the dedup case names whichever node ran it first.
 
         This cannot loop. The attempt it authorises is dispatched under ``attempt + 1``, which
         is an identity field, so it produces a different key and the grant never matches twice.
@@ -978,12 +996,15 @@ class Coordinator:
         and the journal line can stay folded for ever without changing a later replay.
 
         Args:
+            spec: The node being dispatched; its ``node_id`` is half the grant's identity.
             record: The record just returned, freshly built or served from the journal.
 
         Returns:
-            Whether an operator has granted ``record``'s key another attempt.
+            Whether an operator has granted this node another attempt for ``record``'s key.
         """
-        return record.status is NodeStatus.FAILED and record.input_hash in self.dispatcher.index.grants
+        if record.status is not NodeStatus.FAILED:
+            return False
+        return (spec.node_id, record.input_hash) in self.dispatcher.index.grants
 
     def _auto_retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
         """Return whether this failure earns another attempt on its own (M3's code-node retry).

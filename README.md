@@ -302,8 +302,9 @@ A run directory (`<runs>/<run-id>/`) holds `journal.jsonl` (the append-only, rep
 log - one JSON line per event), `audit.jsonl` (a copy, written first), `state.json`
 (status, cursor, token totals), `lock` (the exclusive run lock), `launch.log` (a
 background launch's redirected stdout/stderr), and per-node subdirectories:
-`decisions/`, `intents/`, `artefacts/`, `wt/` (worktrees), `nodes/` (each dispatch's brief,
-input and record), `manifest/` (map/reduce manifests) and `done/` (apply markers).
+`decisions/` (recorded approvals), `retries/` (recorded retry grants), `intents/`,
+`artefacts/`, `wt/` (worktrees), `nodes/` (each dispatch's brief, input and record),
+`manifest/` (map/reduce manifests), and `attempted/` and `done/` (the two apply markers).
 
 The Claude executor authenticates each node from one of two sources, chosen once per CLI
 invocation and printed at `run start`: the config's `[credentials] claude_oauth_token_file`

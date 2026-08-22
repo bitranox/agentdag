@@ -243,7 +243,7 @@ config-only defaults that could differ from what the operator actually asked for
 
 @click.group("run", context_settings=CLICK_CONTEXT_SETTINGS)
 def cli_run() -> None:
-    """Start, inspect, resume and approve a kernel coordinator run."""
+    """Start, inspect, resume, approve, retry and cancel a kernel coordinator run."""
 
 
 @click.command("start", context_settings=CLICK_CONTEXT_SETTINGS)

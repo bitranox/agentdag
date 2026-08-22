@@ -34,10 +34,11 @@ class ReplayIndex:
         decisions: The LATEST approve decision per (node id, payload hash) - a decision's
             full identity, since one approve node asked about two different payloads is two
             different questions with two independent answers.
-        grants: Every key an operator has granted one more attempt for (``run retry``).
-            Keyed by the journal key ALONE: a key carries no node id, so two nodes whose
-            work is identical share one key, and the grant follows the work rather than
-            retrying one twin and stranding the other on the stale failure.
+        grants: Every (node id, journal key) an operator has granted one more attempt for
+            (``run retry``). The node id is half the identity, not decoration: a key carries
+            no node id, so two nodes whose work is identical share one, and matching the key
+            alone would run the granted attempt once PER twin - one grant buying N dispatches
+            and N charges, with two bodies writing one worktree under a parallel map.
         key_sequence: Every ``started`` key, in file order, duplicates included -
             each is a real dispatch attempt, so this is the oracle a replay-purity
             check compares a fresh run's dispatch order against.
@@ -48,7 +49,7 @@ class ReplayIndex:
     results: dict[str, ResultRecord]
     crash_window: set[str]
     decisions: dict[tuple[str, str], ApproveDecisionLine]
-    grants: set[str]
+    grants: set[tuple[str, str]]
     key_sequence: list[str]
     run_started: RunStartedLine | None
 
@@ -64,8 +65,8 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
         The folded index: a ``started`` line appends its key to ``key_sequence`` and
         adds it to ``crash_window``; the matching ``result`` moves it into ``results``
         and drops it from ``crash_window``; ``approve_decision`` overwrites the
-        (node id, payload hash) entry in ``decisions``; ``retry_grant`` adds its key to
-        ``grants``; ``run_started`` sets ``run_started``.
+        (node id, payload hash) entry in ``decisions``; ``retry_grant`` adds its
+        (node id, key) to ``grants``; ``run_started`` sets ``run_started``.
 
     Example:
         >>> from agentdag.domain.journal import ResultLine, StartedLine
@@ -84,7 +85,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
     results: dict[str, ResultRecord] = {}
     crash_window: set[str] = set()
     decisions: dict[tuple[str, str], ApproveDecisionLine] = {}
-    grants: set[str] = set()
+    grants: set[tuple[str, str]] = set()
     key_sequence: list[str] = []
     run_started: RunStartedLine | None = None
 
@@ -98,7 +99,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
         elif line.event == "approve_decision":
             decisions[line.node_id, line.payload_hash] = line
         elif line.event == "retry_grant":
-            grants.add(line.key)
+            grants.add((line.node_id, line.key))
         elif line.event == "run_started":
             run_started = line
 

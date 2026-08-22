@@ -113,7 +113,7 @@ def test_journal_files_are_owner_only_and_a_torn_last_line_is_reported_not_swall
 
 
 @pytest.mark.os_agnostic
-def test_a_retry_grant_line_round_trips_and_folds_into_the_index_by_key(tmp_path: Path) -> None:
+def test_a_retry_grant_line_round_trips_and_folds_into_the_index_by_node_and_key(tmp_path: Path) -> None:
     j = JsonlJournal(tmp_path / "journal.jsonl", tmp_path / "audit.jsonl")
     j.append(
         RetryGrantLine(node_id="g_test@0", key=key(7), reason="fixed the import", by="me", token_id="local", at=AT)
@@ -125,6 +125,6 @@ def test_a_retry_grant_line_round_trips_and_folds_into_the_index_by_key(tmp_path
     assert line.key == key(7)
 
     idx = build_replay_index(j.lines())
-    # the MATCH is on the key alone: a key carries no node id, so two nodes sharing one
-    # key share the grant rather than one twin retrying and the other keeping the failure
-    assert idx.grants == {key(7)}
+    # BOTH halves: a key carries no node id, so two nodes whose work is identical share one,
+    # and matching the key alone would run the granted attempt once per twin
+    assert idx.grants == {("g_test@0", key(7))}

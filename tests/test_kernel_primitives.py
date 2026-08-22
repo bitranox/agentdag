@@ -983,10 +983,31 @@ def test_folding_journals_every_grant_once_and_a_second_fold_adds_nothing(tmp_pa
 
     co.fold_retry_grants()
 
-    assert co.dispatcher.index.grants == {key}
+    assert co.dispatcher.index.grants == {("g_test@1", key)}
     lines = [line for line in co.dispatcher.journal.lines() if line.event == "retry_grant"]
     assert [line.node_id for line in lines] == ["g_test@1"]
 
     co.fold_retry_grants()
 
     assert len([line for line in co.dispatcher.journal.lines() if line.event == "retry_grant"]) == 1
+
+
+@pytest.mark.os_agnostic
+def test_scan_does_not_report_the_coordinators_own_inbox_writes_as_a_nodes_stray(tmp_path: Path) -> None:
+    """An operator records a grant or a decision while branches are in flight, and those land
+    INSIDE the run root that every scan walks. Only ``done/`` of that family was allowed, so a
+    write nobody dispatched failed the branch it happened to overlap - and named a coordinator
+    file the node never touched.
+    """
+    co, rd = coordinator(tmp_path)
+    (rd.root / "wt/a").mkdir(parents=True)
+    before = co.snapshot()
+
+    rd.write_retry_grant(grant("g_test@1", "v2:sha256:" + "ab" * 32))
+    rd.write_decision(approved("a", payload()))
+    rd.marker("push", "d1", phase=MarkerPhase.ATTEMPTED).touch()
+
+    result = asyncio.run(co.scan(code("g_scan@1", Kind.GATE), watched="w@1", before=before, write_set=["wt/a/**"]))
+
+    assert result.key_facts["stray"] == []
+    assert result.status == NodeStatus.DONE
