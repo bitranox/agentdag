@@ -132,9 +132,24 @@ a configuration or program bug is stamped not transient because the same inputs 
 Neither is retried. A model node is not retried here either - the rule for climbing a rank is a
 later milestone.
 
-**Not yet:** once those attempts are spent, the failure is final. The record is served from the
-journal on every resume and no command mints a further attempt, so a run that exhausted a gate's
-attempts can still only be started again as a new run.
+Once those attempts are spent, nothing automatic mints another, but a person can.
+`agentdag run retry RUN_ID NODE_ID` records a grant for that node's latest record, which must have
+failed, and relaunches. The grant is folded into the journal before anything dispatches, so the
+launch that acts on it serves the failed record back, matches the grant, and dispatches one more
+attempt.
+
+The grant covers ANY failed record, not only the transient ones the automatic rule handles, and
+that is the point of it: a person who fixes the repo by hand changes nothing a journal key can see,
+so a red gate would otherwise be served back for ever. It is bound to the key of the failed
+attempt, which makes it self-limiting - the attempt it authorises runs under `attempt + 1`, an
+identity field, so it lands on a different key and the same grant can never be matched twice. One
+grant buys one attempt; if that one fails too, the operator grants again.
+
+It is its own verb rather than a flag on `resume` because a red gate does not fail the run - graph A
+routes it into a tally row and the run reaches `done` - and `resume` refuses a done run by design.
+
+**Not yet:** nothing withdraws a grant, and nothing shows an operator which grants a run carries
+other than reading its journal.
 
 ## 6. Suspend and resume: a human decision as control flow
 
