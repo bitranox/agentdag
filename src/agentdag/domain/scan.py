@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["Manifest", "diff_manifests", "stray_paths"]
+__all__ = ["Manifest", "diff_manifests", "is_covered", "stray_paths"]
 
 Manifest = dict[str, str]
 """Relative POSIX path -> ``sha256:<hex>`` of the file's content (design C8)."""
@@ -76,7 +76,33 @@ def stray_paths(changed: Sequence[str], *, allowed: Sequence[str]) -> list[str]:
         >>> stray_paths(["wt/a/f.py", "wt/b/g.py"], allowed=["wt/a/**"])
         ['wt/b/g.py']
     """
-    return [path for path in changed if not any(_matches(path, pattern) for pattern in allowed)]
+    return [path for path in changed if not is_covered(path, allowed)]
+
+
+def is_covered(path: str, allowed: Sequence[str]) -> bool:
+    """Return whether ``path`` falls under any of ``allowed``.
+
+    The one matcher two enforcers share. The LISTS they pass differ, and correctly so:
+    :func:`stray_paths` detects after the fact from a content diff, which cannot attribute a
+    write to a node under ``parallel > 1``, so its caller must allow every node's declared
+    region; the PreToolUse write hook
+    (:func:`~agentdag.adapters.kernel.hooks_claude.deny_outside_write_set`) prevents at the
+    moment of the write and knows exactly whose write it is, so it allows only that node's
+    own. What must not differ is the GLOB SEMANTICS - a write the hook permits and the scan
+    then reports as stray would make the run's own verdict incoherent.
+
+    Args:
+        path: A relative POSIX path.
+        allowed: The globs to test it against.
+
+    Returns:
+        Whether any glob covers it.
+
+    Example:
+        >>> is_covered("wt/a/f.py", ["wt/a/**"]), is_covered("wt/b/f.py", ["wt/a/**"])
+        (True, False)
+    """
+    return any(_matches(path, pattern) for pattern in allowed)
 
 
 def _matches(path: str, pattern: str) -> bool:

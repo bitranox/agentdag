@@ -31,11 +31,12 @@ from agentdag.adapters.kernel.executor_claude import (
     ClaudeExecutor,
     CredentialCopy,
     OAuthTokenFile,
+    allowed_writes,
     append_transcript,
     input_total,
     outcome_from_usage,
 )
-from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_root
+from agentdag.adapters.kernel.hooks_claude import HookCallback, deny_bash_commands, deny_outside_write_set
 from agentdag.application.kernel.ports import ExecutorRequest
 from agentdag.domain.kernel_errors import KernelError
 
@@ -99,7 +100,7 @@ def test_write_hook_denies_paths_outside_the_isolation_root_after_realpath(tmp_p
     (root / "wt").mkdir()
     outside = tmp_path / "elsewhere.txt"
     (root / "wt" / "link").symlink_to(tmp_path)  # the symlink route out
-    hook = deny_outside_root(root)
+    hook = deny_outside_write_set(root, allowed=("wt/**",))
     assert fire(hook, "Write", {"file_path": str(root / "wt" / "a.py")}) is None
     assert fire(hook, "Write", {"file_path": str(outside)}) == "deny"
     assert fire(hook, "Edit", {"file_path": str(root / "wt" / "link" / "x")}) == "deny"
@@ -111,7 +112,7 @@ def test_write_hook_handles_notebookedit_and_fails_closed_with_no_path_key(tmp_p
     root = tmp_path / "run"
     root.mkdir()
     (root / "wt").mkdir()
-    hook = deny_outside_root(root)
+    hook = deny_outside_write_set(root, allowed=("wt/**",))
     assert fire(hook, "NotebookEdit", {"notebook_path": str(root / "wt" / "nb.ipynb")}) is None
     assert fire(hook, "NotebookEdit", {"notebook_path": str(tmp_path / "elsewhere.ipynb")}) == "deny"
     # A matched tool (Write/Edit/MultiEdit/NotebookEdit) whose input carries NEITHER
@@ -981,3 +982,59 @@ def test_run_reports_deadline_with_empty_usage_when_the_stream_ends_with_no_term
     assert outcome.key_facts.get("deadline_hit") is True
     assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
     assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_write_hook_denies_an_in_root_path_the_node_never_declared(tmp_path: Path) -> None:
+    """Prevention is per-node, so it is judged on THIS node's write set, not the run's."""
+    root = tmp_path / "run"
+    (root / "wt" / "a").mkdir(parents=True)
+    (root / "wt" / "b").mkdir(parents=True)
+    hook = deny_outside_write_set(root, allowed=("wt/a/**",))
+
+    assert fire(hook, "Write", {"file_path": str(root / "wt" / "a" / "f.py")}) is None
+    assert fire(hook, "Write", {"file_path": str(root / "wt" / "b" / "f.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_write_hook_allows_the_node_its_own_dir_when_the_caller_grants_it(tmp_path: Path) -> None:
+    """A node writes its own artefacts without declaring them; the caller adds that grant."""
+    root = tmp_path / "run"
+    node_dir = root / "nodes" / "w1" / "0000abcd"
+    node_dir.mkdir(parents=True)
+    hook = deny_outside_write_set(root, allowed=("nodes/w1/0000abcd/**",))
+
+    assert fire(hook, "Write", {"file_path": str(node_dir / "artefacts" / "out.json")}) is None
+    assert fire(hook, "Write", {"file_path": str(root / "nodes" / "w2" / "0000dcba" / "out.json")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_write_hook_with_nothing_allowed_denies_every_write(tmp_path: Path) -> None:
+    """An empty grant means write nothing, not write anywhere in the root."""
+    root = tmp_path / "run"
+    (root / "wt").mkdir(parents=True)
+    hook = deny_outside_write_set(root, allowed=())
+
+    assert fire(hook, "Write", {"file_path": str(root / "wt" / "f.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_the_executor_grants_a_node_its_write_set_and_its_own_dir(tmp_path: Path) -> None:
+    """The rule for what a node may write, in one place, derived from its own request."""
+    request = _request(tmp_path, write_set=("wt/r/**",))
+
+    allowed = allowed_writes(request)
+
+    assert "wt/r/**" in allowed
+    assert f"{request.node_dir.relative_to(request.isolation_root).as_posix()}/**" in allowed
+
+
+@pytest.mark.os_agnostic
+def test_a_node_may_still_write_in_the_worktree_it_was_given(tmp_path: Path) -> None:
+    """The composition, on the shape graph A dispatches: cwd is the declared worktree."""
+    request = _request(tmp_path, write_set=("wt/r/**",))
+    hook = deny_outside_write_set(request.isolation_root, allowed=allowed_writes(request))
+
+    assert fire(hook, "Write", {"file_path": str(request.cwd / "src" / "mod.py")}) is None
+    assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
+    assert fire(hook, "Write", {"file_path": str(request.isolation_root / "wt" / "other" / "mod.py")}) == "deny"

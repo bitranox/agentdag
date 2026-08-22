@@ -3,7 +3,7 @@ hooks, and tokens that mean what they say (design 7, M2 probe).
 
 Each node gets its own :class:`~claude_agent_sdk.ClaudeSDKClient`, run under
 ``permission_mode="dontAsk"`` with the two hooks :mod:`.hooks_claude` builds -
-``deny_outside_root`` matched against ``Write|Edit|MultiEdit|NotebookEdit``,
+``deny_outside_write_set`` matched against ``Write|Edit|MultiEdit|NotebookEdit``,
 ``deny_bash_commands`` matched against ``Bash`` - so nothing not pre-approved ever
 prompts and nothing outside the isolation root or on the bash denylist is silently
 allowed. ``setting_sources=[]`` keeps the coordinator's own project settings out of
@@ -73,7 +73,7 @@ from ...domain.kernel_errors import KernelError
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
-from .hooks_claude import deny_bash_commands, deny_outside_root
+from .hooks_claude import deny_bash_commands, deny_outside_write_set
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -484,7 +484,7 @@ def _as_sdk_hooks(callback: object) -> list[_SdkHookCallback]:
     Python type-system limitation at this boundary, not a real behavioural gap.
 
     Args:
-        callback: A hook built by :func:`~.hooks_claude.deny_outside_root` or
+        callback: A hook built by :func:`~.hooks_claude.deny_outside_write_set` or
             :func:`~.hooks_claude.deny_bash_commands`.
 
     Returns:
@@ -529,6 +529,47 @@ def _validated_effort(effort: str | None) -> EffortLevel | None:
     if effort not in _EFFORT_LEVELS:
         raise KernelError(f"unknown effort level {effort!r}; must be one of {_EFFORT_LEVELS}")
     return effort
+
+
+def allowed_writes(request: ExecutorRequest) -> tuple[str, ...]:
+    """Return the globs this node may write to, relative to its isolation root.
+
+    Its declared ``write_set``, plus its OWN node directory. The second is a grant rather
+    than something every workflow must remember to declare: ``nodes/<node_id>/<hash8>/``
+    is where the dispatcher already writes this node's brief, input and record, and where
+    an artefact a node produces for itself belongs. Nothing else is added - a sibling's
+    worktree and the run's own bookkeeping are somebody else's to write.
+
+    Args:
+        request: The dispatch request, already carrying the node's write set.
+
+    Returns:
+        The globs, relative to ``request.isolation_root``, POSIX-style.
+
+    Raises:
+        KernelError: ``request.node_dir`` is not under ``request.isolation_root``, which
+            would mean the request was built wrong - the same class of bug
+            :func:`_cwd_rel` refuses, and refused here rather than silently granting a
+            path outside the root.
+
+    Example:
+        >>> from pathlib import Path
+        >>> from agentdag.application.kernel.ports import ExecutorRequest
+        >>> request = ExecutorRequest(
+        ...     node_dir=Path("/r/nodes/w1/0000abcd"), cwd=Path("/r/wt/a"), brief="b", prompt="p",
+        ...     model="sonnet", effort=None, max_turns=1, isolation_root=Path("/r"),
+        ...     write_set=("wt/a/**",), deny_bash=(),
+        ... )
+        >>> allowed_writes(request)
+        ('wt/a/**', 'nodes/w1/0000abcd/**')
+    """
+    try:
+        node_rel = request.node_dir.relative_to(request.isolation_root).as_posix()
+    except ValueError as exc:
+        raise KernelError(
+            f"request.node_dir {request.node_dir} is not under request.isolation_root {request.isolation_root}"
+        ) from exc
+    return (*request.write_set, f"{node_rel}/**")
 
 
 def _cwd_rel(request: ExecutorRequest) -> str:
@@ -757,7 +798,9 @@ class ClaudeExecutor:
                 "PreToolUse": [
                     HookMatcher(
                         matcher="Write|Edit|MultiEdit|NotebookEdit",
-                        hooks=_as_sdk_hooks(deny_outside_root(request.isolation_root)),
+                        hooks=_as_sdk_hooks(
+                            deny_outside_write_set(request.isolation_root, allowed=allowed_writes(request))
+                        ),
                     ),
                     HookMatcher(
                         matcher="Bash", hooks=_as_sdk_hooks(deny_bash_commands(request.deny_bash or self.deny_bash))

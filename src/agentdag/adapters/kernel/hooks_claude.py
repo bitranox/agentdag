@@ -34,7 +34,8 @@ limitation, not a real behavioural gap.
 The M2 probe (``workflow/design/probes/m2-hooks-dontask.md`` in RESEARCH) measured that
 the SDK genuinely invokes these under ``permission_mode="dontAsk"`` and respects a
 ``deny`` - an in-root ``Write`` still succeeds with no prompt, an out-of-root ``Write``
-is denied with :func:`deny_outside_root`'s own reason text, and a denylisted ``Bash``
+is denied with :func:`deny_outside_write_set`'s own out-of-root reason text (the probe
+predates the write-set half of that hook), and a denylisted ``Bash``
 command is denied with :func:`deny_bash_commands`'s. It ALSO measured that neither hook
 sees a write made through ``Bash`` shell redirection instead of the matched tool - by
 design (``2026-08-17-agentdag-design.md`` section 7): the isolation-root scan (Task 13)
@@ -42,8 +43,8 @@ is the backstop for that gap, not these hooks.
 
 Contents:
     * :data:`HookResult` - the JSON-ish dict a hook returns.
-    * :func:`deny_outside_root` - factory: denies Write/Edit/MultiEdit/NotebookEdit
-      whose target resolves outside a root.
+    * :func:`deny_outside_write_set` - factory: denies Write/Edit/MultiEdit/NotebookEdit
+      whose target resolves outside a root, or inside it but outside the node's write set.
     * :func:`deny_bash_commands` - factory: denies a Bash command matching a denylist
       substring.
 """
@@ -51,11 +52,13 @@ Contents:
 from __future__ import annotations
 
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["HookCallback", "HookResult", "deny_bash_commands", "deny_outside_root"]
+from ...domain.scan import is_covered
+
+__all__ = ["HookCallback", "HookResult", "deny_bash_commands", "deny_outside_write_set"]
 
 HookResult = dict[str, Any]
 """What a hook returns: ``{}`` to allow, or a ``hookSpecificOutput`` deny payload."""
@@ -75,7 +78,7 @@ def _deny(reason: str) -> HookResult:
     }
 
 
-def deny_outside_root(isolation_root: Path) -> HookCallback:
+def deny_outside_write_set(isolation_root: Path, *, allowed: Sequence[str]) -> HookCallback:
     """Build a ``PreToolUse`` hook denying any write outside ``isolation_root``.
 
     Matched (by the caller's ``HookMatcher``) against ``Write|Edit|MultiEdit|
@@ -91,14 +94,31 @@ def deny_outside_root(isolation_root: Path) -> HookCallback:
     is the only thing standing between a matched tool and an unrestricted write, so
     a shape it cannot classify must fail closed rather than pass through silently.
 
+    Containment in the root is only the OUTER bound. Inside it, the target's root-relative
+    path must also be covered by ``allowed`` - the node's own declared write set plus
+    whatever its caller grants it (:func:`~.executor_claude.allowed_writes`). Without that
+    second test the run's write containment says only "somewhere in this run", so a node
+    could edit a sibling's worktree, another node's artefacts or the run's own
+    bookkeeping, and the post-node scan would report it after the fact at best - it cannot
+    attribute a write under ``parallel > 1`` at all.
+
+    An EMPTY ``allowed`` denies every write, which is the reading design 2.1 states
+    (``write_set`` is "PATHS the node may create, edit or delete"): a node that declared
+    nothing may write nothing. It is not "unrestricted within the root", which is what
+    this hook meant before the write set reached it.
+
     Args:
         isolation_root: The node's isolation root; a target resolving outside this
             (after ``realpath``) is denied.
+        allowed: The globs, relative to ``isolation_root``, this node may write to.
+            Matched by :func:`~agentdag.domain.scan.is_covered`, the same matcher the
+            isolation scan judges strays with.
 
     Returns:
-        The hook callback, closed over ``isolation_root``.
+        The hook callback, closed over ``isolation_root`` and ``allowed``.
     """
     root_real = os.path.realpath(isolation_root)
+    permitted = tuple(allowed)
 
     async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
         del tool_use_id, context  # unused: the decision depends only on the tool input
@@ -107,9 +127,12 @@ def deny_outside_root(isolation_root: Path) -> HookCallback:
         if not file_path:
             return _deny("no path in tool input; refusing")
         target = Path(os.path.realpath(file_path))
-        if target == Path(root_real) or Path(root_real) in target.parents:
-            return {}
-        return _deny(f"{file_path} resolves to {target}, outside the isolation root {root_real}")
+        if Path(root_real) not in target.parents:
+            return _deny(f"{file_path} resolves to {target}, outside the isolation root {root_real}")
+        rel = target.relative_to(Path(root_real)).as_posix()
+        if not is_covered(rel, permitted):
+            return _deny(f"{file_path} resolves to {rel}, which this node's write set does not cover")
+        return {}
 
     return hook
 
