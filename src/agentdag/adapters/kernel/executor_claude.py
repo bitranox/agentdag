@@ -814,7 +814,7 @@ class ClaudeExecutor:
         """
         # Built with a predicate rather than a flag: the hook is installed before the
         # dispatch starts and armed part-way through it, so it has to read the state at
-        # CALL time. `stopping` is a one-element list because the loop below rebinds it.
+        # CALL time, from the one object the loop below folds every turn into.
         handover = _Handover()
         options = self._options_for(request, is_stopping=lambda: handover.armed)
         transcript_path = request.node_dir / "transcript.jsonl"
@@ -823,7 +823,6 @@ class ClaudeExecutor:
         seen_first_turn = False
         cap_hit = False
         deadline_hit = False
-        handover = _Handover()
         spend_by_request: dict[str, int] = {}
         running_total = 0
         terminal: ResultMessage | None = None
