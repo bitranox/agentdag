@@ -343,12 +343,11 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
             "output_tokens": 1034,
         },
         first_turn_input=3923,
-        spend_total=987_654,
         cwd_rel="wt/r",
     )
     assert o.tokens is not None
-    assert o.tokens.in_ == 50 + 3873 + 119786  # the terminal snapshot: the context at the last turn
-    assert o.charged_tokens == {"sonnet": 987_654}  # the dispatch's summed spend, an independent figure
+    assert o.tokens.in_ == 50 + 3873 + 119786
+    assert o.charged_tokens == {"sonnet": 50 + 3873 + 119786 + 1034}
     assert o.status == "done"
     bad = outcome_from_usage(
         model="sonnet",
@@ -357,7 +356,6 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
         text="Not logged in - Please run /login",
         usage={},
         first_turn_input=0,
-        spend_total=0,
         cwd_rel="wt/r",
     )
     assert bad.status == "failed"
@@ -375,7 +373,6 @@ def test_result_translation_names_a_non_auth_error_as_executor_error_and_transie
         text="internal server error",
         usage={},
         first_turn_input=0,
-        spend_total=0,
         cwd_rel="wt/r",
     )
     assert o.status == "failed"
@@ -387,14 +384,7 @@ def test_result_translation_names_a_non_auth_error_as_executor_error_and_transie
 @pytest.mark.os_agnostic
 def test_result_translation_missing_usage_fields_default_to_zero() -> None:
     o = outcome_from_usage(
-        model="sonnet",
-        num_turns=1,
-        is_error=False,
-        text="ok",
-        usage={},
-        first_turn_input=0,
-        spend_total=0,
-        cwd_rel="wt/r",
+        model="sonnet", num_turns=1, is_error=False, text="ok", usage={}, first_turn_input=0, cwd_rel="wt/r"
     )
     assert o.tokens is not None
     assert o.tokens.in_ == 0
@@ -612,23 +602,20 @@ def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_si
 
 
 @pytest.mark.os_agnostic
-def test_a_dispatch_charges_its_summed_spend_even_at_the_exact_cap_boundary(
+def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The cap boundary, proven against a terminal snapshot that deliberately DISAGREES.
-
-    Two turns whose own totals (``input_total`` + ``output_tokens``) sum to 120, replayed
-    against a terminal ``ResultMessage.usage`` totalling 94. The two figures are
-    different quantities and this test keeps them different on purpose: a fixture that
-    made them equal could not tell which one the record charged, which is how the
-    terminal snapshot went unnoticed as the charged figure until a live run measured a
-    completed dispatch charging 254465 while the same workload's running total passed
-    400000 (``2026-08-22-graph-a-first-live-run/FINDINGS.md`` finding 4).
-
-    At cap=120 the running total lands exactly ON the cap and must NOT interrupt
-    (``_on_turn`` uses ``<=``): a node may fully spend the cap it was given. Drop the cap
-    to 119 and the SAME running total crosses it, landing ``_budget_outcome`` instead.
-    Either way the record charges 120, the figure the cap compared.
+    """The unit-pinning proof: two turns whose own totals (input_total + output_tokens)
+    sum to 120, replayed against a terminal ``ResultMessage.usage`` ALSO totalling 120
+    (mirroring the real SDK - the probe measured the terminal usage is the cumulative
+    session total, not one call's snapshot). At cap=120 the running total lands
+    exactly ON the cap and must NOT interrupt (``_on_turn`` uses ``<=``); the dispatch
+    then completes normally and ``outcome.charged_tokens`` - built from the SAME
+    terminal usage by :func:`outcome_from_usage` - reports the identical 120. Drop the
+    cap to 119 (one below the total) and the SAME running total now crosses it,
+    landing ``_budget_outcome`` instead - which reports that SAME 120 too. Either way
+    the number the cap compared and the number the record charged are the same
+    figure: the two are not drifting apart in different units.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
@@ -644,7 +631,7 @@ def test_a_dispatch_charges_its_summed_spend_even_at_the_exact_cap_boundary(
         is_error=False,
         num_turns=2,
         session_id="s1",
-        usage={"input_tokens": 90, "output_tokens": 4},  # 94: a snapshot, NOT the 120 sum
+        usage={"input_tokens": 115, "output_tokens": 5},  # same 120 total, terminal-usage shape
         result="ok",
     )
     monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
@@ -652,7 +639,7 @@ def test_a_dispatch_charges_its_summed_spend_even_at_the_exact_cap_boundary(
     FakeStreamClient.configure(turns, terminal)
     at_cap = asyncio.run(executor.run(_request(tmp_path, token_cap=120)))
     assert at_cap.status == "done"  # running_total (120) <= cap (120): never interrupted
-    assert at_cap.charged_tokens == {"sonnet": 120}  # the sum, not the terminal 94
+    assert at_cap.charged_tokens == {"sonnet": 120}
     assert FakeStreamClient.instances[0].interrupt_calls == 0
 
     FakeStreamClient.configure(turns, terminal)
@@ -697,7 +684,7 @@ def test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_
     assert outcome.error.type == "budget_exceeded"
     assert outcome.error.transient is False  # never retried into spending the cap again
     assert outcome.key_facts.get("cap_hit") is True
-    assert outcome.charged_tokens == {"sonnet": 500}  # the running total the cap compared, not the terminal 503
+    assert outcome.charged_tokens == {"sonnet": 500 + 3}  # the terminal usage the SDK still reported
     assert FakeStreamClient.instances[0].interrupt_calls == 1
 
 
@@ -790,7 +777,7 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
     assert outcome.error.transient is False
     assert outcome.artefact_refs == []
     assert outcome.key_facts.get("cap_hit") is True
-    assert outcome.charged_tokens == {"sonnet": 500}  # no terminal usage arrived, but the turn was still spent
+    assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
     assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
 
 
@@ -993,7 +980,7 @@ def test_run_reports_deadline_with_empty_usage_when_the_stream_ends_with_no_term
     assert outcome.error.transient is False
     assert outcome.artefact_refs == []
     assert outcome.key_facts.get("deadline_hit") is True
-    assert outcome.charged_tokens == {"sonnet": 500}  # no terminal usage arrived, but the turn was still spent
+    assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
     assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
 
 
@@ -1051,89 +1038,3 @@ def test_a_node_may_still_write_in_the_worktree_it_was_given(tmp_path: Path) -> 
     assert fire(hook, "Write", {"file_path": str(request.cwd / "src" / "mod.py")}) is None
     assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
     assert fire(hook, "Write", {"file_path": str(request.isolation_root / "wt" / "other" / "mod.py")}) == "deny"
-
-
-@pytest.mark.os_agnostic
-def test_a_completed_dispatch_charges_the_summed_spend_not_the_terminal_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """What the record charges must be the quantity the cap enforces: the SUM across turns.
-
-    Three turns of 80 input tokens each - a running total of 240 - against a terminal
-    ``ResultMessage.usage`` reporting 103, the shape a real dispatch produces (the
-    terminal usage is one snapshot; the probe measured a completed 12-turn dispatch
-    whose terminal figure was 254465 while the same workload's running total passed
-    400000, ``2026-08-22-graph-a-first-live-run/FINDINGS.md`` finding 4). The record
-    must report 240, because 240 is what
-    :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal` adds to
-    the NEXT node's cap when it decides whether the run may afford it.
-
-    ``tokens`` keeps the terminal snapshot: that is the context size at the last turn,
-    which design 3.8's separate context ceiling reads, and it is a different question
-    from what the dispatch spent.
-    """
-    keyfile = tmp_path / "tok"
-    keyfile.write_text("sk-ant-oat01-SECRET\n")
-    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
-    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
-    turns = [_turn(80), _turn(80), _turn(80)]  # running total 240
-
-    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3, usage_input=100))
-    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=1_000)))
-
-    assert outcome.status == "done"
-    assert FakeStreamClient.instances[0].interrupt_calls == 0
-    assert outcome.charged_tokens == {"sonnet": 240}  # the summed spend, not the terminal 103
-    assert outcome.tokens is not None
-    assert outcome.tokens.in_ == 100  # the terminal snapshot survives, on the field that means it
-    assert outcome.tokens.out == 3
-
-
-@pytest.mark.os_agnostic
-def test_a_capped_node_charges_the_running_total_that_tripped_its_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A node killed by its cap must charge the figure the cap compared, not a snapshot.
-
-    Three turns of 80 against a cap of 200: the cap fires on the third turn, at a
-    running total of 240. The journal has to be able to explain the node's own death -
-    a record charging the terminal 103 against a cap of 200 reads as a node killed well
-    inside its budget (finding 2 of the same probe).
-    """
-    keyfile = tmp_path / "tok"
-    keyfile.write_text("sk-ant-oat01-SECRET\n")
-    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
-    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
-    turns = [_turn(80), _turn(80), _turn(80)]
-
-    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3, usage_input=100))
-    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=200)))
-
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"
-    assert outcome.charged_tokens == {"sonnet": 240}  # what _on_turn compared against 200
-
-
-@pytest.mark.os_agnostic
-def test_a_deadline_stopped_node_charges_what_it_spent_before_the_clock_ran_out(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The deadline path charges the same unit as the cap path: a stopped node still spent.
-
-    The dispatch is interrupted on wall-clock, not tokens, but the tokens it spent
-    getting there are charged to the run's row exactly as any other dispatch's are.
-    """
-    keyfile = tmp_path / "tok"
-    keyfile.write_text("sk-ant-oat01-SECRET\n")
-    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
-    clock = _SequenceClock([_STARTED, _STARTED + timedelta(seconds=11)])
-    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=clock)
-
-    FakeStreamClient.configure([_turn(80)], _result(is_error=False, subtype="success", num_turns=1, usage_input=100))
-    outcome = asyncio.run(executor.run(_request(tmp_path, deadline_s=10.0)))
-
-    assert outcome.status == "cancelled"
-    assert outcome.error is not None
-    assert outcome.error.type == "deadline"
-    assert outcome.charged_tokens == {"sonnet": 80}  # the one turn it streamed, not the terminal 103

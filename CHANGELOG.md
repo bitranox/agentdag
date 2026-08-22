@@ -57,21 +57,6 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   from the journal on replay keeps the declaration it was originally dispatched under,
   even when a later launch is wired with a different `Sandbox` adapter.
 
-### Fixed
-- The run-level token ceiling no longer adds two different quantities. A record's
-  `charged_tokens` was built from the terminal `ResultMessage.usage`, a snapshot of the last
-  turn, while a node's own cap is enforced against the dispatch's running sum across turns;
-  `_run_cap_refusal` added one to the other. Every dispatch now charges the running sum it was
-  actually capped against, so the ceiling reserves and accumulates in one unit. On a measured
-  live run the old accounting recorded 503614 tokens for two dispatches that had each already
-  passed a 400000 cap, about 63 percent of what was spent. Runs that previously slipped past
-  their configured ceiling will now be refused at it, which is the point; operators who tuned
-  `run_limits.tokens_per_row` against the old under-reported totals should re-read them.
-- A dispatch whose stream ended with no terminal message recorded zero spend even though it had
-  streamed and paid for turns. It now charges what it streamed.
-- A node stopped by its cap now records the figure the cap compared, so the journal can explain
-  the node's own death instead of reporting a snapshot that reads as well inside budget.
-
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.

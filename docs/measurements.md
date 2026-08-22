@@ -148,7 +148,7 @@ taken from a reviewer's citation without re-opening it.
 | An apply is guarded by a marker touched only after the effect succeeded                                                             | `application/kernel/context.py`, `_apply_one`                       | cited       |
 | The isolation scan compares content manifests and cannot attribute a write into a sibling's declared region                         | `application/kernel/context.py`, scan                               | cited       |
 | Nothing intersects two nodes' declared write sets                                                                                   | whole tree: `write_set` has three consumers                         | read here   |
-| `charged_tokens` sums input and output where input already includes cached reads, so the run-level total cannot be priced correctly | `executor_claude.py`, `_run`'s running sum                          | read here   |
+| `charged_tokens` sums input and output where input already includes cached reads, so the run-level total cannot be priced correctly | `executor_claude.py`, `outcome_from_usage`                          | read here   |
 | The Messages API is stateless; the full conversation is resent on every request                                                     | Anthropic API documentation                                         | read here   |
 | A subagent starts in a fresh isolated context and returns only its summary                                                          | Claude Code documentation                                           | read here   |
 
