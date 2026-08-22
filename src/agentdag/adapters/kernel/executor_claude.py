@@ -716,10 +716,11 @@ class ClaudeExecutor:
         It is also the figure every exit below hands on as ``spend_total``, and so the
         sole source of the record's ``charged_tokens``. That is deliberate and it is the
         reason this local exists past the loop: the terminal ``ResultMessage.usage`` is a
-        SNAPSHOT of the last turn, a strictly smaller and workload-dependent quantity
-        (measured 1.6x smaller on a live 12-turn dispatch, and the gap widens with turn
-        count, because summing per-turn context sizes counts an early turn once per later
-        turn). Charging the snapshot would report a spend the cap never compared and would
+        SNAPSHOT of the last turn, which on a multi-turn dispatch is a materially smaller
+        and workload-dependent quantity (measured 1.6x smaller on a live 12-turn dispatch,
+        and the gap widens with turn count, because summing per-turn context sizes counts
+        an early turn once per later turn). On a single-turn dispatch the two coincide,
+        which is why a fixture built from one turn cannot tell them apart. Charging the snapshot would report a spend the cap never compared and would
         under-fill the run-level ceiling that adds these records up. The snapshot is still
         recorded, on ``tokens``, where it answers its own question: how full the context
         was when the dispatch ended. See :meth:`_on_turn`'s docstring for why a per-turn
