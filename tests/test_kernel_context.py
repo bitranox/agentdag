@@ -64,7 +64,7 @@ class OneRowPolicy:
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
-        return ResolvedRow(alias="sonnet", executor="claude")
+        return ResolvedRow(alias="sonnet", executor="claude", handover_at_tokens=100_000)
 
 
 class RetryingPolicy(OneRowPolicy):
@@ -661,3 +661,21 @@ def test_a_replay_after_a_granted_attempt_dispatches_nothing_new(tmp_path: Path)
     started = [line.key for line in journal.lines() if isinstance(line, StartedLine)]
     assert replay.dispatcher.dispatched_keys == started
     assert gate.calls == 2
+
+
+@pytest.mark.os_agnostic
+def test_work_threads_the_row_s_context_ceiling_into_the_executor_request(tmp_path: Path) -> None:
+    """The context ceiling's own call site (design 3.8): a THIRD quantity, from a THIRD source.
+
+    The token cap comes from the SPEC's own budget and the deadline from the spec clamped
+    by a run limit; this comes from the resolved MODEL ROW, because how full a window is
+    depends on which window it is. A node cannot declare it and a run limit cannot clamp
+    it - the row owns it, so it reaches the executor exactly as the policy resolved it.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert executor.requests[0].handover_at_tokens == 100_000  # OneRowPolicy's sonnet row

@@ -108,4 +108,4 @@ class LoadedPolicy:
             kind_default = self.table.kind_defaults.get(spec.kind.value)
             tier_role = kind_default.tier_role if kind_default is not None else None
         row = resolve_row(self.table, tier_role=tier_role, model=spec.model)
-        return ResolvedRow(alias=row.alias, executor=row.executor)
+        return ResolvedRow(alias=row.alias, executor=row.executor, handover_at_tokens=row.handover_at_tokens)

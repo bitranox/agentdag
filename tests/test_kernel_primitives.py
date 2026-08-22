@@ -74,7 +74,7 @@ class OneRowPolicy:
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
-        return ResolvedRow(alias="sonnet", executor="claude")
+        return ResolvedRow(alias="sonnet", executor="claude", handover_at_tokens=100_000)
 
 
 def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None) -> tuple[Coordinator, FsRunDir]:

@@ -461,6 +461,39 @@ def outcome_from_usage(
     )
 
 
+def _past_context_ceiling(usage: Mapping[str, Any], ceiling: int | None) -> bool:
+    """Whether THIS turn's own context has passed the row's ``handover_at_tokens`` (design 3.8).
+
+    Reads one turn's ``input_total`` - what the model just saw - and never a sum across
+    turns. The two questions are different: a SPEND cap asks how much this dispatch has
+    used in total, which only a sum can answer; a CONTEXT ceiling asks how full the window
+    is right now, which only a single turn's own figure can answer. Feeding a running sum
+    to this comparison would stop a long dispatch whose window is nearly empty.
+
+    Args:
+        usage: One ``AssistantMessage.usage``.
+        ceiling: The row's ``handover_at_tokens``, or ``None`` when it declares none - in
+            which case nothing is checked, matching the same rule the token cap and the
+            deadline follow for an absent bound.
+
+    Returns:
+        Whether the turn's context is STRICTLY past the ceiling. Inclusive like the token
+        cap: a turn landing exactly on the ceiling does not trigger a handover, so a
+        ceiling a node's every turn reaches exactly still lets it finish.
+
+    Example:
+        >>> _past_context_ceiling({"input_tokens": 120}, 100)
+        True
+        >>> _past_context_ceiling({"input_tokens": 100}, 100)
+        False
+        >>> _past_context_ceiling({"input_tokens": 10_000}, None)
+        False
+    """
+    if ceiling is None:
+        return False
+    return input_total(usage) > ceiling
+
+
 def _as_sdk_hooks(callback: object) -> list[_SdkHookCallback]:
     """Bridge one of :mod:`.hooks_claude`'s hooks into ``HookMatcher.hooks``' declared type.
 
@@ -731,8 +764,11 @@ class ClaudeExecutor:
         seen_first_turn = False
         cap_hit = False
         deadline_hit = False
+        handover_hit = False
+        context_at_handover = 0
         spend_by_request: dict[str, int] = {}
         running_total = 0
+        terminal: ResultMessage | None = None
         async with ClaudeSDKClient(options=options) as client:
             await client.query(request.prompt)
             async for message in client.receive_response():
@@ -759,16 +795,31 @@ class ClaudeExecutor:
                     ):
                         await client.interrupt()
                         deadline_hit = True
+                    # The context ceiling is checked LAST and only when neither hard stop
+                    # fired: a node that is out of budget or out of time is stopping for
+                    # good, and offering it a successor would hand the chain a way to
+                    # outlive the bound that just stopped it. It compares THIS turn's own
+                    # context, never the running sum above.
+                    if not cap_hit and not deadline_hit and _past_context_ceiling(usage, request.handover_at_tokens):
+                        await client.interrupt()
+                        handover_hit = True
+                        context_at_handover = input_total(usage)
                 if isinstance(message, ResultMessage):
-                    if deadline_hit:
-                        return self._deadline_outcome(request, first_turn_input, message.usage or {})
-                    if cap_hit:
-                        return self._budget_outcome(request, first_turn_input, message.usage or {})
-                    return self._outcome_for(request, message, first_turn_input, cwd_rel)
+                    terminal = message
+                    break
+        # ONE exit ladder, not one per exit point. The two used to be duplicated and
+        # differed only in whether a terminal usage had arrived, which is exactly what
+        # `terminal` now carries - so a ceiling added later gets one branch here rather
+        # than two that can drift apart.
+        usage = (terminal.usage or {}) if terminal is not None else {}
         if deadline_hit:
-            return self._deadline_outcome(request, first_turn_input, {})
+            return self._deadline_outcome(request, first_turn_input, usage)
         if cap_hit:
-            return self._budget_outcome(request, first_turn_input, {})
+            return self._budget_outcome(request, first_turn_input, usage)
+        if handover_hit:
+            return self._handover_outcome(request, first_turn_input, usage, cwd_rel, context_at_handover)
+        if terminal is not None:
+            return self._outcome_for(request, terminal, first_turn_input, cwd_rel)
         return NodeOutcome(
             status=NodeStatus.FAILED,
             executor_used="claude",
@@ -851,6 +902,60 @@ class ClaudeExecutor:
             # dispatch, so the SDK call this ResultMessage came from actually carried it.
             outcome = outcome.model_copy(update={"effort_used": request.effort})
         return outcome
+
+    def _handover_outcome(
+        self,
+        request: ExecutorRequest,
+        first_turn_input: int,
+        usage: Mapping[str, Any],
+        cwd_rel: str,
+        context_at_handover: int,
+    ) -> NodeOutcome:
+        """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
+
+        The one stopped-dispatch record that is NOT a failure, and the one that KEEPS its
+        artefact ref. :meth:`_budget_outcome` and :meth:`_deadline_outcome` both empty
+        ``artefact_refs`` deliberately, so a half-finished worktree is never presented as a
+        completed one - the right call when the node is stopping for good. A handover is
+        the opposite case: the work in that tree is exactly what the successor continues
+        from, so dropping the ref would throw away the thing the mechanism exists to save.
+
+        ``status`` is ``NEEDS_CONTINUATION`` and ``error`` is ``None``: crossing a context
+        ceiling is a scheduled event, not something that went wrong, and a caller
+        branching on ``error is not None`` must not see this as a fault.
+
+        Args:
+            request: The dispatch's request; names the model row.
+            first_turn_input: This dispatch's first turn's context, for ``key_facts``.
+            usage: The terminal usage if one arrived, else ``{}``.
+            cwd_rel: The node's working directory relative to the isolation root - the
+                artefact ref the successor reads.
+            context_at_handover: The turn context that passed the ceiling, recorded so a
+                drift signal (design 3.5) can be read off the record.
+
+        Returns:
+            A ``NEEDS_CONTINUATION`` outcome carrying the worktree and the trigger figure.
+        """
+        in_tokens = input_total(usage)
+        out_tokens = int(usage.get("output_tokens", 0))
+        cache_read = int(usage.get("cache_read_input_tokens", 0))
+        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        return NodeOutcome(
+            status=NodeStatus.NEEDS_CONTINUATION,
+            artefact_refs=[cwd_rel],
+            key_facts={
+                "context_at_handover": context_at_handover,
+                "handover_at_tokens": request.handover_at_tokens,
+                "first_turn_input_tokens": first_turn_input,
+            },
+            typed_fields=["context_at_handover"],
+            tokens=tokens,
+            charged_tokens={request.model: in_tokens + out_tokens},
+            executor_used="claude",
+            model_used=request.model,
+            effort_used=_NO_VALUE,
+            error=None,  # a handover is a scheduled event, never a fault
+        )
 
     async def _on_turn(self, running_total: int, client: _Interruptible, cap: int | None) -> bool:
         """Per-``AssistantMessage`` hook point: stop the dispatch once its RUNNING SPEND passes ``cap``.

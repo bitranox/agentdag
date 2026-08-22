@@ -20,11 +20,22 @@ Reading the request field by field, asking what a SECOND vendor would pass for e
 | `write_set`                  | glob strings; enforced by our scan, not by the vendor           |
 | `deny_bash`                  | command patterns to refuse - see below                          |
 | `token_cap`, `deadline_s`    | counts and seconds, checked at its own turn seam                |
+| `handover_at_tokens`         | a context-window size in tokens - see below                     |
 
-One field carries an assumption rather than a neutral value: ``deny_bash`` presumes the
+Two fields carry an assumption rather than a neutral value. ``deny_bash`` presumes the
 agent has a shell tool to deny. That is a bound on the KIND of executor (a tool-using
 agent), not on the vendor, and it is stated here so the next reading starts from it
 rather than rediscovering it.
+
+``handover_at_tokens`` (design 3.8) presumes two things a second vendor might not offer:
+that the adapter can observe its own context size PER TURN while the dispatch is running,
+and that it can stop the dispatch at that point. The first is the real bound - a vendor
+that reports usage only at the end can enforce a total, never a live window reading. It is
+still a neutral VALUE (a token count of the model's window, not a Claude concept), and the
+port already tolerates an adapter that cannot honour it: ``None`` means nothing is checked,
+which is the same "no bound declared, nothing enforced" rule ``token_cap`` and
+``deadline_s`` follow. An adapter that cannot read per-turn context leaves it unchecked and
+loses the handover, not correctness.
 
 The field-set assertion is deliberate friction: a field added to the port fails this test,
 which is exactly when the reading above has to be redone.
@@ -132,4 +143,5 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "deny_bash",
         "token_cap",
         "deadline_s",
+        "handover_at_tokens",
     }

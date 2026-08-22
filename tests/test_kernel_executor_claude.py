@@ -1087,3 +1087,45 @@ def test_the_running_total_counts_one_api_request_once_however_many_blocks_it_ar
     assert under.error is not None
     assert under.error.type == "budget_exceeded"
     assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_node_past_its_context_ceiling_ends_needs_continuation_and_keeps_its_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The context ceiling (design 3.8) is a THIRD quantity at the same turn seam.
+
+    It compares ONE turn's own ``input_total`` - what the model just saw - against
+    ``handover_at_tokens``, never the running sum the token cap uses: a context ceiling
+    asks "is the window full right now", which a sum that only grows cannot answer.
+
+    Crossing it is not a failure. The node ends ``needs_continuation`` and KEEPS its
+    artefact ref, because its worktree holds real work a successor continues from -
+    unlike the cap and deadline paths, which empty ``artefact_refs`` so a half-finished
+    tree is never presented as a completed one.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 200)]  # turn 2's own context is 200
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    outcome = asyncio.run(
+        executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)),
+    )
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.error is None  # a handover is not a failure
+    assert outcome.artefact_refs == ["wt/r"]  # the work survives, unlike the cap path
+    assert outcome.key_facts.get("context_at_handover") == 200
+    assert FakeStreamClient.instances[0].interrupt_calls == 1
+
+    # Control: the same stream under a ceiling no single turn reaches runs to completion,
+    # even though the SUM of the two turns (300) is well past it. The ceiling is per turn.
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    under = asyncio.run(
+        executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=250)),
+    )
+    assert under.status == "done"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0

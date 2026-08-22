@@ -366,6 +366,22 @@ class ExecutorRequest:
     enforce at the turn seam (design 7, M3). Defaults to ``None`` so every call site and
     test fixture that predates this field still constructs without naming it."""
 
+    handover_at_tokens: int | None = None
+    """This node's CONTEXT ceiling for its resolved row (``TierRow.handover_at_tokens``),
+    or ``None`` when the row declares none - nothing checked (design 3.8).
+
+    A THIRD quantity at the same turn seam, and the one most easily confused with
+    :attr:`token_cap`. This is the size of ONE turn's own context - what the model just
+    saw, ``input_total`` of that turn's usage - never a sum across turns. A context
+    ceiling asks "is the window full right now", a question a running sum cannot answer:
+    the sum only grows, so it would trip on a long dispatch whose window is nowhere near
+    full.
+
+    Crossing it is NOT a failure and NOT a budget event. The node ends
+    ``needs_continuation``, KEEPS its artefact refs, and a successor continues the work
+    from the same worktree with ``continuation + 1``. Bound the chain with
+    ``Policy.max_continuations``, never by making this a hard stop."""
+
     deadline_s: float | None = None
     """This node's own wall-clock deadline (``NodeSpec.deadline_s``, already clamped to
     ``Policy.deadline_ceiling_s`` by :meth:`~agentdag.application.kernel.context.Coordinator.work`),
@@ -394,6 +410,17 @@ class ResolvedRow:
 
     executor: str
     """The name of the executor to run this node with, as keyed in the coordinator's executor map."""
+
+    handover_at_tokens: int
+    """This row's CONTEXT ceiling in tokens (design 3.8): past this much context in a
+    single turn, a node on this row writes a handover and ends ``needs_continuation``.
+
+    It lives on the ROW, not on the node spec and not in the run limits, because how full
+    a context window is depends on WHICH window - a figure that means "about half" on a
+    1M-token row means "over budget" on a 200k one. A node cannot declare it and a run
+    limit cannot clamp it. Required rather than optional: every row in the tier table
+    carries one (``TierRow.handover_at_tokens``), so an adapter that cannot supply it is
+    resolving something that is not a tier row."""
 
 
 class Policy(Protocol):

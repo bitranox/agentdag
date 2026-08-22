@@ -283,6 +283,7 @@ class Coordinator:
                 deny_bash=self.policy.deny_bash,
                 token_cap=node_cap,
                 deadline_s=node_deadline_s,
+                handover_at_tokens=row.handover_at_tokens,
             )
             return await executor.run(request)
 

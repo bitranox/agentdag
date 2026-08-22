@@ -54,7 +54,7 @@ class _OneRowPolicy:
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
-        return ResolvedRow(alias="sonnet", executor="claude")
+        return ResolvedRow(alias="sonnet", executor="claude", handover_at_tokens=100_000)
 
 
 class _FakeSandbox:

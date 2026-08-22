@@ -68,6 +68,20 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   why a node holding about 250000 tokens was interrupted against a 400000 cap and its
   finished, correct work was discarded unexamined.
 
+### Added
+- The context ceiling of design 3.8, first half: a node whose SINGLE turn's context passes its
+  row's `handover_at_tokens` is interrupted and ends `needs_continuation` instead of running on.
+  It is a third quantity at the same turn seam and deliberately not the token cap's: a spend cap
+  asks how much a dispatch has used in total, which only a sum can answer, while a context ceiling
+  asks how full the window is right now, which only a single turn's own figure can answer. It is
+  checked last and only when neither hard stop fired, so a node out of budget or out of time is not
+  offered a successor that would outlive the bound that stopped it.
+- That record KEEPS its artefact ref and carries no error. The cap and deadline paths empty
+  `artefact_refs` so a half-finished worktree is never presented as complete, which is right when a
+  node stops for good; a handover is the opposite case, because that tree is what the successor
+  continues from. `ResolvedRow` now carries `handover_at_tokens`, so the figure reaches the
+  executor from the model row that owns it rather than from a node or a run limit.
+
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.
