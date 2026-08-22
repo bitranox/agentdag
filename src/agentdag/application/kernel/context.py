@@ -24,7 +24,7 @@ from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import Decision, ErrorType, MarkerPhase, NodeError, NodeOutcome, NodeStatus, ResultRecord
 from ...domain.scan import diff_manifests, stray_paths
-from .approve import validate_default
+from .approve import validate_approve_payload
 from .ports import ExecutorRequest, stamp
 
 if TYPE_CHECKING:
@@ -655,13 +655,14 @@ class Coordinator:
             carrying the payload hash it was applied to.
 
         Raises:
-            SpecRejected: ``payload.default`` does not name an option whose
-                ``effect == "none"`` - a default the coordinator could apply unattended
-                must never itself leave the process (design 2.4).
+            SpecRejected: the payload fails a design 2.4 approve rule - ``payload.default``
+                does not name an option whose ``effect == "none"`` (a default the
+                coordinator could apply unattended must never itself leave the process),
+                or its operator-facing text is one no person may be shown to decide on.
             Suspended: no decision is recorded yet for this (node id, payload hash);
                 the exception carries the hash, so a caller knows WHICH payload to ask about.
         """
-        validate_default(payload)
+        validate_approve_payload(payload)
         payload_text = payload.model_dump_json(indent=1)
         payload_hash = content_hash(payload_text)
 

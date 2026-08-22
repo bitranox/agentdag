@@ -43,7 +43,8 @@ Contents:
     * :data:`TIMER_TOKEN_ID` - the ``token_id`` naming this pass as the applying agent.
     * :data:`DEADLINE_REASON` - the ``reason`` such a decision carries.
     * :func:`suspend_payload_rel` - where a suspend published the payload being decided.
-    * :func:`validate_default` - design 2.4's rule: a default must have no external effect.
+    * :func:`validate_approve_payload` - design 2.4's approve rules: a default with no
+      external effect, and operator-facing text a person can actually be shown.
     * :class:`DeadlineOutcome` - what one pass over ONE run reports back.
     * :func:`apply_due_default` - apply one run's default if its deadline has passed.
 """
@@ -69,7 +70,7 @@ __all__ = [
     "DeadlineOutcome",
     "apply_due_default",
     "suspend_payload_rel",
-    "validate_default",
+    "validate_approve_payload",
 ]
 
 SYSTEM_IDENTITY = "system"
@@ -93,6 +94,45 @@ can tell a default applied by this periodic pass from one a future server applie
 DEADLINE_REASON = "deadline"
 """The ``reason`` a system-applied default carries (design 3.4: ``{by: system, reason: deadline}``)."""
 
+MAX_OPERATOR_TEXT_CHARS = 4096
+"""How much operator-facing text a payload may carry before a person stops reading it.
+
+Four times the largest text the shipping workflow can produce: graph A's push list is one
+line per repo of the form ``  <repo>  <12-char sha>`` (about 46 characters at the longest
+repo name in the fleet it was built for, roughly 20 repos), so about 1000 characters. The
+headroom is for a workflow with more to say; a plan that needs more than this is asking a
+person to approve something they will not have read, which is not an approval.
+
+A constant rather than a policy knob on purpose: it bounds what a HUMAN reads, which is
+not a property of one run. Promote it to ``thresholds`` when a workflow genuinely needs a
+different figure, not before."""
+
+MAX_BODY_LINE_OCTETS = 998
+"""The longest line a mail body may carry (RFC 5322 2.1.1), which this text becomes verbatim.
+
+``adapters.kernel.notify_mail`` puts the payload's text into the body unchanged, so a
+longer line is a line the standard says a server may refuse or mangle - and one nobody
+reads either way."""
+
+_FIRST_PRINTABLE = 0x20
+"""Space: everything below it is a C0 control, tab and carriage return included."""
+
+_DEL = 0x7F
+"""DEL, immediately followed by the C1 control block that ends at :data:`_LAST_C1`."""
+
+_LAST_C1 = 0x9F
+"""The last C1 control; the printable Latin-1 supplement starts one code point above."""
+
+_UNRENDERED = frozenset(
+    "\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e"
+    "\u2060\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069\ufeff"
+)
+"""Characters that are stored but not shown, or that reorder what is shown around them.
+
+Zero-width and word-joiner characters, the line/paragraph separators, and the bidirectional
+overrides and isolates. They are the Trojan Source shape: the reader approves the rendering
+and the decision is bound to the bytes."""
+
 _LOCK_HELD_REASON = "the run lock is held (a live coordinator, or a concurrent deadline pass)"
 
 
@@ -115,27 +155,150 @@ class _NotSuspendedError(_NotAppliedError):
     """
 
 
-def validate_default(payload: ApprovePayload) -> None:
-    """Refuse a payload whose default option is not ``effect == "none"`` (design 2.4).
+def validate_approve_payload(payload: ApprovePayload) -> None:
+    """Refuse a payload design 2.4 will not let a human be asked to decide.
 
-    One rule, two callers, deliberately in one place: the coordinator checks it when the
-    approve node RUNS (so a workflow offering an unapplyable default fails before anybody
-    is asked anything), and :func:`apply_due_default` checks it again at the moment it
-    would actually apply one unattended - which is where 2.4's reason for existing cashes
-    out ("a default is what the deadline owner applies unattended, so it may never be the
-    option that pushes").
+    Two rules, one entry point, two callers, deliberately in one place: the coordinator
+    checks when the approve node RUNS (so a workflow offering an unanswerable payload
+    fails before anybody is asked anything), and :func:`apply_due_default` checks again at
+    the moment it would apply a default unattended - which is where 2.4's reason for
+    existing cashes out ("a default is what the deadline owner applies unattended, so it
+    may never be the option that pushes"). A second entry point would let one caller grow
+    a rule the other does not have.
+
+    The text rules REFUSE rather than normalise, and that is forced rather than chosen:
+    the payload's content hash IS the approve node's dispatch identity (design 3.4's
+    binding), so rewriting the text would re-key the node and detach a decision already
+    recorded against the old hash. The author fixes the text; nothing here edits it.
 
     Args:
         payload: The approve payload on offer.
 
     Raises:
-        SpecRejected: ``payload.default`` names no option in ``payload.options``, or
-            names one whose effect is ``"external"``.
+        SpecRejected: ``payload.default`` names no option in ``payload.options`` or names
+            one whose effect is ``"external"``; or the operator-facing text is empty,
+            longer than a person is asked to read, carries a line no mail body may hold,
+            or carries characters that make what renders differ from what is hashed. Every
+            reason is reported at once, because 2.4's remedy is ONE automatic re-ask
+            carrying them and a second refusal suspends.
+    """
+    reasons = _default_reasons(payload) + _text_reasons(payload.text)
+    if reasons:
+        raise SpecRejected("; ".join(reasons))
+
+
+def _default_reasons(payload: ApprovePayload) -> list[str]:
+    """Return 2.4's default rule: a default must name an option that leaves the process alone.
+
+    Args:
+        payload: The approve payload on offer.
+
+    Returns:
+        One reason, or none when the default names a no-effect option.
     """
     options_by_id = {option.id: option for option in payload.options}
     default_option = options_by_id.get(payload.default)
     if default_option is None or default_option.effect != "none":
-        raise SpecRejected(f"approve default {payload.default!r} does not name a no-effect option")
+        return [f"approve default {payload.default!r} does not name a no-effect option"]
+    return []
+
+
+def _text_reasons(text: str) -> list[str]:
+    """Return every reason the operator-facing text may not be put in front of a person.
+
+    Design 2.4 governs what a planner emits, and decision 8 (2026-08-22) made ``approve``
+    plan-expressible: this text is model-authored from here on, and it reaches the operator
+    verbatim as a notification body (``application.kernel.notify.RunEvent.summary``). It
+    had no definition, bound or normalisation of any kind before that decision, which is
+    the obligation the decision carries.
+
+    Args:
+        text: The payload's operator-facing text.
+
+    Returns:
+        Every reason to refuse it, empty when a person may be shown it.
+    """
+    return _size_reasons(text) + _character_reasons(text)
+
+
+def _size_reasons(text: str) -> list[str]:
+    """Return the reasons the text is the wrong SIZE to be read or to be mailed.
+
+    Args:
+        text: The payload's operator-facing text.
+
+    Returns:
+        Every size reason, empty when it fits.
+    """
+    reasons: list[str] = []
+    if not text.strip():
+        reasons.append("the operator text is empty, so the payload asks nothing")
+    if len(text) > MAX_OPERATOR_TEXT_CHARS:
+        reasons.append(
+            f"the operator text is {len(text)} characters, over the {MAX_OPERATOR_TEXT_CHARS} "
+            "a person is asked to read before deciding"
+        )
+    over = [n for n, line in enumerate(text.split("\n"), start=1) if len(line.encode()) > MAX_BODY_LINE_OCTETS]
+    if over:
+        reasons.append(
+            f"line {over[0]} of the operator text is over {MAX_BODY_LINE_OCTETS} octets, "
+            "which is more than a mail body line may carry (RFC 5322 2.1.1)"
+        )
+    return reasons
+
+
+def _character_reasons(text: str) -> list[str]:
+    """Return the reasons the text renders as something other than what it is.
+
+    A decision is bound to the payload's HASH, so any character that makes the rendered
+    text differ from the stored text detaches the approval from what the person approved:
+    an escape sequence rewrites a terminal line, and a bidi override reorders one while
+    the bytes stay put. Both are refused rather than stripped.
+
+    Args:
+        text: The payload's operator-facing text.
+
+    Returns:
+        Every character reason, empty when the text renders as itself.
+    """
+    reasons: list[str] = []
+    controls = sorted({ch for ch in text if ch != "\n" and _is_control(ch)})
+    if controls:
+        reasons.append("the operator text carries a control character: " + _code_points(controls))
+    hidden = sorted(set(text) & _UNRENDERED)
+    if hidden:
+        reasons.append(
+            "the operator text carries an invisible or direction-changing character: " + _code_points(hidden)
+        )
+    return reasons
+
+
+def _is_control(ch: str) -> bool:
+    """Return whether ``ch`` is a C0 or C1 control (DEL included), which no operator text needs.
+
+    A tab counts: its width is up to whoever renders it, so a list aligned with tabs is a
+    list the reader and the author see differently.
+
+    Args:
+        ch: One character.
+
+    Returns:
+        Whether it is a control character.
+    """
+    code = ord(ch)
+    return code < _FIRST_PRINTABLE or _DEL <= code <= _LAST_C1
+
+
+def _code_points(chars: list[str]) -> str:
+    """Render offending characters as code points, since printing them back is the problem.
+
+    Args:
+        chars: The characters to name.
+
+    Returns:
+        A comma-separated list of ``U+XXXX`` code points.
+    """
+    return ", ".join(f"U+{ord(ch):04X}" for ch in chars)
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,15 +478,20 @@ def _refuse_before_decide_by(payload: ApprovePayload, *, clock: Clock, node_id: 
 
 
 def _refuse_an_unapplyable_default(payload: ApprovePayload, *, node_id: str) -> None:
-    """Apply design 2.4's rule at the moment of unattended application.
+    """Apply design 2.4's approve rules at the moment of unattended application.
+
+    The default half is the one this pass exists to re-check. The text half is all but
+    unreachable here and is kept for the same reason it is one entry point: a payload only
+    reaches disk through a suspend that already validated it, and ``_payload_on_offer``
+    re-checks its content hash, so the text can differ from a validated one only for a
+    payload written by an older version of this code.
 
     Raises:
-        _NotAppliedError: the default names no option, or one with an external effect -
-            reported rather than raised out, so one bad payload cannot stop a sweep from
-            serving the other runs.
+        _NotAppliedError: the payload fails a 2.4 approve rule - reported rather than
+            raised out, so one bad payload cannot stop a sweep from serving the other runs.
     """
     try:
-        validate_default(payload)
+        validate_approve_payload(payload)
     except SpecRejected as refused:
         raise _NotAppliedError(f"{node_id}: {refused}") from refused
 

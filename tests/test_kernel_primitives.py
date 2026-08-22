@@ -865,3 +865,59 @@ def test_approve_refuses_a_default_naming_no_option_at_all(tmp_path: Path) -> No
 
     with pytest.raises(SpecRejected, match="no-effect option"):
         asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(default="not-an-option")))
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_operator_text_that_says_nothing(tmp_path: Path) -> None:
+    """A payload that asks a human to approve blank space is not a question (decision 8's obligation)."""
+    co, _ = coordinator(tmp_path)
+
+    with pytest.raises(SpecRejected, match="empty"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text="   \n  ")))
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_operator_text_carrying_a_terminal_escape(tmp_path: Path) -> None:
+    """An escape sequence rewrites what the terminal shows, so the reader approves something else."""
+    co, _ = coordinator(tmp_path)
+
+    with pytest.raises(SpecRejected, match="control character"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text="push?\x1b[2K hold")))
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_operator_text_carrying_a_bidi_override(tmp_path: Path) -> None:
+    """What renders is not what is hashed: the approval binds to bytes the reader never saw."""
+    co, _ = coordinator(tmp_path)
+
+    with pytest.raises(SpecRejected, match="invisible or direction-changing"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text="push repo-a\u202e repo-b")))
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_operator_text_longer_than_a_person_will_read(tmp_path: Path) -> None:
+    """A model-authored wall of text is approved unread, which is not an approval."""
+    co, _ = coordinator(tmp_path)
+    too_long = "\n".join(["  repo-a  0123456789ab"] * 300)
+
+    with pytest.raises(SpecRejected, match="characters"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text=too_long)))
+
+
+@pytest.mark.os_agnostic
+def test_approve_refuses_a_line_no_mail_body_may_carry(tmp_path: Path) -> None:
+    """RFC 5322 bounds a body line at 998 octets, and this text is a mail body verbatim."""
+    co, _ = coordinator(tmp_path)
+
+    with pytest.raises(SpecRejected, match="998"):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text="r" * 999)))
+
+
+@pytest.mark.os_agnostic
+def test_approve_accepts_a_push_list_at_the_bounds(tmp_path: Path) -> None:
+    """The control: a long, legal, multi-line list still reaches the human it is meant for."""
+    co, _ = coordinator(tmp_path)
+    at_the_line_bound = "r" * 998
+
+    with pytest.raises(Suspended):
+        asyncio.run(co.approve(code("a", Kind.APPROVE), payload=payload(text=at_the_line_bound)))
