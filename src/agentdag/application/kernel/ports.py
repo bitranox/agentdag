@@ -63,6 +63,7 @@ __all__ = [
     "KernelWiring",
     "LaunchResult",
     "LockToken",
+    "PathResolver",
     "Policy",
     "ResolvedRow",
     "RunDir",
@@ -383,6 +384,22 @@ class IsolationScanner(Protocol):
 
     def snapshot(self, root: Path) -> Mapping[str, str]:
         """Return relative POSIX path -> content hash for every file under ``root`` worth watching."""
+        ...
+
+
+class PathResolver(Protocol):
+    """Resolves a path the way the filesystem will, symlinks followed.
+
+    A port rather than a direct :func:`os.path.realpath` call because the rule that needs
+    it - ``brief_ref`` containment (design 2.4) - is validation, and validation that reads
+    the filesystem directly cannot be exercised without one. What must NOT happen is the
+    caller resolving the path and handing in the result: the insertion review found the
+    cwd containment guard already passes traversal that way, so the resolution stays on
+    the validator's side of the boundary (decision 10, 2026-08-22).
+    """
+
+    def resolve(self, path: Path) -> Path:
+        """Return ``path`` with every symlink and ``..`` resolved, whether or not it exists."""
         ...
 
 

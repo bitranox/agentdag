@@ -8,6 +8,11 @@ dispatch rather than trusting the tier alone. This module owns the 2.4 rules tha
 that slice 1 can express; a refusal is journaled as ``spec_rejected`` with its reasons, the
 planner is re-run once carrying them, and a second refusal suspends into ``approve``.
 
+This module owns the rules that need NOTHING but the spec and the run limits. The one 2.4
+rule that needs a filesystem - ``brief_ref`` resolving inside the run store after a real
+``realpath`` - lives in :mod:`agentdag.application.kernel.dispatchable` behind a port
+(decision 10, 2026-08-22), and that module is the entry point that runs both sets.
+
 Rules deliberately absent or partial, none of them an oversight:
 
 * ``write_set`` is enforced only for CONTAINMENT (relative, no traversal above the root, no
