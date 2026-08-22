@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentdag.application.graph_a_ports import GatePort
-    from agentdag.application.kernel.ports import ExecutorRequest
+    from agentdag.application.kernel.ports import Executor, ExecutorRequest
 
 
 class OneRowPolicy:
@@ -56,6 +56,7 @@ class OneRowPolicy:
     version: str = "sha256:test"
     max_turns: int = 5
     max_attempts: int = 1
+    max_continuations: int = 3
     deny_bash: tuple[str, ...] = ("git push",)
     tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
     deadline_ceiling_s: float = 999_999.0
@@ -154,10 +155,10 @@ def fresh_run_dir(tmp_path: Path) -> FsRunDir:
 
 def wire(
     run_dir: FsRunDir,
-    executor: RecordingExecutor,
+    executor: Executor,
     scanner: FakeScanner,
     *,
-    executors: Mapping[str, RecordingExecutor] | None = None,
+    executors: Mapping[str, Executor] | None = None,
     policy: OneRowPolicy | None = None,
     gate_port: GatePort | None = None,
 ) -> Coordinator:
@@ -679,3 +680,83 @@ def test_work_threads_the_row_s_context_ceiling_into_the_executor_request(tmp_pa
     asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
 
     assert executor.requests[0].handover_at_tokens == 100_000  # OneRowPolicy's sonnet row
+
+
+class ContinuingExecutor:
+    """Ends ``needs_continuation`` for its first ``hands_over`` dispatches, then done.
+
+    The executor-side half of design 3.8 is already built: a node past its row's context
+    ceiling comes back ``NEEDS_CONTINUATION`` with its artefact ref intact. This fake
+    stands in for that so the COORDINATOR half can be driven without a model.
+    """
+
+    def __init__(self, hands_over: int) -> None:
+        self.hands_over = hands_over
+        self.requests: list[ExecutorRequest] = []
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Hand over until the quota is spent, then finish."""
+        self.requests.append(request)
+        if len(self.requests) <= self.hands_over:
+            return NodeOutcome(
+                status=NodeStatus.NEEDS_CONTINUATION,
+                artefact_refs=["wt/a"],
+                key_facts={"context_at_handover": 120_000},
+                typed_fields=["context_at_handover"],
+                charged_tokens={"sonnet": 120},
+                executor_used="claude",
+                model_used="sonnet",
+                effort_used="-",
+                error=None,
+            )
+        return outcome({"sonnet": 120})
+
+
+@pytest.mark.os_agnostic
+def test_a_node_that_hands_over_is_continued_by_a_successor(tmp_path: Path) -> None:
+    """The work is CONTINUED, never discarded (design 3.8).
+
+    A node that ends ``needs_continuation`` earns a successor dispatched with
+    ``continuation + 1`` - a different journal key, so a genuine re-run rather than the
+    old record served back, exactly as ``attempt + 1`` works for a retry. The chain's
+    last record is what the caller sees.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = ContinuingExecutor(hands_over=1)
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert len(executor.requests) == 2  # the node, then its successor
+    assert record.status == NodeStatus.DONE
+    assert record.continuation == 1  # the successor's own counter, next to attempt in the key
+
+
+class ShortChainPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a chain that may take only two handovers."""
+
+    max_continuations: int = 2
+
+
+@pytest.mark.os_agnostic
+def test_a_chain_past_max_continuations_ends_failed_rather_than_handing_over_forever(tmp_path: Path) -> None:
+    """A node that hands over every time must not continue without end (design 3.8).
+
+    ``max_continuations`` is the ONLY thing that bounds a chain: a context ceiling is not
+    a failure, so no retry rule and no budget refusal is reached by simply handing over.
+    The bound is enforced where the successor is DISPATCHED, so the refusal gets a record
+    and a journal line of its own - a run can then say why the chain stopped instead of
+    merely having no more records.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = ContinuingExecutor(hands_over=99)  # would hand over for ever if nothing stopped it
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=ShortChainPolicy())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert len(executor.requests) == 3  # continuations 0, 1 and 2 ran; the fourth never reached it
+    assert record.status == NodeStatus.FAILED
+    assert record.error is not None
+    assert record.error.type == "continuation_limit"
+    assert record.error.transient is False  # more tries cannot help; the chain is out of links
+    assert record.continuation == 3

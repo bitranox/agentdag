@@ -82,6 +82,19 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   continues from. `ResolvedRow` now carries `handover_at_tokens`, so the figure reaches the
   executor from the model row that owns it rather than from a node or a run limit.
 
+### Added
+- The context ceiling of design 3.8, second half: a node that ends `needs_continuation` is now
+  CONTINUED by a successor rather than returned as-is. The successor is dispatched with
+  `continuation + 1` - an identity field, so a different journal key and a genuine re-run, exactly
+  as `attempt + 1` works for a retry - and its attempt counter starts over, because a successor is a
+  fresh dispatch whose own transient failures deserve the allowance any node gets.
+- `max_continuations` bounds the chain and is the only thing that does, since a handover is not a
+  failure and no retry rule or budget refusal is reached by handing over. Reaching it dispatches a
+  body that refuses with `continuation_limit` rather than returning a record built on the spot, so
+  the refusal is journaled and hashed like any other outcome and a replay reaches the same end.
+- `ResultRecord.continuation` records which link of a chain produced a record, defaulted so a
+  journal line written before this still validates; the shipped result-record schema carries it.
+
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.

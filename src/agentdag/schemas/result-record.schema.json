@@ -221,6 +221,11 @@
         "transient"
       ],
       "additionalProperties": false
+    },
+    "continuation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Which link of a handover chain produced this record (3.8); 0 for a node that never handed over. Counts handovers that carry work FORWARD, where attempt counts tries at the same work. Absent on a line written before 3.8, so it is not required."
     }
   },
   "required": [

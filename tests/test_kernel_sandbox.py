@@ -47,7 +47,8 @@ class _OneRowPolicy:
 
     version: str = "sha256:test"
     max_turns: int = 5
-    max_attempts: int = 1  # these tests assert one dispatch per node
+    max_attempts: int = 1
+    max_continuations: int = 3  # these tests assert one dispatch per node
     deny_bash: tuple[str, ...] = ()
     tokens_per_row: Mapping[str, int] = {"sonnet": 10}
     deadline_ceiling_s: float = 999_999.0

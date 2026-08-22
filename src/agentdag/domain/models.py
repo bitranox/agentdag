@@ -106,6 +106,7 @@ class ErrorType(StrEnum):
     KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
     BUDGET_EXCEEDED = "budget_exceeded"
     CANCELLED_BY_USER = "cancelled_by_user"
+    CONTINUATION_LIMIT = "continuation_limit"
 
 
 class Isolation(StrEnum):
@@ -334,6 +335,15 @@ class ResultRecord(NodeOutcome):
 
     node_id: str
     attempt: int
+    continuation: int = 0
+    """Which link of a design 3.8 handover chain produced this record; 0 for a node that
+    never handed over. Sits next to :attr:`attempt` because the two are the same KIND of
+    counter - both are identity fields (``domain/keys.py``), so incrementing either gives
+    a different journal key and therefore a genuine re-run rather than the old record
+    served back - but they count different things: ``attempt`` counts tries at the same
+    work, ``continuation`` counts handovers that carry work FORWARD. Defaulted so a
+    journal line written before 3.8 still validates."""
+
     input_hash: str
     duration_s: float
     cost_usd: float | None = None

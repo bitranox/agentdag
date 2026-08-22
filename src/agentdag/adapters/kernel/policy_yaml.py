@@ -79,6 +79,7 @@ class LoadedPolicy:
         self.version = version
         self.max_turns = max_turns
         self.max_attempts = table.thresholds.max_attempts
+        self.max_continuations = table.thresholds.max_continuations
         self.deny_bash = deny_bash
         self.tokens_per_row: Mapping[str, int] = table.run_limits.tokens_per_row
         self.deadline_ceiling_s: float = table.run_limits.deadline_ceiling_s

@@ -360,6 +360,7 @@ def _complete(
             **outcome.model_dump(),
             "node_id": spec.node_id,
             "attempt": spec.attempt,
+            "continuation": spec.continuation,
             "input_hash": input_hash,
             "duration_s": duration_s,
             "sandbox": sandbox,

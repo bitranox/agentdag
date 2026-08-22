@@ -434,6 +434,12 @@ class Policy(Protocol):
     version: str
     max_turns: int
     max_attempts: int
+
+    max_continuations: int
+    """How many handovers one node chain may take before it ends
+    ``failed``/``continuation_limit`` (design 3.8). Bounds a chain the way
+    :attr:`max_attempts` bounds retries, and is the ONLY thing that does: a context
+    ceiling is not a failure, so nothing else about a handover ever stops one."""
     """How many times ONE code node may be dispatched before a transient failure stands
     (``Thresholds.max_attempts``). Read by :meth:`Coordinator._dispatch
     <agentdag.application.kernel.context.Coordinator._dispatch>`; ``1`` disables retrying.

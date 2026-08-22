@@ -290,6 +290,39 @@ class Coordinator:
         dispatched = spec.model_copy(update={"executor": row.executor, "model": row.alias})
         return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
 
+    def _chain_limit_refusal(self, spec: NodeSpec) -> NodeError | None:
+        """Whether this link is one handover past what ``policy.max_continuations`` allows (3.8).
+
+        Checked HERE, in the body, rather than in :meth:`_continues`, so that running out
+        of links produces a record and a journal line like any other refusal: a run can
+        then say why a chain stopped instead of merely having no more records after the
+        last handover. It is the same shape as :meth:`_run_cap_refusal` for the same
+        reason, and it is checked BEFORE that one because a chain with no links left
+        cannot spend anything either way.
+
+        The comparison is strict on the COUNT OF HANDOVERS, not on the link number:
+        ``max_continuations`` is how many handovers a chain may take, so a chain reaching
+        ``continuation == max_continuations`` has taken exactly its allowance and still
+        runs; the link after it is the one refused.
+
+        Args:
+            spec: The node about to be dispatched, carrying its ``continuation``.
+
+        Returns:
+            A ``CONTINUATION_LIMIT`` error when this link is past the allowance, else
+            ``None``. Not transient: another attempt cannot give the chain more links.
+        """
+        if spec.continuation <= self.policy.max_continuations:
+            return None
+        return NodeError(
+            type=ErrorType.CONTINUATION_LIMIT,
+            message=(
+                f"node {spec.node_id!r} handed over {spec.continuation} times; "
+                f"policy allows {self.policy.max_continuations}"
+            ),
+            transient=False,
+        )
+
     def _run_cap_refusal(self, row: str, node_cap: int | None) -> NodeError | None:
         """Whether dispatching now, with ``node_cap`` on ``row``, would push the run past its ceiling.
 
@@ -930,10 +963,25 @@ class Coordinator:
         """
         self.declared_write_sets[spec.node_id] = tuple(spec.write_set)
         record = await self._dispatch_once(spec, brief=brief, input_obj=input_obj, body=body)
-        while self._retries(spec, record):
-            spec = spec.model_copy(update={"attempt": spec.attempt + 1})
+        while True:
+            if self._retries(spec, record):
+                spec = spec.model_copy(update={"attempt": spec.attempt + 1})
+            elif self._continues(record):
+                # A successor is a FRESH dispatch of the next link, so its attempt counter
+                # starts over: its own transient failures deserve the same allowance any
+                # node gets. The chain is bounded by max_continuations instead, so the
+                # total is bounded by both and by neither alone.
+                spec = spec.model_copy(update={"continuation": spec.continuation + 1, "attempt": 0})
+                limit = self._chain_limit_refusal(spec)
+                if limit is not None:
+                    # Dispatch a body that REFUSES rather than returning a record built
+                    # here: the refusal then goes through the journal like every other
+                    # record, so a replay makes the same decision instead of re-deriving
+                    # it, and a run can say why the chain stopped.
+                    body = _chain_limit_body(limit, spec)
+            else:
+                return record
             record = await self._dispatch_once(spec, brief=brief, input_obj=input_obj, body=body)
-        return record
 
     async def _dispatch_once(
         self, spec: NodeSpec, *, brief: str, input_obj: Mapping[str, Any], body: Body
@@ -1007,6 +1055,26 @@ class Coordinator:
             return False
         return (spec.node_id, record.input_hash) in self.dispatcher.index.grants
 
+    def _continues(self, record: ResultRecord) -> bool:
+        """Whether this record earns a SUCCESSOR: it handed over at its context ceiling.
+
+        Deliberately not a function of the spec, unlike :meth:`_retries`. A retry has to
+        ask how many tries this node has already had; a continuation asks only what the
+        record says, because the chain's bound is enforced where the successor is
+        DISPATCHED (the body refuses past ``policy.max_continuations``) rather than here.
+        Keeping the bound there means the refusal is journaled like any other node, so a
+        run can explain why a chain stopped instead of simply having no more records.
+
+        Args:
+            record: The record just returned.
+
+        Returns:
+            Whether it ended ``needs_continuation``. No transience test and no kind test:
+            a handover is never an error, and only a node that can hold context can
+            produce one.
+        """
+        return record.status is NodeStatus.NEEDS_CONTINUATION
+
     def _auto_retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
         """Return whether this failure earns another attempt on its own (M3's code-node retry).
 
@@ -1048,6 +1116,37 @@ class Coordinator:
         """
         for row_name, charged in record.charged_tokens.items():
             self.tokens_by_row[row_name] = self.tokens_by_row.get(row_name, 0) + charged
+
+
+def _chain_limit_body(error: NodeError, spec: NodeSpec) -> Body:
+    """A body that refuses the dispatch because the handover chain has no links left (3.8).
+
+    Substituted for the real body when the successor about to be dispatched is one
+    handover past ``policy.max_continuations``. It is a BODY rather than a record built
+    on the spot so the refusal is dispatched, journaled and hashed exactly like any other
+    node's outcome - which is what makes a replay reach the same end without re-deriving
+    the decision, and what gives the run a record to explain the chain's end with.
+
+    Args:
+        error: The ``CONTINUATION_LIMIT`` error to stamp.
+        spec: The refused successor; names the executor and model the chain was running
+            on, so the record does not claim a dispatch that never happened ran nowhere.
+
+    Returns:
+        A body that runs nothing and returns the refusal.
+    """
+
+    async def refuse(node_dir: Path) -> NodeOutcome:
+        """Return the chain-limit refusal; ``node_dir`` is unused, nothing is written."""
+        return NodeOutcome(
+            status=NodeStatus.FAILED,
+            executor_used=spec.executor or "-",
+            model_used=spec.model or "-",
+            effort_used="-",
+            error=error,
+        )
+
+    return refuse
 
 
 def _branch_record(map_id: str, index: int, outcome: ResultRecord | BaseException) -> ResultRecord:
