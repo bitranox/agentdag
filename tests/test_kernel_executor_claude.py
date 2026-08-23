@@ -1266,6 +1266,42 @@ def test_a_node_that_ignores_the_stop_notice_is_interrupted_once_the_grace_runs_
 
 
 @pytest.mark.os_agnostic
+def test_the_handover_grace_counts_api_requests_not_stream_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One request's extra content blocks must not spend the grace they arrived with.
+
+    This CLI emits one ``AssistantMessage`` event PER CONTENT BLOCK, repeating that
+    request's own ``message_id`` and usage, so a grace folded per EVENT is spent by the
+    single turn that armed it. Measured in the grace probe (RESEARCH
+    ``workflow/design/probes/handover-grace-expiry.md``, 58 dispatches): a complying node
+    needs two requests after the notice and produces three events doing it, so a
+    three-EVENT grace expires exactly on that boundary and lost the record 1 time in 8 -
+    once with the handover JSON already streaming.
+
+    The same defect was fixed for the token sums in ``dbb5c9e`` by keying on
+    ``message_id``; this is the remaining caller that folded per event.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    turns = [
+        _turn_of_message("m1", 100),  # under the ceiling
+        _turn_of_message("m2", 200),  # crosses it: the notice is armed here
+        _turn_of_message("m2", 200),  # the SAME request's second block
+        _turn_of_message("m2", 200),  # and its third
+        _turn_of_message("m3", 200),  # the node's next turn, where it writes its handover
+    ]
+
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    assert outcome.status == "needs_continuation"
+    assert FakeStreamClient.instances[0].interrupt_calls == 0
+
+
+@pytest.mark.os_agnostic
 def test_the_stop_notice_hook_is_wired_into_the_dispatch_and_armed_by_the_crossing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

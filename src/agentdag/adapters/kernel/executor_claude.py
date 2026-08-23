@@ -463,13 +463,17 @@ def outcome_from_usage(
 
 
 HANDOVER_GRACE_TURNS = 3
-"""How many further turns a node gets to write its handover after being asked to (design 3.8).
+"""How many further API REQUESTS a node gets to write its handover after being asked to (design 3.8).
 
 Bounded rather than open-ended because compliance is not guaranteed: the probe behind
 decision 14 measured 4 of 4 under the right framing and 0 of 4 under the wrong one, so a
-node that simply carries on must still be stopped. Three turns is enough for a node to
-finish its current tool call, write one JSON file and report - and short enough that an
-ignoring node does not spend a whole extra window past its ceiling.
+node that simply carries on must still be stopped. Three is enough for a node to finish its
+current tool call, write one JSON file and report - and short enough that an ignoring node
+does not spend a whole extra window past its ceiling.
+
+Three is also measured rather than chosen: every complying node in the grace probe's 58
+dispatches wrote its handover within TWO requests of the notice, and the one-request grace
+lost the record 8 times out of 8. See :meth:`_Handover.observe` for why the unit matters.
 """
 
 
@@ -487,21 +491,40 @@ class _Handover:
     """Whether the node has been asked to hand over. The hook's predicate reads this."""
 
     grace_used: int = 0
-    """Turns seen since arming; the node is interrupted once this reaches the grace."""
+    """API requests seen since arming; the node is interrupted once this reaches the grace."""
 
     context_at: int = 0
     """The turn context that crossed the ceiling, recorded for the record's key_facts."""
 
-    def observe(self, usage: Mapping[str, Any], ceiling: int | None) -> bool:
+    armed_request: str | None = None
+    """The request that crossed the ceiling. Its own later blocks must not spend the grace."""
+
+    last_counted: str | None = None
+    """The last request counted, so a request's remaining blocks are not counted again."""
+
+    def observe(self, usage: Mapping[str, Any], ceiling: int | None, *, request_id: str | None) -> bool:
         """Fold one turn in, and say whether the dispatch should now be interrupted.
 
         Arming does NOT interrupt: the node is being asked to WRITE its handover, so
         stopping it at the moment of asking guarantees no record exists for the successor
         (decision 14). Only the grace running out interrupts.
 
+        Counted per API REQUEST, never per streamed event. This CLI emits one
+        ``AssistantMessage`` per CONTENT BLOCK, each repeating that request's own
+        ``message_id`` and usage, so a per-event fold is spent by the single turn that armed
+        it - the same double count ``dbb5c9e`` fixed for the token sums, which is why the
+        key is the same one. Measured (RESEARCH
+        ``workflow/design/probes/handover-grace-expiry.md``, 58 dispatches): a complying
+        node needs two requests after the notice and takes three events doing it, so a
+        three-EVENT grace lands exactly on that boundary and lost the record 1 time in 8.
+
+        An event carrying no id cannot be attributed to a request, so it counts once on its
+        own, exactly as the spend counter treats one.
+
         Args:
             usage: This turn's own usage.
             ceiling: The row's ``handover_at_tokens``, or None when it declares none.
+            request_id: This event's ``message_id``, or None when it carries none.
 
         Returns:
             Whether to interrupt now.
@@ -511,7 +534,12 @@ class _Handover:
                 return False
             self.armed = True
             self.context_at = input_total(usage)
+            self.armed_request = request_id
             return False
+        key = request_id or f"unkeyed-{self.grace_used}"
+        if key in (self.armed_request, self.last_counted):
+            return False
+        self.last_counted = key
         self.grace_used += 1
         return self.grace_used >= HANDOVER_GRACE_TURNS
 
@@ -857,7 +885,11 @@ class ClaudeExecutor:
                     # good, and offering it a successor would hand the chain a way to
                     # outlive the bound that just stopped it. It compares THIS turn's own
                     # context, never the running sum above.
-                    if not cap_hit and not deadline_hit and handover.observe(usage, request.handover_at_tokens):
+                    if (
+                        not cap_hit
+                        and not deadline_hit
+                        and handover.observe(usage, request.handover_at_tokens, request_id=message.message_id)
+                    ):
                         await client.interrupt()
                 if isinstance(message, ResultMessage):
                     terminal = message
