@@ -33,8 +33,14 @@ __all__ = ["HANDOVER_FILENAME", "prompt_with_stop_duty", "stop_notice"]
 HANDOVER_FILENAME = "handover.json"
 """The handover record's name in the node's artefact dir.
 
-JSON, not prose: the successor's brief is built from typed fields and the coordinator
-branches on none of the text (design 3.8, ``handover.schema.json``).
+JSON, not prose, so that a successor's brief CAN be composed from typed fields without the
+coordinator branching on anything the node wrote (design 3.8, ``handover.schema.json``).
+
+That composition is not built. Nothing here reads this file back: a successor is the same
+spec re-dispatched with ``continuation + 1``, carrying the SAME brief and prompt, and it
+continues from the worktree the handover outcome keeps as its artefact ref. The record is
+written for the run's own artefacts and for whoever builds that step - state the gap rather
+than describing the intended dataflow in the present tense.
 """
 
 _DUTY = (
