@@ -22,13 +22,28 @@ absence of the refuted framing, so this cannot be undone by accident.
 
 Contents:
     * :data:`HANDOVER_FILENAME` - what the record is called inside the node's artefact dir.
+    * :data:`IDENTITY_KEYS` - the keys the coordinator owns rather than the node.
     * :func:`prompt_with_stop_duty` - the node's task, with the standing duty prepended.
     * :func:`stop_notice` - the authorised notice the executor's hook injects at the ceiling.
+    * :func:`stamp_identity` - add the coordinator's half of the record (decision 16).
 """
 
 from __future__ import annotations
 
-__all__ = ["HANDOVER_FILENAME", "prompt_with_stop_duty", "stop_notice"]
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+__all__ = ["HANDOVER_FILENAME", "IDENTITY_KEYS", "prompt_with_stop_duty", "stamp_identity", "stop_notice"]
+
+IDENTITY_KEYS: tuple[str, ...] = ("node_id", "attempt", "continuation")
+"""The three keys the schema requires and the duty never asks for (decision 16).
+
+They are the coordinator's half of the record. A node cannot supply them honestly: it is not
+told its attempt or its place in a handover chain, and a node that invented them would be
+guessing. Measured across every probe dispatch to date, 69 of 69 duty-shaped records failed the
+full schema on these three and on nothing else."""
 
 HANDOVER_FILENAME = "handover.json"
 """The handover record's name in the node's artefact dir.
@@ -110,3 +125,41 @@ def stop_notice(*, handover_path: str) -> str:
         True
     """
     return _NOTICE.format(path=handover_path)
+
+
+def stamp_identity(record: Mapping[str, Any], *, node_id: str, attempt: int, continuation: int) -> dict[str, Any]:
+    """Add the coordinator's identity keys to a node-authored handover record (decision 16).
+
+    Pure, and deliberately so: the caller owns reading and re-persisting the file, this owns
+    only what the stamped record should CONTAIN. The coordinator's values win over anything
+    already under those keys - identity is what the coordinator knows and the node does not,
+    so a node that guessed is corrected rather than trusted.
+
+    The stamp belongs where the record is first persisted by the coordinator, and nowhere
+    else. Stamping a record on the way OUT of a call would put the current run's identity on
+    a REPLAYED record, which then reports old work as having run under an attempt it never
+    ran under.
+
+    Args:
+        record: What the node wrote, already parsed.
+        node_id: The dispatched node's id.
+        attempt: The dispatched node's attempt, 0-based, matching ``ResultRecord.attempt`` and
+            the node spec's own counter - not a 1-based count of tries.
+        continuation: Which link of the handover chain this is; 0 for the first.
+
+    Returns:
+        A new dict; ``record`` is not modified.
+
+    Examples:
+        >>> stamped = stamp_identity({"done": [], "left": []}, node_id="w1", attempt=0, continuation=2)
+        >>> stamped["node_id"], stamped["attempt"], stamped["continuation"]
+        ('w1', 0, 2)
+        >>> stamped["done"]
+        []
+        >>> original = {"done": [], "node_id": "guessed"}
+        >>> stamp_identity(original, node_id="w1", attempt=0, continuation=0)["node_id"]
+        'w1'
+        >>> original["node_id"]
+        'guessed'
+    """
+    return {**record, "node_id": node_id, "attempt": attempt, "continuation": continuation}

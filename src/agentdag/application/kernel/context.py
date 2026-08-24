@@ -14,12 +14,14 @@ Contents:
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
-from ...domain.handover import HANDOVER_FILENAME, prompt_with_stop_duty
+from ...domain.handover import HANDOVER_FILENAME, prompt_with_stop_duty, stamp_identity
 from ...domain.journal import ApproveDecisionLine, RetryGrantLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
@@ -39,8 +41,6 @@ from .ports import ExecutorRequest, stamp
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
-    from pathlib import Path
-    from typing import Any
 
     from ...domain.models import ApprovePayload, NodeSpec
     from ..graph_a_ports import GatePort, GitPort
@@ -1005,10 +1005,74 @@ class Coordinator:
             The record, freshly built or served from the journal, already charged.
         """
         record = await self.dispatcher.dispatch(
-            spec, brief=brief, input_obj=input_obj, body=body, sandbox=self.sandbox.guarantees()
+            spec, brief=brief, input_obj=input_obj, body=self._stamping(spec, body), sandbox=self.sandbox.guarantees()
         )
         self._charge(record)
         return record
+
+    def _stamping(self, spec: NodeSpec, body: Body) -> Body:
+        """Wrap ``body`` so a handover record gets the coordinator's identity keys (decision 16).
+
+        Two properties this placement buys, neither of which a simpler one has.
+
+        It stamps with the CURRENT spec. ``body`` closes over ``work()``'s original spec, so
+        nothing the dispatch loop increments is visible inside it - ``spec.continuation`` read
+        there is 0 for ever, the same trap the chain limit hit. The wrapper closes over
+        :meth:`_dispatch_once`'s argument instead, which is the spec being dispatched now.
+
+        And it stamps only on a REAL dispatch. The dispatcher runs a body only when the journal
+        has no record for the key, so a replayed handover keeps the identity it was written
+        with rather than acquiring this run's - which is the difference between a record of what
+        happened and a record that agrees with whoever asked last.
+
+        Args:
+            spec: The node being dispatched, carrying the current attempt and continuation.
+            body: What to run when the journal has no result for this key.
+
+        Returns:
+            ``body``, followed by the stamp when it handed over.
+        """
+
+        async def stamped(node_dir: Path) -> NodeOutcome:
+            outcome = await body(node_dir)
+            if outcome.status is NodeStatus.NEEDS_CONTINUATION:
+                self._stamp_handover(node_dir, spec)
+            return outcome
+
+        return stamped
+
+    def _stamp_handover(self, node_dir: Path, spec: NodeSpec) -> None:
+        """Re-persist the node's handover record with its identity keys, or leave it alone.
+
+        The coordinator's only read of ``handover.json``, and the reason the record is JSON.
+        Everything that can go wrong here is the node's report to make, not ours to repair: a
+        node that handed over without writing a record, or wrote something unparseable, has
+        already said so through its outcome and its schema shape. Rewriting either into
+        something well-formed would manufacture a record no node produced, so both are left
+        exactly as found.
+
+        Args:
+            node_dir: The dispatch's artefact dir, holding the record the notice named.
+            spec: The node as dispatched now.
+        """
+        rel = str(Path(node_dir.relative_to(self.run_dir.root)) / HANDOVER_FILENAME)
+        try:
+            raw = self.run_dir.read_text(rel)
+        except (FileNotFoundError, OSError):
+            return
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(record, dict):
+            return
+        stamped = stamp_identity(
+            cast("dict[str, Any]", record),
+            node_id=spec.node_id,
+            attempt=spec.attempt,
+            continuation=spec.continuation,
+        )
+        self.run_dir.write_atomic(rel, json.dumps(stamped, indent=2, sort_keys=True) + "\n")
 
     def _retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
         """Return whether this failure earns another attempt: the automatic rule, or an operator's grant.

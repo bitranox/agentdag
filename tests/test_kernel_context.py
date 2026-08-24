@@ -8,9 +8,12 @@ those are the seams a work node's behaviour is defined by.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
 import pytest
+from jsonschema.exceptions import ValidationError
+from schema_helpers import validator
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
@@ -21,7 +24,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow, stamp
-from agentdag.domain.handover import HANDOVER_FILENAME
+from agentdag.domain.handover import HANDOVER_FILENAME, IDENTITY_KEYS
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
@@ -806,3 +809,126 @@ def test_work_names_an_absolute_handover_path_in_the_duty(tmp_path: Path) -> Non
     expected = str(request.node_dir / HANDOVER_FILENAME)
     assert expected in request.prompt
     assert request.node_dir.is_absolute()
+
+
+class HandoverExecutor:
+    """An executor that writes a node-authored handover record, then hands over.
+
+    The record holds exactly what the DUTY asks for and none of the identity keys, because
+    that is what a compliant node writes: measured across every probe dispatch to date, 69 of
+    69 duty-shaped records failed the full schema on the identity keys and nothing else.
+    """
+
+    def __init__(self, *, writes_record: bool = True, raw: str | None = None) -> None:
+        self.requests: list[ExecutorRequest] = []
+        self.writes_record = writes_record
+        self.raw = raw
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Record ``request``, write the handover if this executor writes one, and hand over."""
+        self.requests.append(request)
+        if self.writes_record:
+            body = (
+                self.raw
+                if self.raw is not None
+                else json.dumps(
+                    {
+                        "done": ["01: read and counted"],
+                        "left": ["02: write the count"],
+                        "key_facts": {"count": 7},
+                        "artefact_refs": ["wt/a"],
+                        "write_set_state": "dirty",
+                        "next_step": "write outbox/02.txt",
+                    }
+                )
+            )
+            (request.node_dir / HANDOVER_FILENAME).write_text(body, encoding="utf-8")
+        return NodeOutcome(
+            status=NodeStatus.NEEDS_CONTINUATION,
+            artefact_refs=["wt/a"],
+            key_facts={},
+            typed_fields=[],
+            charged_tokens={"sonnet": 10},
+            executor_used="claude",
+            model_used="sonnet",
+            effort_used="-",
+        )
+
+
+def _stamped_records(executor: HandoverExecutor) -> list[dict[str, object]]:
+    """Read back every handover record the run left behind, in dispatch order."""
+    return [
+        json.loads((request.node_dir / HANDOVER_FILENAME).read_text(encoding="utf-8")) for request in executor.requests
+    ]
+
+
+@pytest.mark.os_agnostic
+def test_a_handover_record_is_stamped_with_the_link_that_wrote_it(tmp_path: Path) -> None:
+    """Decision 16: the coordinator adds the identity keys, using the CURRENT spec.
+
+    The continuations are the whole point. A body closes over ``work()``'s ORIGINAL spec, so a
+    stamp taken from there would read 0 on every link of the chain and look perfectly fine.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = HandoverExecutor()
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    records = _stamped_records(executor)
+    assert [r["continuation"] for r in records] == [0, 1, 2, 3]
+    assert {r["node_id"] for r in records} == {"w_migrate@1"}
+    assert {r["attempt"] for r in records} == {0}
+    assert records[0]["next_step"] == "write outbox/02.txt"  # the node's own content survives
+
+
+@pytest.mark.os_agnostic
+def test_a_stamped_handover_record_validates_against_the_shipped_schema(tmp_path: Path) -> None:
+    """The point of the stamp: a duty-shaped record becomes schema-valid, with nothing asked of the node."""
+    run_dir = fresh_run_dir(tmp_path)
+    executor = HandoverExecutor()
+
+    asyncio.run(wire(run_dir, executor, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    record = _stamped_records(executor)[0]
+    validator("handover").validate(record)
+    # RED control: strip the coordinator's half back off and the same record must fail again,
+    # so this test cannot pass by validating something the schema never constrained.
+    node_authored = {k: v for k, v in record.items() if k not in set(IDENTITY_KEYS)}
+    with pytest.raises(ValidationError):
+        validator("handover").validate(node_authored)
+
+
+@pytest.mark.os_agnostic
+def test_a_replayed_handover_keeps_the_identity_it_was_written_with(tmp_path: Path) -> None:
+    """A replay must not re-stamp: the record says what happened, not what was asked last."""
+    run_dir = fresh_run_dir(tmp_path)
+    first = HandoverExecutor()
+    asyncio.run(wire(run_dir, first, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    path = first.requests[0].node_dir / HANDOVER_FILENAME
+    path.write_text(json.dumps({"node_id": "from-the-first-run", "attempt": 7, "continuation": 9}), encoding="utf-8")
+
+    second = HandoverExecutor()
+    asyncio.run(wire(run_dir, second, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert second.requests == []  # served from the journal; no body ran, so nothing stamped
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "node_id": "from-the-first-run",
+        "attempt": 7,
+        "continuation": 9,
+    }
+
+
+@pytest.mark.os_agnostic
+def test_a_handover_with_no_record_or_an_unreadable_one_is_left_exactly_as_found(tmp_path: Path) -> None:
+    """Neither absence nor garbage is the coordinator's to repair - both are the node's report."""
+    run_dir = fresh_run_dir(tmp_path)
+    silent = HandoverExecutor(writes_record=False)
+    asyncio.run(wire(run_dir, silent, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+    assert not (silent.requests[0].node_dir / HANDOVER_FILENAME).exists()
+
+    other = fresh_run_dir(tmp_path / "second")
+    garbage = HandoverExecutor(raw="{not json at all")
+    asyncio.run(wire(other, garbage, FakeScanner()).work(work_spec(), brief="migrate", cwd=other.worktree("a")))
+    assert (garbage.requests[0].node_dir / HANDOVER_FILENAME).read_text(encoding="utf-8") == "{not json at all"

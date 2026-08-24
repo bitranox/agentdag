@@ -17,16 +17,18 @@
   ],
   "properties": {
     "node_id": {
-      "type": "string"
+      "type": "string",
+      "description": "The node this record belongs to; stamped by the coordinator, not the node."
     },
     "attempt": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 0,
+      "description": "Which attempt produced this record; matches the node spec's attempt, like result-record.schema.json. The coordinator stamps it (design 3.8, decision 16): the duty never asks the node for it and the node cannot know it."
     },
     "continuation": {
       "type": "integer",
       "minimum": 0,
-      "description": "0 for the first node of a chain; the successor is dispatched with continuation + 1 in its journal key."
+      "description": "0 for the first node of a chain; the successor is dispatched with continuation + 1 in its journal key. Stamped by the coordinator, not the node."
     },
     "done": {
       "type": "array",
@@ -75,7 +77,7 @@
   "examples": [
     {
       "node_id": "w_migrate@3",
-      "attempt": 1,
+      "attempt": 0,
       "continuation": 0,
       "done": [
         "adapted send wrapper",
