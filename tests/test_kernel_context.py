@@ -24,7 +24,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow, stamp
-from agentdag.domain.handover import HANDOVER_FILENAME, IDENTITY_KEYS
+from agentdag.domain.handover import HANDOVER_AS_WRITTEN_FILENAME, HANDOVER_FILENAME, IDENTITY_KEYS
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import (
@@ -823,6 +823,7 @@ class HandoverExecutor:
         self.requests: list[ExecutorRequest] = []
         self.writes_record = writes_record
         self.raw = raw
+        self.written_raw = ""
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
         """Record ``request``, write the handover if this executor writes one, and hand over."""
@@ -842,6 +843,7 @@ class HandoverExecutor:
                     }
                 )
             )
+            self.written_raw = body
             (request.node_dir / HANDOVER_FILENAME).write_text(body, encoding="utf-8")
         return NodeOutcome(
             status=NodeStatus.NEEDS_CONTINUATION,
@@ -880,6 +882,38 @@ def test_a_handover_record_is_stamped_with_the_link_that_wrote_it(tmp_path: Path
     assert {r["node_id"] for r in records} == {"w_migrate@1"}
     assert {r["attempt"] for r in records} == {0}
     assert records[0]["next_step"] == "write outbox/02.txt"  # the node's own content survives
+
+
+@pytest.mark.os_agnostic
+def test_the_node_s_own_bytes_survive_the_stamp(tmp_path: Path) -> None:
+    """Stamping rewrites handover.json, so what the node actually wrote is kept beside it.
+
+    The evidence every faithfulness question is answered from is the node's WORDING, and a
+    reformatted, re-ordered rewrite is not it.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = HandoverExecutor()
+
+    asyncio.run(wire(run_dir, executor, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    node_dir = executor.requests[0].node_dir
+    as_written = (node_dir / HANDOVER_AS_WRITTEN_FILENAME).read_text(encoding="utf-8")
+    assert as_written == executor.written_raw  # byte for byte, not merely equivalent JSON
+    assert set(IDENTITY_KEYS).isdisjoint(json.loads(as_written))  # untouched by the coordinator
+    assert set(IDENTITY_KEYS) <= set(json.loads((node_dir / HANDOVER_FILENAME).read_text(encoding="utf-8")))
+
+
+@pytest.mark.os_agnostic
+def test_nothing_is_preserved_when_nothing_is_overwritten(tmp_path: Path) -> None:
+    """An unparseable record is left alone, so there is no rewrite to preserve it from."""
+    run_dir = fresh_run_dir(tmp_path)
+    garbage = HandoverExecutor(raw="{not json at all")
+
+    asyncio.run(wire(run_dir, garbage, FakeScanner()).work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    node_dir = garbage.requests[0].node_dir
+    assert (node_dir / HANDOVER_FILENAME).read_text(encoding="utf-8") == "{not json at all"
+    assert not (node_dir / HANDOVER_AS_WRITTEN_FILENAME).exists()
 
 
 @pytest.mark.os_agnostic

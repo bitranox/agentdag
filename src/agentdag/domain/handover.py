@@ -22,6 +22,7 @@ absence of the refuted framing, so this cannot be undone by accident.
 
 Contents:
     * :data:`HANDOVER_FILENAME` - what the record is called inside the node's artefact dir.
+    * :data:`HANDOVER_AS_WRITTEN_FILENAME` - the node's own bytes, kept before the stamp.
     * :data:`IDENTITY_KEYS` - the keys the coordinator owns rather than the node.
     * :func:`prompt_with_stop_duty` - the node's task, with the standing duty prepended.
     * :func:`stop_notice` - the authorised notice the executor's hook injects at the ceiling.
@@ -35,7 +36,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["HANDOVER_FILENAME", "IDENTITY_KEYS", "prompt_with_stop_duty", "stamp_identity", "stop_notice"]
+__all__ = [
+    "HANDOVER_AS_WRITTEN_FILENAME",
+    "HANDOVER_FILENAME",
+    "IDENTITY_KEYS",
+    "prompt_with_stop_duty",
+    "stamp_identity",
+    "stop_notice",
+]
 
 IDENTITY_KEYS: tuple[str, ...] = ("node_id", "attempt", "continuation")
 """The three keys the schema requires and the duty never asks for (decision 16).
@@ -56,6 +64,19 @@ spec re-dispatched with ``continuation + 1``, carrying the SAME brief and prompt
 continues from the worktree the handover outcome keeps as its artefact ref. The record is
 written for the run's own artefacts and for whoever builds that step - state the gap rather
 than describing the intended dataflow in the present tense.
+"""
+
+HANDOVER_AS_WRITTEN_FILENAME = "handover.as-written.json"
+"""The node's record exactly as the node left it, kept beside the stamped one.
+
+Stamping re-persists :data:`HANDOVER_FILENAME`, which would otherwise destroy the only copy of
+what the node actually produced. That copy is the evidence every faithfulness question is
+answered from, and those questions turn on the node's own WORDING: whether a `done` entry
+claims a step's deliverable or only the sub-action it really finished is a difference in prose,
+invisible once the record has been reformatted and its keys reordered.
+
+Written BEFORE the stamp, never after, so a crash between the two leaves the original readable
+rather than lost.
 """
 
 _DUTY = (

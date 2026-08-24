@@ -21,7 +21,12 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
-from ...domain.handover import HANDOVER_FILENAME, prompt_with_stop_duty, stamp_identity
+from ...domain.handover import (
+    HANDOVER_AS_WRITTEN_FILENAME,
+    HANDOVER_FILENAME,
+    prompt_with_stop_duty,
+    stamp_identity,
+)
 from ...domain.journal import ApproveDecisionLine, RetryGrantLine
 from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
@@ -1049,13 +1054,20 @@ class Coordinator:
         node that handed over without writing a record, or wrote something unparseable, has
         already said so through its outcome and its schema shape. Rewriting either into
         something well-formed would manufacture a record no node produced, so both are left
-        exactly as found.
+        exactly as found - which is also why neither needs preserving: nothing overwrites them.
+
+        The node's own bytes ARE preserved whenever this does overwrite, as
+        ``handover.as-written.json``. Stamping reformats and reorders, and what a node wrote is
+        the evidence every faithfulness question is answered from - questions that turn on its
+        WORDING, not on its keys. The copy is written FIRST, so a crash between the two steps
+        leaves the original readable rather than gone.
 
         Args:
             node_dir: The dispatch's artefact dir, holding the record the notice named.
             spec: The node as dispatched now.
         """
-        rel = str(Path(node_dir.relative_to(self.run_dir.root)) / HANDOVER_FILENAME)
+        node_rel = Path(node_dir.relative_to(self.run_dir.root))
+        rel = str(node_rel / HANDOVER_FILENAME)
         try:
             raw = self.run_dir.read_text(rel)
         except (FileNotFoundError, OSError):
@@ -1072,6 +1084,7 @@ class Coordinator:
             attempt=spec.attempt,
             continuation=spec.continuation,
         )
+        self.run_dir.write_atomic(str(node_rel / HANDOVER_AS_WRITTEN_FILENAME), raw)
         self.run_dir.write_atomic(rel, json.dumps(stamped, indent=2, sort_keys=True) + "\n")
 
     def _retries(self, spec: NodeSpec, record: ResultRecord) -> bool:
