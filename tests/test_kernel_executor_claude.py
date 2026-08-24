@@ -1266,6 +1266,45 @@ def test_a_node_that_ignores_the_stop_notice_is_interrupted_once_the_grace_runs_
 
 
 @pytest.mark.os_agnostic
+def test_the_handover_record_says_whether_the_grace_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A node that stopped on its own and one that was cut off must not record the same.
+
+    Both end ``needs_continuation`` carrying the same ceiling figures, so without this the
+    two are indistinguishable on the record - and telling them apart is the whole question
+    a live run is supposed to answer. Measured in RESEARCH
+    ``workflow/design/probes/live-handover.md``: 6 armed dispatches, 2 of them at the grace
+    threshold, and nothing on the record could classify any of them.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+
+    # Stopped on its own: turn 2 crosses a 150 ceiling and the stream ends inside the grace.
+    inside = [_turn_of_message("m1", 100), _turn_of_message("m2", 200)]
+    FakeStreamClient.configure(inside, _result(is_error=False, subtype="success", num_turns=2))
+    voluntary = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    # Cut off: every turn after the crossing stays over, and there are more than the grace.
+    over = [_turn_of_message(f"m{n}", 100 if n == 1 else 200) for n in range(1, HANDOVER_GRACE_TURNS + 4)]
+    FakeStreamClient.configure(over, _result(is_error=False, subtype="success", num_turns=len(over)))
+    cut_off = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    assert voluntary.status == "needs_continuation"
+    assert cut_off.status == "needs_continuation"
+    # Indexed, not .get(): a missing key must fail this test loudly rather than compare as
+    # None, which is how the gap being closed here went unnoticed in the first place.
+    assert voluntary.key_facts["grace_expired"] is False
+    assert cut_off.key_facts["grace_expired"] is True
+    assert voluntary.key_facts["grace_used"] < HANDOVER_GRACE_TURNS
+    assert cut_off.key_facts["grace_used"] == HANDOVER_GRACE_TURNS
+    # Declared TYPED or the coordinator may never branch on it: design 3.3 restricts a branch
+    # to keys named in typed_fields and treats every other key_facts entry as free text.
+    assert "grace_expired" in cut_off.typed_fields
+    assert "grace_used" not in cut_off.typed_fields
+
+
+@pytest.mark.os_agnostic
 def test_the_handover_grace_counts_api_requests_not_stream_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

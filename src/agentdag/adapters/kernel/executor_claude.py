@@ -502,6 +502,23 @@ class _Handover:
     last_counted: str | None = None
     """The last request counted, so a request's remaining blocks are not counted again."""
 
+    @property
+    def expired(self) -> bool:
+        """Whether the grace ran out, which is the same thing as ``interrupt()`` having been called.
+
+        Derived rather than latched: :meth:`observe` returns True on exactly the request that
+        reaches the grace, and :meth:`ClaudeExecutor._run` calls ``interrupt()`` on that return
+        and nowhere else for this reason, so ``grace_used`` already IS the answer. A separate
+        flag set beside the call would be a second source for one fact.
+
+        Examples:
+            >>> _Handover(armed=True, grace_used=HANDOVER_GRACE_TURNS).expired
+            True
+            >>> _Handover(armed=True, grace_used=HANDOVER_GRACE_TURNS - 1).expired
+            False
+        """
+        return self.grace_used >= HANDOVER_GRACE_TURNS
+
     def observe(self, usage: Mapping[str, Any], ceiling: int | None, *, request_id: str | None) -> bool:
         """Fold one turn in, and say whether the dispatch should now be interrupted.
 
@@ -904,7 +921,15 @@ class ClaudeExecutor:
         if cap_hit:
             return self._budget_outcome(request, first_turn_input, usage)
         if handover.armed:
-            return self._handover_outcome(request, first_turn_input, usage, cwd_rel, handover.context_at)
+            return self._handover_outcome(
+                request,
+                first_turn_input,
+                usage,
+                cwd_rel,
+                handover.context_at,
+                grace_used=handover.grace_used,
+                grace_expired=handover.expired,
+            )
         if terminal is not None:
             return self._outcome_for(request, terminal, first_turn_input, cwd_rel)
         return NodeOutcome(
@@ -1014,6 +1039,9 @@ class ClaudeExecutor:
         usage: Mapping[str, Any],
         cwd_rel: str,
         context_at_handover: int,
+        *,
+        grace_used: int,
+        grace_expired: bool,
     ) -> NodeOutcome:
         """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
 
@@ -1036,6 +1064,14 @@ class ClaudeExecutor:
                 artefact ref the successor reads.
             context_at_handover: The turn context that passed the ceiling, recorded so a
                 drift signal (design 3.5) can be read off the record.
+            grace_used: How many API requests the node spent after being asked to hand over.
+            grace_expired: Whether the grace ran out and the dispatch was interrupted, as
+                against the node stopping of its own accord. Both end NEEDS_CONTINUATION
+                carrying the same ceiling figures, so without this the record cannot say
+                which happened - and that distinction is what decides design 3.8's
+                expiry behaviour. A live run measured 6 armed dispatches, 2 of them exactly
+                at the threshold, and could classify none of them
+                (RESEARCH ``workflow/design/probes/live-handover.md``).
 
         Returns:
             A ``NEEDS_CONTINUATION`` outcome carrying the worktree and the trigger figure.
@@ -1051,8 +1087,14 @@ class ClaudeExecutor:
                 "context_at_handover": context_at_handover,
                 "handover_at_tokens": request.handover_at_tokens,
                 "first_turn_input_tokens": first_turn_input,
+                "grace_used": grace_used,
+                "grace_expired": grace_expired,
             },
-            typed_fields=["context_at_handover"],
+            # `grace_expired` is TYPED, by direct analogy with `cap_hit` and `deadline_hit`:
+            # it is this outcome's decisive fact, and design 3.3 lets the coordinator branch
+            # ONLY on a key named here. `grace_used` stays free text - a measurement, like
+            # `first_turn_input_tokens`, not something a branch should read.
+            typed_fields=["context_at_handover", "grace_expired"],
             tokens=tokens,
             charged_tokens={request.model: in_tokens + out_tokens},
             executor_used="claude",
