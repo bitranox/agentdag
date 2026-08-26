@@ -36,6 +36,8 @@ from typing import IO, Any, Final, TextIO
 
 import rich_click as click
 
+from .typed_click import get_text_stream
+
 ASCII_FALLBACKS: Final[dict[str, str]] = {
     "✓": "[OK]",  # check mark
     "✔": "[OK]",  # heavy check mark
@@ -70,7 +72,7 @@ def _stream_encoding(file: IO[Any] | None) -> str | None:
     An unknown encoding means the caller gets the original text: guessing would
     degrade output that may well have been fine.
     """
-    stream = file if file is not None else click.get_text_stream("stdout")
+    stream = file if file is not None else get_text_stream("stdout")
     encoding = getattr(stream, "encoding", None)
     return encoding if isinstance(encoding, str) else None
 
@@ -135,7 +137,7 @@ def echo(message: object = "", *, file: IO[Any] | None = None, err: bool = False
     Writes to the given stream.
     """
     text = message if isinstance(message, str) else str(message)
-    target = file if file is not None else click.get_text_stream("stderr" if err else "stdout")
+    target = file if file is not None else get_text_stream("stderr" if err else "stdout")
     click.echo(encode_safe(text, _stream_encoding(target)), file=target, nl=nl)
 
 
