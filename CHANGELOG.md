@@ -58,6 +58,30 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   even when a later launch is wired with a different `Sandbox` adapter.
 
 ### Fixed
+- A rate limit killed a run permanently and reported it as a login failure. The Claude CLI
+  describes an exhausted quota and a rejected credential identically - the same
+  "Not logged in - Please run /login" text, `authentication_failed`, a null
+  `api_error_status` - so nothing in the stream separates them: measured 2026-08-24 on SDK
+  0.2.144, three dispatches failed that way while the same credential returned HTTP 429 from
+  the API in the same minute. A `CredentialProbe` now asks the Messages API directly and
+  reads the status code the CLI discarded, and a quota refusal ends the launch `suspended`
+  and resumable instead of `failed`, keeping every node the run had finished. The re-label
+  is an upgrade on positive evidence only: a probe that could not ask leaves the
+  classification untouched.
+- `escalation.on_auth_failure` decided nothing. It was declared, validated, shipped in
+  `tier-policy.yaml` and read by no Python at all, so a run died from `transient=False`
+  alone and the setting was documentation. It is now typed `FailureAction` and actually
+  compared, alongside a new `escalation.on_rate_limit` (shipped `suspend_run`). Note that
+  marking such an error transient would not have helped either: `_auto_retries` requires
+  `spec.kind in CODE_KINDS`, which excludes `work` by design (2.3 rule 5), and the retry
+  path has no backoff.
+- `Suspended` raised from inside a node body became a failed record. It is a plain
+  `Exception` and `_run_body`'s broad catch swallowed it, which is worse than mislabelling
+  it: `build_replay_index` serves every recorded result whatever its status, so the record
+  would have been read back by the very resume the suspend exists to enable.
+- The result-record schema's `error.type` enum was missing `continuation_limit`, which the
+  `ErrorType` enum has, so a producer could emit a record the validator would reject. Both
+  are now pinned to each other by a set-equality test.
 - The per-node token cap counted each API request once per content block, so it fired at
   roughly 1.5x to 1.8x a dispatch's real usage. The CLI emits one `AssistantMessage` stream
   event per content block and every one repeats that request's `message_id` and `usage`,
