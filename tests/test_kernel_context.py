@@ -26,8 +26,7 @@ from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow, stamp
 from agentdag.domain.handover import HANDOVER_AS_WRITTEN_FILENAME, HANDOVER_FILENAME, IDENTITY_KEYS
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
-from agentdag.domain.kernel_errors import KernelError
-from agentdag.domain.policy import FailureAction
+from agentdag.domain.kernel_errors import KernelError, Suspended
 from agentdag.domain.models import (
     Budget,
     ErrorType,
@@ -40,7 +39,7 @@ from agentdag.domain.models import (
     SuspendReason,
     TierRole,
 )
-from agentdag.domain.kernel_errors import Suspended
+from agentdag.domain.policy import FailureAction
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

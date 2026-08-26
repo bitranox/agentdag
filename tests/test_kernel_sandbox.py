@@ -28,6 +28,7 @@ from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.sandbox import SandboxRequest
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.models import Kind, NodeOutcome, NodeSpec, NodeStatus, SandboxGuarantees
+from agentdag.domain.policy import FailureAction
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
@@ -50,6 +51,8 @@ class _OneRowPolicy:
     max_attempts: int = 1
     max_continuations: int = 3  # these tests assert one dispatch per node
     deny_bash: tuple[str, ...] = ()
+    on_auth_failure: FailureAction = FailureAction.FAIL_RUN
+    on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
     tokens_per_row: Mapping[str, int] = {"sonnet": 10}
     deadline_ceiling_s: float = 999_999.0
 

@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 from ...domain.journal import ResumeLine, RunStartedLine
 from ...domain.kernel_errors import RunRefused, Suspended
-from ...domain.models import ApprovePayload, RunState, RunStatus
+from ...domain.models import ApprovePayload, RunState, RunStatus, SuspendReason
 from .approve import suspend_payload_rel
 from .context import Coordinator
 from .dispatch import Dispatcher
@@ -219,6 +219,7 @@ async def _drive(
             cursor=suspended.node_id,
             by=by,
             cursor_payload_hash=suspended.payload_hash,
+            suspend_reason=suspended.reason,
         )
         _announce_suspend(co, notifier=notifier, suspended=suspended)
         return RunOutcome(RunStatus.SUSPENDED, suspended.node_id, list(co.dispatcher.dispatched_keys))
@@ -271,6 +272,7 @@ def _announce_suspend(co: Coordinator, *, notifier: Notifier, suspended: Suspend
             workflow=co.workflow,
             status=RunStatus.SUSPENDED,
             at=stamp(co.clock),
+            suspend_reason=suspended.reason,
             node_id=suspended.node_id,
             summary="" if payload is None else payload.text,
             decide_by=None if payload is None else payload.decide_by,
@@ -375,7 +377,13 @@ def _reason(resume_reason: str | None) -> _ResumeReason:
 
 
 def _write_state(
-    co: Coordinator, *, status: RunStatus, cursor: str | None, by: str, cursor_payload_hash: str | None = None
+    co: Coordinator,
+    *,
+    status: RunStatus,
+    cursor: str | None,
+    by: str,
+    cursor_payload_hash: str | None = None,
+    suspend_reason: SuspendReason | None = None,
 ) -> None:
     """Write ``state.json`` for this launch, keeping what only the first start decides.
 
@@ -390,6 +398,8 @@ def _write_state(
     ``cursor_payload_hash`` defaults to ``None`` and is passed only on the suspend
     path, so any other exit CLEARS it: a stale hash would name a payload the run is no
     longer waiting on, and a decider reading it would answer the wrong question.
+    ``suspend_reason`` is cleared the same way and for the same reason - a run that has
+    since finished must not still claim to be waiting for quota.
     """
     existing = _existing_state(co.run_dir)
     co.run_dir.write_state(
@@ -401,6 +411,7 @@ def _write_state(
             status=status,
             cursor=cursor,
             cursor_payload_hash=cursor_payload_hash,
+            suspend_reason=suspend_reason,
             policy_version=co.policy.version,
             tokens_by_row=dict(co.tokens_by_row),
         )

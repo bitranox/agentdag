@@ -13,16 +13,18 @@ import asyncio
 import json
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from agentdag.adapters.kernel.credential_probe import ApiCredentialProbe, NoCredentialProbe, status_of
-from agentdag.adapters.kernel.executor_claude import ClaudeExecutor, CredentialCopy, OAuthTokenFile
+from agentdag.adapters.kernel.executor_claude import (
+    CredentialCopy,
+    OAuthTokenFile,
+    separated_refusal,
+)
 from agentdag.domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from agentdag.domain.policy import FailureAction
 
 
 class FixedProbe:
@@ -47,13 +49,6 @@ def failed_with(error_type: ErrorType) -> NodeOutcome:
         effort_used="-",
         error=NodeError(type=error_type, message="Not logged in - Please run /login", transient=False),
     )
-
-
-def executor_with(probe: object, tmp_path: Path) -> ClaudeExecutor:
-    """Build an executor whose credential probe is ``probe``."""
-    keyfile = tmp_path / "token"
-    keyfile.write_text("t", encoding="utf-8")
-    return ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), credential_probe=probe)  # type: ignore[arg-type]
 
 
 @pytest.mark.os_agnostic
@@ -96,7 +91,7 @@ def test_the_api_probe_does_not_ask_without_a_token() -> None:
     """No token is no evidence - and asking anyway would send an unauthenticated request
     that comes back 401, manufacturing an UNAUTHORIZED verdict out of a missing keyfile.
     """
-    asked = []
+    asked: list[urllib.request.Request] = []
 
     def record(request: urllib.request.Request, _timeout: float) -> int:
         asked.append(request)
@@ -127,7 +122,9 @@ def test_the_api_probe_sends_the_credential_as_a_bearer_token_to_the_messages_en
     assert request.get_method() == "POST"
     assert request.get_header("Authorization") == "Bearer sk-secret"
     assert request.get_header("Anthropic-version") == "2023-06-01"
-    assert json.loads(request.data or b"{}")["max_tokens"] == 1
+    body = request.data
+    assert isinstance(body, bytes)
+    assert json.loads(body)["max_tokens"] == 1
 
 
 @pytest.mark.os_agnostic
@@ -157,10 +154,10 @@ def test_status_of_returns_a_refusals_code_rather_than_raising_it() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_an_auth_shaped_failure_is_relabelled_when_the_probe_says_rate_limited(tmp_path: Path) -> None:
-    executor = executor_with(FixedProbe(CredentialVerdict.RATE_LIMITED), tmp_path)
+def test_an_auth_shaped_failure_is_relabelled_when_the_probe_says_rate_limited() -> None:
+    probe = FixedProbe(CredentialVerdict.RATE_LIMITED)
 
-    refined = asyncio.run(executor._separated_refusal(failed_with(ErrorType.AUTH_FAILURE)))  # noqa: SLF001
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.AUTH_FAILURE), probe))
 
     assert refined.error is not None
     assert refined.error.type is ErrorType.RATE_LIMITED
@@ -169,32 +166,27 @@ def test_an_auth_shaped_failure_is_relabelled_when_the_probe_says_rate_limited(t
 
 
 @pytest.mark.os_agnostic
-@pytest.mark.parametrize(
-    "verdict", [CredentialVerdict.UNAUTHORIZED, CredentialVerdict.INDETERMINATE]
-)
-def test_an_auth_shaped_failure_stands_when_the_probe_does_not_say_rate_limited(
-    verdict: CredentialVerdict, tmp_path: Path
-) -> None:
+@pytest.mark.parametrize("verdict", [CredentialVerdict.UNAUTHORIZED, CredentialVerdict.INDETERMINATE])
+def test_an_auth_shaped_failure_stands_when_the_probe_does_not_say_rate_limited(verdict: CredentialVerdict) -> None:
     """The upgrade happens on positive evidence only. INDETERMINATE is the arm that matters:
     a probe that could not ask must leave the classification exactly where it was.
     """
-    executor = executor_with(FixedProbe(verdict), tmp_path)
+    probe = FixedProbe(verdict)
 
-    refined = asyncio.run(executor._separated_refusal(failed_with(ErrorType.AUTH_FAILURE)))  # noqa: SLF001
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.AUTH_FAILURE), probe))
 
     assert refined.error is not None
     assert refined.error.type is ErrorType.AUTH_FAILURE
 
 
 @pytest.mark.os_agnostic
-def test_a_failure_that_is_not_auth_shaped_is_never_probed(tmp_path: Path) -> None:
+def test_a_failure_that_is_not_auth_shaped_is_never_probed() -> None:
     """Probing costs a request against a metered endpoint, so it must fire only on the one
     classification it can possibly change - not on every failed node.
     """
     probe = FixedProbe(CredentialVerdict.RATE_LIMITED)
-    executor = executor_with(probe, tmp_path)
 
-    refined = asyncio.run(executor._separated_refusal(failed_with(ErrorType.EXECUTOR_ERROR)))  # noqa: SLF001
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.EXECUTOR_ERROR), probe))
 
     assert refined.error is not None
     assert refined.error.type is ErrorType.EXECUTOR_ERROR
@@ -202,12 +194,11 @@ def test_a_failure_that_is_not_auth_shaped_is_never_probed(tmp_path: Path) -> No
 
 
 @pytest.mark.os_agnostic
-def test_a_successful_outcome_is_never_probed(tmp_path: Path) -> None:
+def test_a_successful_outcome_is_never_probed() -> None:
     probe = FixedProbe(CredentialVerdict.RATE_LIMITED)
-    executor = executor_with(probe, tmp_path)
     done = NodeOutcome(status=NodeStatus.DONE, executor_used="claude", model_used="s", effort_used="-")
 
-    assert asyncio.run(executor._separated_refusal(done)) is done  # noqa: SLF001
+    assert asyncio.run(separated_refusal(done, probe)) is done
     assert probe.asks == 0
 
 
@@ -247,3 +238,57 @@ def test_the_credentials_file_credential_offers_no_token_for_a_shape_it_does_not
     source.write_text(payload, encoding="utf-8")
 
     assert CredentialCopy(source).bearer_token() is None
+
+
+@pytest.mark.os_agnostic
+def test_the_production_wiring_gives_the_executor_a_probe_that_can_actually_ask(tmp_path: Path) -> None:
+    """A port with no production implementation wired is the shape this repo has shipped
+    before: producer present, tests green, nothing consuming it. So assert the composition
+    root, not just that the class exists - and that the probe reads the SAME credential the
+    dispatch used, since one pointed anywhere else answers a question nobody asked.
+    """
+    from agentdag.adapters.kernel.notify_none import NoNotifier
+    from agentdag.composition.kernel import wire_kernel
+
+    keyfile = tmp_path / "token"
+    keyfile.write_text("sk-wired", encoding="utf-8")
+    credential = OAuthTokenFile(keyfile)
+
+    wiring = wire_kernel(
+        policy_path=Path("src/agentdag/policy/tier-policy.yaml"),
+        credential=credential,
+        parallel=1,
+        max_turns=5,
+        deny_bash=(),
+        notifier=NoNotifier(),
+    )
+
+    probe = wiring.executors["claude"].credential_probe  # type: ignore[attr-defined]
+    assert isinstance(probe, ApiCredentialProbe)
+    assert probe.read_token() == "sk-wired"
+    # And the shipped policy must actually act on what the probe can now find out.
+    assert wiring.policy.on_rate_limit is FailureAction.SUSPEND_RUN
+    assert wiring.policy.on_auth_failure is FailureAction.FAIL_RUN
+
+
+@pytest.mark.os_agnostic
+def test_the_probe_refuses_to_send_a_credential_over_a_scheme_that_cannot_encrypt_it() -> None:
+    """urlopen honours file: and ftp: too, so an endpoint arriving from configuration could
+    otherwise turn a credential check into a local file read - with a bearer token attached.
+    """
+
+    # refuses it before any request is sent, which is exactly what the assertion proves.
+    request = urllib.request.Request("file:///etc/passwd", method="POST")  # noqa: S310
+
+    with pytest.raises(ValueError, match="must be https"):
+        status_of(request, 1.0)
+
+
+@pytest.mark.os_agnostic
+def test_a_probe_pointed_at_a_bad_scheme_reports_no_evidence_rather_than_raising() -> None:
+    """The refusal above must not escape into the dispatch it was diagnosing: a
+    misconfigured endpoint is a failure to learn, which is INDETERMINATE.
+    """
+    probe = ApiCredentialProbe(read_token=lambda: "tok", endpoint="http://api.example.com/v1/messages")
+
+    assert asyncio.run(probe.verdict()) is CredentialVerdict.INDETERMINATE

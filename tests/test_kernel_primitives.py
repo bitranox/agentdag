@@ -41,7 +41,6 @@ from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.journal import ApproveDecisionLine, RunSummaryLine
 from agentdag.domain.kernel_errors import LockHeld, RunRefused, SpecRejected, Suspended
 from agentdag.domain.keys import content_hash, hash8
-from agentdag.domain.policy import FailureAction
 from agentdag.domain.models import (
     ApproveOption,
     ApprovePayload,
@@ -58,6 +57,7 @@ from agentdag.domain.models import (
     RunState,
     RunStatus,
 )
+from agentdag.domain.policy import FailureAction
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

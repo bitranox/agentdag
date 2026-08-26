@@ -42,7 +42,7 @@ from agentdag.application.kernel.notify import RunEvent
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import WorkflowDef
 from agentdag.domain.keys import hash8
-from agentdag.domain.models import RunState, RunStatus
+from agentdag.domain.models import RunState, RunStatus, SuspendReason
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -364,3 +364,101 @@ def _launch_failing_workflow(tmp_path: Path, *, notifier: RecordingNotifier) -> 
             notifier=notifier,
         )
     )
+
+
+def mail_capture() -> tuple[list[str], list[str], MailNotifier]:
+    """Build a mail sink that records the subjects and bodies it would have sent."""
+    subjects: list[str] = []
+    bodies: list[str] = []
+
+    def send_notification(
+        *,
+        config: EmailConfig,
+        recipients: str | Sequence[str] | None = None,
+        subject: str,
+        message: str,
+        from_address: str | None = None,
+    ) -> bool:
+        del config, recipients, from_address
+        subjects.append(subject)
+        bodies.append(message)
+        return True
+
+    config = EmailConfig(smtp_hosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
+    return subjects, bodies, MailNotifier(send_notification=send_notification, config=config)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (SuspendReason.QUOTA, "waiting for quota to return"),
+        (SuspendReason.CREDENTIAL, "waiting for its credential to be repaired"),
+        (SuspendReason.DECISION, "waiting for a decision"),
+    ],
+)
+def test_the_mail_sink_says_what_a_suspended_run_is_actually_waiting_for(reason: SuspendReason, expected: str) -> None:
+    """One status, three different things to do about it.
+
+    Before the reason existed every suspend said "waiting for a decision", so an operator
+    whose run had stopped on quota went looking for a question nobody had asked.
+    """
+    subjects, _bodies, sink = mail_capture()
+
+    sink.emit(
+        RunEvent(
+            run_id="r1",
+            workflow="graph-a",
+            status=RunStatus.SUSPENDED,
+            at=AT,
+            suspend_reason=reason,
+            node_id="w_migrate@1",
+        )
+    )
+
+    assert expected in subjects[0]
+
+
+@pytest.mark.os_agnostic
+def test_a_quota_suspend_message_offers_no_deadline_it_does_not_have() -> None:
+    """No payload is written for a quota suspend, so the decide-by line would render the
+    string ``None`` as if it were a real deadline the operator is racing.
+    """
+    _subjects, bodies, sink = mail_capture()
+
+    sink.emit(
+        RunEvent(
+            run_id="r1",
+            workflow="graph-a",
+            status=RunStatus.SUSPENDED,
+            at=AT,
+            suspend_reason=SuspendReason.QUOTA,
+            node_id="w_migrate@1",
+        )
+    )
+
+    assert "w_migrate@1" in bodies[0]
+    assert "decide by" not in bodies[0]
+
+
+@pytest.mark.os_agnostic
+def test_a_suspend_naming_no_reason_still_renders_the_decision_wording() -> None:
+    """What a run suspended by a coordinator older than the field looks like on resume:
+    the field reads ``None``, and the mail must fall back rather than raise a KeyError.
+    """
+    subjects, bodies, sink = mail_capture()
+
+    sink.emit(
+        RunEvent(
+            run_id="r1",
+            workflow="graph-a",
+            status=RunStatus.SUSPENDED,
+            at=AT,
+            node_id="a_push_list",
+            summary="push 3 repositories",
+            decide_by="2026-08-22T14:12:03+00:00",
+        )
+    )
+
+    assert "waiting for a decision" in subjects[0]
+    assert "decide by" in bodies[0]

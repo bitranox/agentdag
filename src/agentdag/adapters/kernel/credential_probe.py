@@ -19,14 +19,15 @@ from __future__ import annotations
 import asyncio
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from ...domain.models import CredentialVerdict
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    pass
+if TYPE_CHECKING:  # pragma: no cover - annotations only; `from __future__` keeps them strings
+    from collections.abc import Callable
 
 __all__ = ["ApiCredentialProbe", "NoCredentialProbe", "status_of"]
 
@@ -76,10 +77,20 @@ def status_of(request: urllib.request.Request, timeout_s: float) -> int:
         The HTTP status code the provider answered with.
 
     Raises:
+        ValueError: ``request`` is not https - refused before anything is sent, since the
+            bearer token attached to it must not leave over a scheme that cannot encrypt it.
         urllib.error.URLError: the request never reached a provider that could answer.
     """
+    scheme = urllib.parse.urlparse(request.full_url).scheme
+    if scheme != "https":
+        # B310's own remedy, enforced rather than annotated: urlopen honours file:, ftp: and
+        # custom schemes, so an endpoint that reached this dataclass from configuration could
+        # otherwise turn a credential check into a local file read. A bearer token is attached
+        # to this request, so the scheme also decides whether it goes out encrypted.
+        msg = f"credential probe endpoint must be https, not {scheme!r}"
+        raise ValueError(msg)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310 - fixed https endpoint
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310  # nosec B310
             return int(response.status)
     except urllib.error.HTTPError as refused:
         return int(refused.code)
@@ -130,7 +141,7 @@ class ApiCredentialProbe:
             return CredentialVerdict.INDETERMINATE
         try:
             status = self.send(self._request(token), self.timeout_s)
-        except Exception:  # noqa: BLE001 - a probe that cannot ask has learned nothing, and must not raise
+        except Exception:
             return CredentialVerdict.INDETERMINATE
         return _VERDICT_BY_STATUS.get(status, CredentialVerdict.INDETERMINATE)
 

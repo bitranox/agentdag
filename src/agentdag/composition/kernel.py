@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from ..adapters.graph_a.gate_make import MakeTestGate
 from ..adapters.graph_a.git_cli import GitCli
 from ..adapters.kernel.clock_utc import UtcClock
+from ..adapters.kernel.credential_probe import ApiCredentialProbe
 from ..adapters.kernel.executor_claude import ClaudeExecutor
 from ..adapters.kernel.isolation_scan import IsolationScanner
 from ..adapters.kernel.journal_jsonl import JsonlJournal
@@ -82,7 +83,17 @@ def wire_kernel(
         journal_factory=JsonlJournal,
         lock=FileRunLock(),
         clock=clock,
-        executors={"claude": ClaudeExecutor(credentials=credential, deny_bash=tuple(deny_bash), clock=clock)},
+        executors={
+            "claude": ClaudeExecutor(
+                credentials=credential,
+                deny_bash=tuple(deny_bash),
+                clock=clock,
+                # Reads the token from the SAME credential source the dispatch used, so the
+                # probe asks about exactly the credential that was refused - a probe pointed
+                # at any other one answers a question nobody asked.
+                credential_probe=ApiCredentialProbe(read_token=credential.bearer_token),
+            )
+        },
         gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=IsolationScanner(),

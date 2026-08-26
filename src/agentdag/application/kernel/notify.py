@@ -30,7 +30,7 @@ import contextlib
 from dataclasses import dataclass
 from typing import Protocol
 
-from ...domain.models import RunStatus
+from ...domain.models import RunStatus, SuspendReason
 
 __all__ = ["NOTIFIABLE_STATUSES", "Notifier", "RunEvent", "emit_best_effort"]
 
@@ -60,6 +60,10 @@ class RunEvent:
             :func:`~agentdag.application.kernel.ports.format_stamp` from the emitting
             side's own clock reading - never by the sink, which would date the message
             by when the mail was composed rather than by when the run did the thing.
+        suspend_reason: What a suspended run is waiting FOR; ``None`` on every other
+            status. Carried because ``suspended`` alone is not enough to tell an operator
+            what to do: a decision needs them to answer, quota needs them to wait, and a
+            credential needs them to repair something before a resume can get past.
         node_id: The approve node the run is waiting on; ``None`` on every other status.
         summary: The approve payload's own text, so the person deciding sees the
             question in the notification rather than having to open the run first.
@@ -75,6 +79,7 @@ class RunEvent:
     workflow: str
     status: RunStatus
     at: str
+    suspend_reason: SuspendReason | None = None
     node_id: str | None = None
     summary: str = ""
     decide_by: str | None = None

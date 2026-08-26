@@ -72,9 +72,9 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClie
 from ...domain.handover import HANDOVER_FILENAME
 from ...domain.kernel_errors import KernelError
 from ...domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
-from .credential_probe import NoCredentialProbe
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
+from .credential_probe import NoCredentialProbe
 from .hooks_claude import deny_bash_commands, deny_outside_write_set, inject_stop_notice
 
 if TYPE_CHECKING:
@@ -96,6 +96,7 @@ __all__ = [
     "append_transcript",
     "input_total",
     "outcome_from_usage",
+    "separated_refusal",
 ]
 
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
@@ -355,13 +356,15 @@ class CredentialCopy:
         a guess about an unrecognised shape is not evidence.
         """
         try:
-            payload = json.loads(self.source_path.read_text(encoding="utf-8"))
+            parsed: object = json.loads(self.source_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if not isinstance(payload, dict):
+        if not isinstance(parsed, dict):
             return None
-        oauth = payload.get("claudeAiOauth")
-        token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+        oauth: object = cast("dict[str, object]", parsed).get("claudeAiOauth")
+        if not isinstance(oauth, dict):
+            return None
+        token: object = cast("dict[str, object]", oauth).get("accessToken")
         return token if isinstance(token, str) and token else None
 
 
@@ -759,6 +762,47 @@ def _cwd_rel(request: ExecutorRequest) -> str:
         ) from exc
 
 
+async def separated_refusal(outcome: NodeOutcome, probe: CredentialProbe) -> NodeOutcome:
+    """Re-label an auth-shaped failure as a rate limit when the provider says it is one.
+
+    The CLI cannot tell the operator which happened - measured 2026-08-24, three dispatches
+    reported ``authentication_failed`` and "Not logged in" while the same credential returned
+    HTTP 429 from the API in the same minute, with ``api_error_status`` null and ``errors``
+    null. So the difference has to be fetched.
+
+    Only ever an UPGRADE, and only on a positive answer. Anything else - the probe could not
+    ask, the credential really is rejected, the API answered something unmapped - leaves the
+    outcome exactly as classified, because a record this kernel branches on must not carry a
+    classification invented from an absence of evidence.
+
+    A module-level function rather than a method because it needs nothing from the executor
+    but the probe, and because that keeps it directly testable without reaching past a
+    private name.
+
+    Args:
+        outcome: What the dispatch reported.
+        probe: Who to ask about the credential.
+
+    Returns:
+        ``outcome`` unchanged, or a copy whose error is ``RATE_LIMITED``.
+
+    Example:
+        >>> import asyncio
+        >>> from agentdag.adapters.kernel.credential_probe import NoCredentialProbe
+        >>> from agentdag.domain.models import NodeOutcome, NodeStatus
+        >>> done = NodeOutcome(status=NodeStatus.DONE, executor_used="claude",
+        ...                    model_used="s", effort_used="-")
+        >>> asyncio.run(separated_refusal(done, NoCredentialProbe())) is done
+        True
+    """
+    if outcome.error is None or outcome.error.type is not ErrorType.AUTH_FAILURE:
+        return outcome
+    if await probe.verdict() is not CredentialVerdict.RATE_LIMITED:
+        return outcome
+    refused = outcome.error.model_copy(update={"type": ErrorType.RATE_LIMITED})
+    return outcome.model_copy(update={"error": refused})
+
+
 @dataclass(frozen=True, slots=True)
 class ClaudeExecutor:
     """Runs one kernel node as a Claude Agent SDK client, per design 7 and the M2 probe.
@@ -824,7 +868,7 @@ class ClaudeExecutor:
         cwd_rel = _cwd_rel(request)
         _validated_effort(request.effort)  # side effect only here: raise on an unknown value, nothing to keep
         try:
-            return await self._separated_refusal(await self._run(request, cwd_rel))
+            return await separated_refusal(await self._run(request, cwd_rel), self.credential_probe)
         except Exception as exc:  # the external edge: never let it past this node
             return NodeOutcome(
                 status=NodeStatus.FAILED,
@@ -846,32 +890,6 @@ class ClaudeExecutor:
                     transient=True,
                 ),
             )
-
-    async def _separated_refusal(self, outcome: NodeOutcome) -> NodeOutcome:
-        """Re-label an auth-shaped failure as a rate limit when the provider says it is one.
-
-        The CLI cannot tell the operator which happened - measured 2026-08-24, three
-        dispatches reported ``authentication_failed`` and "Not logged in" while the same
-        credential returned HTTP 429 from the API in the same minute, with
-        ``api_error_status`` null and ``errors`` null. So the difference has to be fetched.
-
-        Only ever an UPGRADE, and only on a positive answer. Anything else - the probe could
-        not ask, the credential really is rejected, the API answered something unmapped -
-        leaves the outcome exactly as classified, because a record this kernel branches on
-        must not carry a classification invented from an absence of evidence.
-
-        Args:
-            outcome: What :meth:`_run` reported.
-
-        Returns:
-            ``outcome`` unchanged, or a copy whose error is ``RATE_LIMITED``.
-        """
-        if outcome.error is None or outcome.error.type is not ErrorType.AUTH_FAILURE:
-            return outcome
-        if await self.credential_probe.verdict() is not CredentialVerdict.RATE_LIMITED:
-            return outcome
-        refused = outcome.error.model_copy(update={"type": ErrorType.RATE_LIMITED})
-        return outcome.model_copy(update={"error": refused})
 
     async def _run(self, request: ExecutorRequest, cwd_rel: str) -> NodeOutcome:
         """Do the real work of :meth:`run`, inside its exception guard.

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...domain.models import RunStatus
+from ...domain.models import RunStatus, SuspendReason
 
 if TYPE_CHECKING:
     from ...application.kernel.notify import RunEvent
@@ -39,6 +39,28 @@ _HEADLINE = {
 enum's. Keyed by the status itself so a status with no entry is a ``KeyError`` at the
 render, not a mail that quietly says nothing - and :data:`~agentdag.application.kernel.
 notify.NOTIFIABLE_STATUSES` is the set this must cover."""
+
+_SUSPEND_HEADLINE = {
+    SuspendReason.DECISION: "is waiting for a decision",
+    SuspendReason.QUOTA: "is waiting for quota to return",
+    SuspendReason.CREDENTIAL: "is waiting for its credential to be repaired",
+}
+"""What a SUSPENDED run says, once the reason is known - it overrides the status headline.
+
+Three suspends want three different things from whoever reads the mail, and the status
+alone says "decision" for all of them. Somebody told to decide, on a run that is actually
+waiting for quota, goes looking for a question that was never asked."""
+
+
+def _headline(event: RunEvent) -> str:
+    """Say what happened, preferring the suspend's own reason to the bare status.
+
+    Falls back to the status headline when a suspend names no reason, which is what a run
+    suspended by a coordinator older than the field looks like on resume.
+    """
+    if event.status is RunStatus.SUSPENDED and event.suspend_reason is not None:
+        return _SUSPEND_HEADLINE[event.suspend_reason]
+    return _HEADLINE[event.status]
 
 
 class MailNotifier:
@@ -94,7 +116,7 @@ def _subject(event: RunEvent) -> str:
         ...                   at="2026-08-21T14:12:03+00:00"))
         'agentdag run r1 finished'
     """
-    return f"agentdag run {event.run_id} {_HEADLINE[event.status]}"
+    return f"agentdag run {event.run_id} {_headline(event)}"
 
 
 def _message(event: RunEvent) -> str:
@@ -140,4 +162,9 @@ def _decision_lines(event: RunEvent) -> list[str]:
     """
     if event.status is not RunStatus.SUSPENDED:
         return []
+    if event.suspend_reason is not None and event.suspend_reason is not SuspendReason.DECISION:
+        # No payload was written and nobody is being asked anything, so the decide-by line
+        # would name a deadline that does not exist and the summary would be empty. What an
+        # operator needs here is which node to resume at.
+        return ["", f"node:      {event.node_id}", "", "Resume the run once the obstacle clears."]
     return ["", f"node:      {event.node_id}", f"decide by: {event.decide_by}", "", event.summary]
