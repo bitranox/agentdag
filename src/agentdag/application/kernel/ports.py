@@ -49,13 +49,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ...domain.journal import JournalLine
-    from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RetryGrant, RunState
+    from ...domain.models import CredentialVerdict, Decision, LockHolder, NodeOutcome, NodeSpec, RetryGrant, RunState
     from ...domain.policy import FailureAction
     from ..graph_a_ports import GatePort, GitPort
     from .notify import Notifier
 
 __all__ = [
     "Clock",
+    "CredentialProbe",
     "DecisionFileRef",
     "Executor",
     "ExecutorRequest",
@@ -475,6 +476,29 @@ class Policy(Protocol):
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve ``spec``'s tier role (and any explicit model) to the row and executor to use."""
+        ...
+
+
+class CredentialProbe(Protocol):
+    """Asks the provider directly why it refused, when the executor's own report cannot say.
+
+    The provider's CLI reports an exhausted quota and a rejected credential identically -
+    same message, ``authentication_failed``, a null status field - so the difference has to
+    come from somewhere else. This port is that somewhere: one call against the API with the
+    same credential, read for the status code the CLI threw away.
+
+    A port rather than a direct HTTP call so the executor stays testable without a network,
+    and so an operator running against a provider that DOES discriminate can wire a probe
+    that reads the discriminator instead of spending a request.
+    """
+
+    async def verdict(self) -> CredentialVerdict:
+        """Report what the provider says about this credential right now.
+
+        Must not raise: a probe that cannot reach the provider has learned nothing, which is
+        :attr:`~agentdag.domain.models.CredentialVerdict.INDETERMINATE`, and a raise here
+        would turn a failed diagnosis into a second, unrelated failure.
+        """
         ...
 
 

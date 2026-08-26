@@ -38,6 +38,7 @@ __all__ = [
     "ApprovePayload",
     "Budget",
     "CancelIntent",
+    "CredentialVerdict",
     "Decision",
     "ErrorType",
     "ExecutorKind",
@@ -165,6 +166,24 @@ class RunStatus(StrEnum):
     CRASHED = "crashed"
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
+
+
+class CredentialVerdict(StrEnum):
+    """What an out-of-band check of the credential found, when the executor could not tell.
+
+    Exists because the provider's CLI reports quota exhaustion and a rejected credential
+    with the SAME error text and the same null status field, so no amount of string
+    matching separates them - only asking the API directly does.
+
+    ``INDETERMINATE`` is a real answer, not a failure to produce one: the check itself can
+    be refused, time out, or find the network gone. It must never be read as either of the
+    other two, because a classification invented from no evidence is exactly the kind of
+    fact this kernel branches on.
+    """
+
+    RATE_LIMITED = "rate_limited"
+    UNAUTHORIZED = "unauthorized"
+    INDETERMINATE = "indeterminate"
 
 
 class SuspendReason(StrEnum):

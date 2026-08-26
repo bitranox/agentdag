@@ -71,7 +71,8 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClie
 
 from ...domain.handover import HANDOVER_FILENAME
 from ...domain.kernel_errors import KernelError
-from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
+from ...domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
+from .credential_probe import NoCredentialProbe
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
 from .hooks_claude import deny_bash_commands, deny_outside_write_set, inject_stop_notice
@@ -84,7 +85,7 @@ if TYPE_CHECKING:
     from claude_agent_sdk import EffortLevel
     from claude_agent_sdk import HookCallback as _SdkHookCallback
 
-    from ...application.kernel.ports import Clock, ExecutorRequest
+    from ...application.kernel.ports import Clock, CredentialProbe, ExecutorRequest
 
 __all__ = [
     "DEFAULT_TOOLS",
@@ -184,6 +185,16 @@ class CredentialSource(Protocol):
             The env dict to fold into ``ClaudeAgentOptions.env`` - never
             ``os.environ`` itself, and never including a secret-shaped variable this
             adapter did not explicitly decide to forward.
+        """
+        ...
+
+    def bearer_token(self) -> str | None:
+        """Return this credential's OAuth access token, for a direct call to the API.
+
+        Only the credential PROBE needs this: the executor itself never handles the token,
+        it hands the CLI an env slice and lets the CLI read it. ``None`` whenever the token
+        cannot be produced (the file is missing, or its shape is not one this source knows),
+        which the probe reads as "no evidence" rather than as any particular verdict.
         """
         ...
 
@@ -303,6 +314,13 @@ class OAuthTokenFile:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = self.path.read_text(encoding="utf-8").strip()
         return env
 
+    def bearer_token(self) -> str | None:
+        """Return the keyfile's contents, which ARE the token; ``None`` if it cannot be read."""
+        try:
+            return self.path.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+
 
 @dataclass(frozen=True, slots=True)
 class CredentialCopy:
@@ -327,6 +345,24 @@ class CredentialCopy:
         env, config_dir = _base_env(node_dir)
         _copy_credential(self.source_path, config_dir / _CREDENTIALS_NAME)
         return env
+
+    def bearer_token(self) -> str | None:
+        """Return the access token inside the ``.credentials.json`` this copies.
+
+        Reads the ORIGINAL rather than any node's copy: a node directory is per-dispatch and
+        the probe runs for the executor as a whole. Every failure - unreadable, not JSON, a
+        shape without the token - is ``None``, because the probe's job is to add evidence and
+        a guess about an unrecognised shape is not evidence.
+        """
+        try:
+            payload = json.loads(self.source_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        oauth = payload.get("claudeAiOauth")
+        token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+        return token if isinstance(token, str) and token else None
 
 
 def _copy_credential(source: Path, destination: Path) -> None:
@@ -746,12 +782,19 @@ class ClaudeExecutor:
             check with a fake clock instead of a real sleep. Defaults to
             :class:`~agentdag.adapters.kernel.clock_utc.UtcClock` so every call site and
             test fixture built before M3 still constructs without naming it.
+        credential_probe: How an auth-shaped failure is checked against the provider
+            directly, because the CLI reports quota exhaustion and a rejected credential
+            with identical text and a null status field. Defaults to
+            :class:`~agentdag.adapters.kernel.credential_probe.NoCredentialProbe`, which
+            learns nothing, so an executor built without one classifies exactly as it did
+            before probes existed.
     """
 
     credentials: CredentialSource
     deny_bash: tuple[str, ...] = field(kw_only=True)
     tools: tuple[str, ...] = field(default=DEFAULT_TOOLS, kw_only=True)
     clock: Clock = field(default_factory=UtcClock, kw_only=True)
+    credential_probe: CredentialProbe = field(default_factory=NoCredentialProbe, kw_only=True)
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
         """Validate ``request``, then run it to completion and report its outcome.
@@ -781,7 +824,7 @@ class ClaudeExecutor:
         cwd_rel = _cwd_rel(request)
         _validated_effort(request.effort)  # side effect only here: raise on an unknown value, nothing to keep
         try:
-            return await self._run(request, cwd_rel)
+            return await self._separated_refusal(await self._run(request, cwd_rel))
         except Exception as exc:  # the external edge: never let it past this node
             return NodeOutcome(
                 status=NodeStatus.FAILED,
@@ -803,6 +846,32 @@ class ClaudeExecutor:
                     transient=True,
                 ),
             )
+
+    async def _separated_refusal(self, outcome: NodeOutcome) -> NodeOutcome:
+        """Re-label an auth-shaped failure as a rate limit when the provider says it is one.
+
+        The CLI cannot tell the operator which happened - measured 2026-08-24, three
+        dispatches reported ``authentication_failed`` and "Not logged in" while the same
+        credential returned HTTP 429 from the API in the same minute, with
+        ``api_error_status`` null and ``errors`` null. So the difference has to be fetched.
+
+        Only ever an UPGRADE, and only on a positive answer. Anything else - the probe could
+        not ask, the credential really is rejected, the API answered something unmapped -
+        leaves the outcome exactly as classified, because a record this kernel branches on
+        must not carry a classification invented from an absence of evidence.
+
+        Args:
+            outcome: What :meth:`_run` reported.
+
+        Returns:
+            ``outcome`` unchanged, or a copy whose error is ``RATE_LIMITED``.
+        """
+        if outcome.error is None or outcome.error.type is not ErrorType.AUTH_FAILURE:
+            return outcome
+        if await self.credential_probe.verdict() is not CredentialVerdict.RATE_LIMITED:
+            return outcome
+        refused = outcome.error.model_copy(update={"type": ErrorType.RATE_LIMITED})
+        return outcome.model_copy(update={"error": refused})
 
     async def _run(self, request: ExecutorRequest, cwd_rel: str) -> NodeOutcome:
         """Do the real work of :meth:`run`, inside its exception guard.
