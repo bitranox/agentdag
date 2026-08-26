@@ -175,10 +175,16 @@ class SuspendReason(StrEnum):
     answers, while ``QUOTA`` waits on the provider and needs only time, then a plain
     ``run resume``. An operator told the wrong one either sits waiting for a question
     nobody will ask, or goes looking for a payload that was never written.
+
+    ``CREDENTIAL`` waits on neither: it needs the credential repaired before a resume can
+    get past the same node. It exists as its own member rather than folding into ``QUOTA``
+    because the provider's CLI reports quota and a rejected credential identically, and the
+    whole point of separating them is that the operator is told which one to act on.
     """
 
     DECISION = "decision"
     QUOTA = "quota"
+    CREDENTIAL = "credential"
 
 
 class Budget(BaseModel):

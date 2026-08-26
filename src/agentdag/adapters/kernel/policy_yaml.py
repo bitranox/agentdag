@@ -81,6 +81,8 @@ class LoadedPolicy:
         self.max_attempts = table.thresholds.max_attempts
         self.max_continuations = table.thresholds.max_continuations
         self.deny_bash = deny_bash
+        self.on_auth_failure = table.escalation.on_auth_failure
+        self.on_rate_limit = table.escalation.on_rate_limit
         self.tokens_per_row: Mapping[str, int] = table.run_limits.tokens_per_row
         self.deadline_ceiling_s: float = table.run_limits.deadline_ceiling_s
         self.rows: dict[str, TierRow] = {row.alias: row for row in table.models}

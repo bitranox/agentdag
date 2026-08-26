@@ -27,6 +27,7 @@ from agentdag.application.kernel.ports import ResolvedRow, stamp
 from agentdag.domain.handover import HANDOVER_AS_WRITTEN_FILENAME, HANDOVER_FILENAME, IDENTITY_KEYS
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError
+from agentdag.domain.policy import FailureAction
 from agentdag.domain.models import (
     Budget,
     ErrorType,
@@ -36,8 +37,10 @@ from agentdag.domain.models import (
     NodeOutcome,
     NodeSpec,
     NodeStatus,
+    SuspendReason,
     TierRole,
 )
+from agentdag.domain.kernel_errors import Suspended
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -62,6 +65,8 @@ class OneRowPolicy:
     max_attempts: int = 1
     max_continuations: int = 3
     deny_bash: tuple[str, ...] = ("git push",)
+    on_auth_failure: FailureAction = FailureAction.FAIL_RUN
+    on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
     tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
     deadline_ceiling_s: float = 999_999.0
     """Generous like ``tokens_per_row`` above - :class:`LowDeadlineCeilingPolicy` is the
@@ -966,3 +971,60 @@ def test_a_handover_with_no_record_or_an_unreadable_one_is_left_exactly_as_found
     garbage = HandoverExecutor(raw="{not json at all")
     asyncio.run(wire(other, garbage, FakeScanner()).work(work_spec(), brief="migrate", cwd=other.worktree("a")))
     assert (garbage.requests[0].node_dir / HANDOVER_FILENAME).read_text(encoding="utf-8") == "{not json at all"
+
+
+def rate_limited_outcome() -> NodeOutcome:
+    """Build the outcome the executor reports when the provider refused for quota."""
+    return NodeOutcome(
+        status=NodeStatus.FAILED,
+        executor_used="claude",
+        model_used="sonnet",
+        effort_used="-",
+        error=NodeError(type=ErrorType.RATE_LIMITED, message="rate limited", transient=False),
+    )
+
+
+class FailOnRateLimitPolicy(OneRowPolicy):
+    """A policy whose operator chose to lose the run rather than leave it resumable."""
+
+    on_rate_limit: FailureAction = FailureAction.FAIL_RUN
+
+
+@pytest.mark.os_agnostic
+def test_a_rate_limited_work_node_suspends_the_run_and_records_nothing(tmp_path: Path) -> None:
+    """Quota clears on its own, so the run must end resumable with the node un-recorded.
+
+    Recording it would defeat the resume: every result is served on replay whatever its
+    status, so a recorded rate-limit failure is the outcome the resumed run would read
+    back instead of re-dispatching. The absent ``result`` line is the whole mechanism.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(rate_limited_outcome())
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    with pytest.raises(Suspended) as caught:
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert caught.value.reason is SuspendReason.QUOTA
+    assert caught.value.node_id == "w_migrate@1"
+    assert caught.value.payload_hash is None  # a quota suspend asks nobody anything
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine"]
+
+
+@pytest.mark.os_agnostic
+def test_a_rate_limited_work_node_fails_the_run_when_the_policy_says_so(tmp_path: Path) -> None:
+    """The knob is the thing under test: the same executor outcome, the other answer.
+
+    Without this arm ``on_rate_limit`` would be satisfied by the shipped value alone and
+    nothing would prove the code READS it rather than hard-coding what it happens to say.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(rate_limited_outcome())
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=FailOnRateLimitPolicy())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert record.status == NodeStatus.FAILED
+    assert record.error is not None
+    assert record.error.type == ErrorType.RATE_LIMITED

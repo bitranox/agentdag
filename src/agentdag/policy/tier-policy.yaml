@@ -168,6 +168,10 @@ escalation:
   then: approve
   no_higher_row: approve
   on_auth_failure: fail_run   # an auth failure never escalates a tier (3.4)
+  # Quota is not identity: it clears on its own, so the run ends RESUMABLE and keeps every
+  # node it finished. Escalating is wrong for the same reason as above - the limit binds the
+  # account, not the row - and the retry path has no backoff to wait it out with.
+  on_rate_limit: suspend_run
 
 # The three named thresholds of design 3.5, as policy-table DATA (not code constants), so an
 # operator changes one without a redeploy. Each starts at the default 3.5 names; 3.5 also defines

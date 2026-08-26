@@ -41,6 +41,7 @@ from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.journal import ApproveDecisionLine, RunSummaryLine
 from agentdag.domain.kernel_errors import LockHeld, RunRefused, SpecRejected, Suspended
 from agentdag.domain.keys import content_hash, hash8
+from agentdag.domain.policy import FailureAction
 from agentdag.domain.models import (
     ApproveOption,
     ApprovePayload,
@@ -70,6 +71,8 @@ class OneRowPolicy:
     max_attempts: int = 1
     max_continuations: int = 3  # these tests assert one dispatch per node
     deny_bash: tuple[str, ...] = ("git push",)
+    on_auth_failure: FailureAction = FailureAction.FAIL_RUN
+    on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
     tokens_per_row: Mapping[str, int] = {"sonnet": 10}
     deadline_ceiling_s: float = 999_999.0
 

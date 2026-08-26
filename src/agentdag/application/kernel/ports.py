@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from ...domain.journal import JournalLine
     from ...domain.models import Decision, LockHolder, NodeOutcome, NodeSpec, RetryGrant, RunState
+    from ...domain.policy import FailureAction
     from ..graph_a_ports import GatePort, GitPort
     from .notify import Notifier
 
@@ -446,6 +447,22 @@ class Policy(Protocol):
     A model node is NOT retried here - design 2.3 rule 5 owns that, and it escalates a rank
     rather than repeating in place."""
     deny_bash: tuple[str, ...]
+
+    on_auth_failure: FailureAction
+    """What to do when the provider rejected the credential itself (``Escalation.on_auth_failure``).
+
+    On the port because the decision is the COORDINATOR's, not the executor's: an executor
+    can tell what went wrong, but only the coordinator knows whether this run is allowed to
+    end resumably. Read by :meth:`Coordinator.work
+    <agentdag.application.kernel.context.Coordinator.work>`'s body."""
+
+    on_rate_limit: FailureAction
+    """What to do when the provider refused the dispatch for quota (``Escalation.on_rate_limit``).
+
+    Separate from :attr:`on_auth_failure` because the two want opposite answers and the
+    provider's CLI reports them identically - only the credential probe separates them, and
+    an operator must be able to set what happens for each."""
+
     tokens_per_row: Mapping[str, int]
     deadline_ceiling_s: float
     """The largest ``deadline_s`` any node may declare (``RunLimits.deadline_ceiling_s``,

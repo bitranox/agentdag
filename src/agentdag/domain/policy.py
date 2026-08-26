@@ -23,6 +23,8 @@ Contents:
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict
 
 from .kernel_errors import SpecRejected
@@ -30,6 +32,7 @@ from .models import Kind, TierRole
 
 __all__ = [
     "Escalation",
+    "FailureAction",
     "KindDefault",
     "PolicyTable",
     "ResourceRow",
@@ -80,6 +83,20 @@ class KindDefault(BaseModel):
     effort: str | None
 
 
+class FailureAction(StrEnum):
+    """What a run does when a dispatch fails in a way no retry or escalation can fix.
+
+    Both members end the launch; they differ in whether the run can be picked up again.
+    ``SUSPEND_RUN`` keeps every completed node and leaves the failed one un-recorded, so a
+    later ``run resume`` re-dispatches exactly it - the right answer when the obstacle is
+    outside the run and will pass (quota) or can be repaired in place (a credential).
+    ``FAIL_RUN`` is terminal and the run has to be started again.
+    """
+
+    FAIL_RUN = "fail_run"
+    SUSPEND_RUN = "suspend_run"
+
+
 class Escalation(BaseModel):
     """The retry-one-rank-up rule design 2.3 rule 5 applies over this table (out of scope, M2)."""
 
@@ -88,7 +105,24 @@ class Escalation(BaseModel):
     max_hops: int
     then: str
     no_higher_row: str
-    on_auth_failure: str
+    on_auth_failure: FailureAction
+    """What to do when the provider rejected the CREDENTIAL itself (design 3.4).
+
+    Never an escalation: a rejected credential is account-wide, so the next rank up is
+    rejected in exactly the same way. Ships as ``fail_run``; an operator who would rather
+    repair the credential and carry on sets ``suspend_run``.
+    """
+    on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
+    """What to do when the provider refused the dispatch for QUOTA rather than identity.
+
+    Ships as ``suspend_run`` because quota returns on its own: failing the run would throw
+    away every completed node for an obstacle that clears itself. Escalation is wrong here
+    for the same reason as above - the limit binds the account, not the row - and a retry
+    is wrong too, since nothing in the retry path backs off.
+
+    Defaulted rather than required so a policy table written before this field existed still
+    validates under ``extra="forbid"``, and gets the shipped behaviour.
+    """
 
 
 class Thresholds(BaseModel):

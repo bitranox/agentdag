@@ -39,10 +39,23 @@ from ...domain.models import (
     NodeOutcome,
     NodeStatus,
     ResultRecord,
+    SuspendReason,
 )
+from ...domain.policy import FailureAction
 from ...domain.scan import diff_manifests, stray_paths
 from .approve import validate_approve_payload
 from .ports import ExecutorRequest, stamp
+
+_PROVIDER_REFUSALS: dict[ErrorType, SuspendReason] = {
+    ErrorType.RATE_LIMITED: SuspendReason.QUOTA,
+    ErrorType.AUTH_FAILURE: SuspendReason.CREDENTIAL,
+}
+"""The refusals that come from outside the run, and what a suspended run is then waiting for.
+
+Membership is the test for "no retry or escalation can reach this": both bind the whole
+account, so re-dispatching at the same rank or the next one up is refused identically.
+Every other error type is the node's own and stays a record.
+"""
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -297,10 +310,51 @@ class Coordinator:
                 deadline_s=node_deadline_s,
                 handover_at_tokens=row.handover_at_tokens,
             )
-            return await executor.run(request)
+            return self._suspended_if_the_provider_refused(spec, await executor.run(request))
 
         dispatched = spec.model_copy(update={"executor": row.executor, "model": row.alias})
         return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
+
+    def _suspended_if_the_provider_refused(self, spec: NodeSpec, outcome: NodeOutcome) -> NodeOutcome:
+        """Turn a refusal that came from OUTSIDE the run into a suspend, when policy allows it.
+
+        Quota and a rejected credential are not this node's failure and no retry or
+        escalation reaches them: the limit and the identity both bind the whole account, so
+        the next rank up is refused in exactly the same way. What they have in common is
+        that the obstacle can be waited out or repaired, which makes ending the launch
+        RESUMABLE strictly better than ending it dead - every finished node survives.
+
+        Raising rather than returning is load-bearing. The dispatcher records whatever the
+        body returns, and :func:`~agentdag.application.kernel.replay.build_replay_index`
+        serves every recorded result on replay whatever its status, so a returned refusal
+        would be read straight back by the resume it is supposed to enable. Raising leaves
+        the ``started`` line unmatched, which is the only shape a resume re-dispatches.
+
+        Args:
+            spec: The node the provider refused; names the cursor the run suspends at.
+            outcome: What the executor reported.
+
+        Returns:
+            ``outcome`` unchanged unless the provider refused AND policy says suspend.
+
+        Raises:
+            Suspended: the provider refused and this run may end resumably.
+        """
+        if outcome.error is None:
+            return outcome
+        reason = _PROVIDER_REFUSALS.get(outcome.error.type)
+        if reason is None:
+            return outcome
+        # Read and compared in the one function deliberately: routing this through a helper
+        # that RETURNS the setting hides the comparison from static enforcement checks, and
+        # a knob nothing can be shown to compare is how on_auth_failure sat inert for months.
+        if outcome.error.type is ErrorType.RATE_LIMITED:
+            action = self.policy.on_rate_limit
+        else:
+            action = self.policy.on_auth_failure
+        if action is FailureAction.FAIL_RUN:
+            return outcome
+        raise Suspended(spec.node_id, reason=reason)
 
     def _chain_limit_refusal(self, spec: NodeSpec) -> NodeError | None:
         """Whether this link is one handover past what ``policy.max_continuations`` allows (3.8).
