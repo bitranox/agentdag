@@ -24,6 +24,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ...application.kernel.ports import ProbeFinding
 from ...domain.models import CredentialVerdict
 
 if TYPE_CHECKING:  # pragma: no cover - annotations only; `from __future__` keeps them strings
@@ -45,6 +46,15 @@ deliberately absent: it says the credential works NOW, which does not explain a 
 that already happened, so it must not be reported as either verdict.
 """
 
+_EXPECTED_UNMAPPED = {
+    200: "the credential works now, which does not explain a refusal that already happened",
+}
+"""Statuses that carry no verdict but are not a sign of anything wrong with the probe.
+
+Kept apart from the genuinely unrecognised ones so the two do not read alike: 200 is a
+DESIGNED outcome of asking, while a 404 means the probe is asking the wrong question - a
+retired model id, a moved endpoint - and needs somebody to look at the probe itself."""
+
 _ANTHROPIC_VERSION = "2023-06-01"
 """The API version header the Messages endpoint requires; unrelated to the model used."""
 
@@ -58,9 +68,9 @@ class NoCredentialProbe:
     ``RATE_LIMITED`` would suspend runs on evidence nobody gathered.
     """
 
-    async def verdict(self) -> CredentialVerdict:
+    async def examine(self) -> ProbeFinding:
         """Report that nothing was learned, because nothing was asked."""
-        return CredentialVerdict.INDETERMINATE
+        return ProbeFinding(verdict=CredentialVerdict.INDETERMINATE, detail="no credential probe wired")
 
 
 def status_of(request: urllib.request.Request, timeout_s: float) -> int:
@@ -125,25 +135,44 @@ class ApiCredentialProbe:
     timeout_s: float = 10.0
     send: Callable[[urllib.request.Request, float], int] = field(default=status_of)
 
-    async def verdict(self) -> CredentialVerdict:
+    async def examine(self) -> ProbeFinding:
         """Ask the provider, off the event loop, and map its status to a verdict.
 
         :func:`urllib.request.urlopen` blocks, and this runs inside the coordinator's own
         loop while other nodes may still be streaming, so it goes through
         :func:`asyncio.to_thread` rather than stalling them for the timeout.
         """
-        return await asyncio.to_thread(self._verdict)
+        return await asyncio.to_thread(self._examine)
 
-    def _verdict(self) -> CredentialVerdict:
-        """Do the blocking ask. Never raises: every failure to learn is INDETERMINATE."""
+    def _examine(self) -> ProbeFinding:
+        """Do the blocking ask. Never raises: every failure to learn is INDETERMINATE.
+
+        Each way of learning nothing keeps its own ``detail``, because they are not the same
+        problem: an UNMAPPED status means the probe itself has gone wrong - a retired model
+        id answering 404, a moved endpoint - and by verdict alone that is indistinguishable
+        from a healthy timeout, so it would silently restore the defect this class exists to
+        fix, in exactly the misreporting way the original defect did.
+        """
         token = self.read_token()
         if token is None:
-            return CredentialVerdict.INDETERMINATE
+            return ProbeFinding(verdict=CredentialVerdict.INDETERMINATE, detail="no token to ask with")
         try:
             status = self.send(self._request(token), self.timeout_s)
-        except Exception:
-            return CredentialVerdict.INDETERMINATE
-        return _VERDICT_BY_STATUS.get(status, CredentialVerdict.INDETERMINATE)
+        except Exception as unreachable:
+            return ProbeFinding(
+                verdict=CredentialVerdict.INDETERMINATE,
+                detail=f"could not reach the provider ({type(unreachable).__name__})",
+            )
+        verdict = _VERDICT_BY_STATUS.get(status)
+        if verdict is not None:
+            return ProbeFinding(verdict=verdict, detail=f"http {status}")
+        expected = _EXPECTED_UNMAPPED.get(status)
+        if expected is not None:
+            return ProbeFinding(verdict=CredentialVerdict.INDETERMINATE, detail=f"http {status}, {expected}")
+        return ProbeFinding(
+            verdict=CredentialVerdict.INDETERMINATE,
+            detail=f"http {status}, which this probe does not recognise - check the probe, not the credential",
+        )
 
     def _request(self, token: str) -> urllib.request.Request:
         """Build the smallest well-formed Messages request that still exercises quota."""

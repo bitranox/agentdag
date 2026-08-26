@@ -67,7 +67,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   reads the status code the CLI discarded, and a quota refusal ends the launch `suspended`
   and resumable instead of `failed`, keeping every node the run had finished. The re-label
   is an upgrade on positive evidence only: a probe that could not ask leaves the
-  classification untouched.
+  classification untouched, and what it observed (`http 404`, an unreachable endpoint, a
+  missing token) is appended to the node's error message so `record.json` carries it - an
+  unrecognised status means the probe itself is broken, and by verdict alone that is
+  indistinguishable from a healthy timeout.
 - `escalation.on_auth_failure` decided nothing. It was declared, validated, shipped in
   `tier-policy.yaml` and read by no Python at all, so a run died from `transient=False`
   alone and the setting was documentation. It is now typed `FailureAction` and actually

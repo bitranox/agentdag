@@ -23,6 +23,7 @@ from agentdag.adapters.kernel.executor_claude import (
     OAuthTokenFile,
     separated_refusal,
 )
+from agentdag.application.kernel.ports import ProbeFinding
 from agentdag.domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus
 from agentdag.domain.policy import FailureAction
 
@@ -34,10 +35,10 @@ class FixedProbe:
         self.verdict_to_give = verdict
         self.asks = 0
 
-    async def verdict(self) -> CredentialVerdict:
+    async def examine(self) -> ProbeFinding:
         """Record the ask and answer."""
         self.asks += 1
-        return self.verdict_to_give
+        return ProbeFinding(verdict=self.verdict_to_give, detail="fixed")
 
 
 def failed_with(error_type: ErrorType) -> NodeOutcome:
@@ -68,7 +69,7 @@ def test_the_api_probe_maps_each_status_to_its_verdict(status: int, expected: Cr
     """
     probe = ApiCredentialProbe(read_token=lambda: "tok", send=lambda _request, _timeout: status)
 
-    assert asyncio.run(probe.verdict()) is expected
+    assert asyncio.run(probe.examine()).verdict is expected
 
 
 @pytest.mark.os_agnostic
@@ -83,7 +84,7 @@ def test_the_api_probe_reports_no_evidence_when_it_cannot_ask() -> None:
 
     probe = ApiCredentialProbe(read_token=lambda: "tok", send=unreachable)
 
-    assert asyncio.run(probe.verdict()) is CredentialVerdict.INDETERMINATE
+    assert asyncio.run(probe.examine()).verdict is CredentialVerdict.INDETERMINATE
 
 
 @pytest.mark.os_agnostic
@@ -99,7 +100,7 @@ def test_the_api_probe_does_not_ask_without_a_token() -> None:
 
     probe = ApiCredentialProbe(read_token=lambda: None, send=record)
 
-    assert asyncio.run(probe.verdict()) is CredentialVerdict.INDETERMINATE
+    assert asyncio.run(probe.examine()).verdict is CredentialVerdict.INDETERMINATE
     assert asked == []
 
 
@@ -115,7 +116,7 @@ def test_the_api_probe_sends_the_credential_as_a_bearer_token_to_the_messages_en
         return 429
 
     probe = ApiCredentialProbe(read_token=lambda: "sk-secret", send=capture)
-    asyncio.run(probe.verdict())
+    asyncio.run(probe.examine())
 
     request = sent[0]
     assert request.full_url == "https://api.anthropic.com/v1/messages"
@@ -132,7 +133,7 @@ def test_the_no_op_probe_never_claims_a_verdict() -> None:
     """The default must not guess: an unwired probe reporting RATE_LIMITED would suspend
     runs on evidence nobody gathered.
     """
-    assert asyncio.run(NoCredentialProbe().verdict()) is CredentialVerdict.INDETERMINATE
+    assert asyncio.run(NoCredentialProbe().examine()).verdict is CredentialVerdict.INDETERMINATE
 
 
 @pytest.mark.os_agnostic
@@ -291,4 +292,50 @@ def test_a_probe_pointed_at_a_bad_scheme_reports_no_evidence_rather_than_raising
     """
     probe = ApiCredentialProbe(read_token=lambda: "tok", endpoint="http://api.example.com/v1/messages")
 
-    assert asyncio.run(probe.verdict()) is CredentialVerdict.INDETERMINATE
+    assert asyncio.run(probe.examine()).verdict is CredentialVerdict.INDETERMINATE
+
+
+@pytest.mark.os_agnostic
+def test_a_probe_that_cannot_map_the_answer_says_so_in_the_record() -> None:
+    """The failure mode this guards is silent: if the model id in the probe request is ever
+    retired, the API answers 404, that maps to no verdict, and the run fails exactly as it
+    did before the probe existed - restoring the defect with nothing saying why. The status
+    goes into the error message so record.json carries it; the kernel has no log to use.
+    """
+    probe = ApiCredentialProbe(read_token=lambda: "tok", send=lambda _request, _timeout: 404)
+
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.AUTH_FAILURE), probe))
+
+    assert refined.error is not None
+    assert refined.error.type is ErrorType.AUTH_FAILURE  # the classification still stands
+    assert "http 404" in refined.error.message
+    assert "check the probe" in refined.error.message
+
+
+@pytest.mark.os_agnostic
+def test_a_working_credential_is_not_reported_as_a_broken_probe() -> None:
+    """200 is unmapped BY DESIGN - it says the credential works now, which does not explain
+    a refusal that already happened. Telling the operator to go and check the probe would
+    send them after a fault that is not there.
+    """
+    probe = ApiCredentialProbe(read_token=lambda: "tok", send=lambda _request, _timeout: 200)
+
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.AUTH_FAILURE), probe))
+
+    assert refined.error is not None
+    assert "http 200" in refined.error.message
+    assert "check the probe" not in refined.error.message
+
+
+@pytest.mark.os_agnostic
+def test_an_upgraded_refusal_keeps_the_providers_own_words() -> None:
+    """The rate-limit path does not append a probe note: the type change already says what
+    was found, and the message is the provider's own text.
+    """
+    probe = ApiCredentialProbe(read_token=lambda: "tok", send=lambda _request, _timeout: 429)
+
+    refined = asyncio.run(separated_refusal(failed_with(ErrorType.AUTH_FAILURE), probe))
+
+    assert refined.error is not None
+    assert refined.error.type is ErrorType.RATE_LIMITED
+    assert refined.error.message == "Not logged in - Please run /login"

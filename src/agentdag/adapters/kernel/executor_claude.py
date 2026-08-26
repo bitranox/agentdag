@@ -797,10 +797,16 @@ async def separated_refusal(outcome: NodeOutcome, probe: CredentialProbe) -> Nod
     """
     if outcome.error is None or outcome.error.type is not ErrorType.AUTH_FAILURE:
         return outcome
-    if await probe.verdict() is not CredentialVerdict.RATE_LIMITED:
-        return outcome
-    refused = outcome.error.model_copy(update={"type": ErrorType.RATE_LIMITED})
-    return outcome.model_copy(update={"error": refused})
+    finding = await probe.examine()
+    if finding.verdict is CredentialVerdict.RATE_LIMITED:
+        refused = outcome.error.model_copy(update={"type": ErrorType.RATE_LIMITED})
+        return outcome.model_copy(update={"error": refused})
+    # The classification stands, but WHY it stands goes into the message. Without this every
+    # non-upgrade looks the same in record.json, so a probe broken by a retired model id
+    # reads exactly like a healthy timeout and silently restores the defect it exists to
+    # fix - the kernel has no log to put this in, the record IS where it says things.
+    said = outcome.error.model_copy(update={"message": f"{outcome.error.message} [probe: {finding.detail}]"})
+    return outcome.model_copy(update={"error": said})
 
 
 @dataclass(frozen=True, slots=True)

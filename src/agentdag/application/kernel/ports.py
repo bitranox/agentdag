@@ -67,6 +67,7 @@ __all__ = [
     "LockToken",
     "PathResolver",
     "Policy",
+    "ProbeFinding",
     "ResolvedRow",
     "RetryGrantFileRef",
     "RunDir",
@@ -479,6 +480,28 @@ class Policy(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeFinding:
+    """What a credential probe learned, and the raw observation it learned it from.
+
+    The verdict alone loses the difference between "the provider said this credential is
+    fine" and "the question could not be asked", and both arrive as ``INDETERMINATE``. That
+    matters because an unmapped answer means the probe itself has gone wrong - a retired
+    model id returning 404 is indistinguishable, by verdict, from a healthy timeout, and it
+    silently restores the very defect the probe exists to fix.
+
+    Attributes:
+        verdict: What this says about the credential.
+        detail: The observation behind it, in a few words an operator can act on - a status
+            code, an unreachable endpoint, a missing token. Carried into the node's error
+            message so it lands in ``record.json``, which is where this kernel puts things
+            it wants seen; there is no logging in the kernel to put it in instead.
+    """
+
+    verdict: CredentialVerdict
+    detail: str
+
+
 class CredentialProbe(Protocol):
     """Asks the provider directly why it refused, when the executor's own report cannot say.
 
@@ -492,8 +515,8 @@ class CredentialProbe(Protocol):
     that reads the discriminator instead of spending a request.
     """
 
-    async def verdict(self) -> CredentialVerdict:
-        """Report what the provider says about this credential right now.
+    async def examine(self) -> ProbeFinding:
+        """Report what the provider says about this credential right now, and how it said it.
 
         Must not raise: a probe that cannot reach the provider has learned nothing, which is
         :attr:`~agentdag.domain.models.CredentialVerdict.INDETERMINATE`, and a raise here
