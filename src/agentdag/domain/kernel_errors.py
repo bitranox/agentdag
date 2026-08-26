@@ -21,6 +21,8 @@ Contents:
 
 from __future__ import annotations
 
+from .models import SuspendReason
+
 __all__ = [
     "KernelError",
     "LockHeld",
@@ -63,26 +65,42 @@ class RunRefused(KernelError):
 
 
 class Suspended(Exception):
-    """Control flow, not an error: an approve node has no decision yet, the coordinator exits (design 3.4).
+    """Control flow, not an error: the run hands control back and the coordinator exits (design 3.4).
 
     ``payload_hash`` names WHICH payload the run is waiting on, because a decision is
     recorded per (node id, payload hash): one node suspending twice under a CHANGED payload
     asks two different questions, and only the hash tells them apart. ``None`` when the
     raiser had no payload to bind to.
 
+    ``reason`` says what the run is waiting FOR, which is not the same question as which
+    node it stopped at. It defaults to :attr:`~agentdag.domain.models.SuspendReason.DECISION`
+    because an approve node was the only raiser for as long as this class existed, so every
+    existing raise site means exactly that; a raiser waiting on something other than a person
+    has to say so.
+
     Example:
         >>> from agentdag.domain.kernel_errors import Suspended
         >>> Suspended("a_push_list", payload_hash="sha256:ab").payload_hash
         'sha256:ab'
+        >>> Suspended("a_push_list").reason.value
+        'decision'
     """
 
-    def __init__(self, node_id: str, *, payload_hash: str | None = None) -> None:
-        """Bind the suspending node's id and the payload hash it is waiting on.
+    def __init__(
+        self,
+        node_id: str,
+        *,
+        payload_hash: str | None = None,
+        reason: SuspendReason = SuspendReason.DECISION,
+    ) -> None:
+        """Bind the suspending node's id, the payload hash it waits on, and what it waits for.
 
         Args:
-            node_id: The approve node that has no decision yet.
+            node_id: The node the run stopped at.
             payload_hash: The payload the run is waiting for an answer on, or ``None``.
+            reason: What the run is waiting for - a person, or the provider's quota.
         """
         super().__init__(node_id)
         self.node_id = node_id
         self.payload_hash = payload_hash
+        self.reason = reason

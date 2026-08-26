@@ -199,12 +199,14 @@
             "auth_failure",
             "deadline",
             "executor_error",
+            "rate_limited",
             "schema_mismatch",
             "knowledge_unavailable",
             "budget_exceeded",
-            "cancelled_by_user"
+            "cancelled_by_user",
+            "continuation_limit"
           ],
-          "description": "The closed error vocabulary of design 2.2. agents_empty_result: no artefact refs AND no required key_facts key (design 9). auth_failure: the executor's credential was rejected - non-transient, fails the run, never escalates a tier (3.4). deadline: the node's dispatch was interrupted at a turn seam once elapsed wall-clock time exceeded deadline_s (2.2, M3) - the node's OS-level scope is untouched by this; only a whole-run cancel (3.4) kills a scope. knowledge_unavailable: a declared knowledge dataset could not be read, so the node returns needs_context rather than done (3.7)."
+          "description": "The closed error vocabulary of design 2.2. agents_empty_result: no artefact refs AND no required key_facts key (design 9). auth_failure: the executor's credential was rejected - non-transient, fails the run, never escalates a tier (3.4). deadline: the node's dispatch was interrupted at a turn seam once elapsed wall-clock time exceeded deadline_s (2.2, M3) - the node's OS-level scope is untouched by this; only a whole-run cancel (3.4) kills a scope. knowledge_unavailable: a declared knowledge dataset could not be read, so the node returns needs_context rather than done (3.7). rate_limited: the model provider refused the dispatch for quota, not for a bad credential - the CLI reports both as authentication_failed, so this member exists only because an out-of-band probe told them apart; it suspends the run resumably rather than failing it. continuation_limit: the node exhausted max_continuations."
         },
         "message": {
           "type": "string",

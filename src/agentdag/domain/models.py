@@ -6,8 +6,9 @@ journal key. No I/O here.
 
 Contents:
     * :class:`Kind`, :class:`NodeStatus`, :class:`ErrorType`, :class:`Isolation`,
-      :class:`TierRole`, :class:`ExecutorKind`, :class:`RunStatus` - the kernel's closed
-      vocabularies, each a :class:`~enum.StrEnum`.
+      :class:`TierRole`, :class:`ExecutorKind`, :class:`RunStatus`,
+      :class:`SuspendReason` - the kernel's closed vocabularies, each a
+      :class:`~enum.StrEnum`.
     * :class:`Budget`, :class:`Requirement` - per-node limits.
     * :class:`NodeSpec` - what the planner emits and the coordinator dispatches (2.1).
     * :class:`Tokens`, :class:`NodeError`, :class:`KnowledgeUsed`, :class:`SandboxGuarantees` -
@@ -55,6 +56,7 @@ __all__ = [
     "RunState",
     "RunStatus",
     "SandboxGuarantees",
+    "SuspendReason",
     "TierRole",
     "Tokens",
 ]
@@ -102,6 +104,7 @@ class ErrorType(StrEnum):
     AUTH_FAILURE = "auth_failure"
     DEADLINE = "deadline"
     EXECUTOR_ERROR = "executor_error"
+    RATE_LIMITED = "rate_limited"
     SCHEMA_MISMATCH = "schema_mismatch"
     KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
     BUDGET_EXCEEDED = "budget_exceeded"
@@ -162,6 +165,20 @@ class RunStatus(StrEnum):
     CRASHED = "crashed"
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
+
+
+class SuspendReason(StrEnum):
+    """Why a run handed control back, which decides what has to happen before it resumes.
+
+    ``RunStatus.SUSPENDED`` alone cannot say this, and the two answers want opposite
+    things from the operator: ``DECISION`` waits on a person and cannot move until one
+    answers, while ``QUOTA`` waits on the provider and needs only time, then a plain
+    ``run resume``. An operator told the wrong one either sits waiting for a question
+    nobody will ask, or goes looking for a payload that was never written.
+    """
+
+    DECISION = "decision"
+    QUOTA = "quota"
 
 
 class Budget(BaseModel):
@@ -405,6 +422,14 @@ class RunState(BaseModel):
     A decision is recorded per (node id, payload hash), so the node id alone does not say WHICH
     payload a decider is being asked about: a run that suspends again on a CHANGED payload keeps
     the same ``cursor`` and moves this. ``None`` whenever the run is not suspended.
+    """
+    suspend_reason: SuspendReason | None = None
+    """What the suspended run is waiting FOR, alongside ``cursor``'s node id.
+
+    ``None`` whenever the run is not suspended, and also on a state file written before this
+    field existed - which reads correctly either way, since every suspend that predates it was
+    an approve node's. A quota suspend writes no payload, so ``cursor_payload_hash`` is ``None``
+    for one and an operator cannot tell the two apart from the cursor alone.
     """
     policy_version: str
     tokens_by_row: dict[str, int] = Field(default_factory=dict)

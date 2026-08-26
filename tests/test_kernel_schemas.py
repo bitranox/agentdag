@@ -8,7 +8,7 @@ import pytest
 from schema_helpers import load, validator
 
 from agentdag.domain.journal import dump_journal_line, parse_journal_line
-from agentdag.domain.models import ApprovePayload, NodeSpec, ResultRecord
+from agentdag.domain.models import ApprovePayload, ErrorType, NodeSpec, ResultRecord
 
 
 @pytest.mark.parametrize("name", ["node-spec", "result-record", "journal-line", "approve-payload"])
@@ -77,3 +77,18 @@ def test_a_pre_sandbox_record_with_no_sandbox_key_validates_and_round_trips() ->
     dumped = json.loads(record.model_dump_json(by_alias=True))
     assert "sandbox" not in dumped
     validator("result-record").validate(dumped)
+
+
+@pytest.mark.os_agnostic
+def test_the_result_record_schemas_error_enum_is_exactly_the_domain_error_vocabulary() -> None:
+    """The schema's ``error.type`` enum and :class:`ErrorType` must not drift apart.
+
+    Both claim to BE "the closed error vocabulary of design 2.2", and a record is written
+    from the Python enum but validated against the JSON one, so a member in only one of
+    them is a record the producer can emit and the validator must reject. Asserting set
+    equality rather than containment catches the drift in BOTH directions: a member added
+    to the enum and not the schema (which is how ``continuation_limit`` went missing), and
+    a stale schema member no producer can emit any more.
+    """
+    schema = load("result-record")
+    assert set(schema["properties"]["error"]["properties"]["type"]["enum"]) == {member.value for member in ErrorType}
