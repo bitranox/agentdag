@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ...domain.journal import ResultLine, StartedLine
-from ...domain.kernel_errors import KernelError
+from ...domain.kernel_errors import KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash
 from ...domain.models import ErrorType, NodeError, NodeOutcome, NodeStatus, ResultRecord, SandboxGuarantees
 from ...domain.scrub import scrub
@@ -247,6 +247,14 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
     process itself going away, and must stay a crash - a crash leaves a ``started`` line
     with no ``result``, which is exactly what the next run re-dispatches.
 
+    :class:`~agentdag.domain.kernel_errors.Suspended` is re-raised ahead of both catches
+    because it is not a failure at all: it is the run handing control back to the
+    operator. Recording it would be worse than merely mislabelling it - every result is
+    indexed on replay whatever its status (:func:`~agentdag.application.kernel.replay.
+    build_replay_index`), so a suspend turned into a record would be SERVED on the resume
+    it exists to enable, pinning the run to that outcome for good. Letting it pass leaves
+    the ``started`` line unmatched, which is precisely the shape a resume re-dispatches.
+
     A :class:`~agentdag.domain.kernel_errors.KernelError` is stamped
     ``transient=False`` and anything else ``transient=True``: the kernel raises that
     family for a CONFIGURATION or PROGRAM bug (an effort the policy does not name, a
@@ -264,6 +272,8 @@ async def _run_body(body: Body, node_dir: Path) -> NodeOutcome:
     """
     try:
         return await body(node_dir)
+    except Suspended:  # control flow, not a failure: the run is handing control back
+        raise
     except KernelError as exc:  # a config or program bug: the same inputs fail the same way
         return _failed_outcome(exc, transient=False)
     except Exception as exc:  # a raising branch is a FAILED RECORD, never a dead fleet

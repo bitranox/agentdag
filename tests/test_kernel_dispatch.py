@@ -17,7 +17,7 @@ from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.dispatch import Body, Dispatcher
 from agentdag.domain.journal import StartedLine
-from agentdag.domain.kernel_errors import KernelError
+from agentdag.domain.kernel_errors import KernelError, Suspended
 from agentdag.domain.models import (
     Budget,
     ErrorType,
@@ -349,3 +349,25 @@ def test_two_node_ids_doing_identical_work_dispatch_once_and_both_get_the_record
     assert second.input_hash == first.input_hash
     assert resumed.dispatched_keys == dispatcher.dispatched_keys
     assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]
+
+
+@pytest.mark.os_agnostic
+def test_a_body_raising_suspended_propagates_and_leaves_no_result_line(tmp_path: Path) -> None:
+    """``Suspended`` is control flow, not a failure: it must cross the dispatcher untouched.
+
+    ``_run_body``'s broad ``except Exception`` would otherwise turn it into a tidy failed
+    record, which is worse than losing the signal: a recorded result is SERVED on replay
+    (``build_replay_index`` indexes every result whatever its status), so the run would
+    resume straight back into the same recorded failure forever. Leaving the ``started``
+    line unmatched is what makes a resume re-dispatch this exact key.
+    """
+    dispatcher, journal, _ = make(tmp_path / "runs")
+
+    async def suspending(_: Path) -> NodeOutcome:
+        raise Suspended("c")
+
+    with pytest.raises(Suspended) as caught:
+        asyncio.run(dispatcher.dispatch(spec("c"), brief="b", input_obj={}, body=suspending))
+
+    assert caught.value.node_id == "c"
+    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine"]
