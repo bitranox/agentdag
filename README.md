@@ -521,4 +521,6 @@ send_notification(
 - [Contributor Guide](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Module Reference](docs/systemdesign/module_reference.md)
+- [AI transparency](ai-transparency.md)  -  who decided what, what is checked, and what is not
+- [Our stance on AI](ai-stance.md)
 - [License](LICENSE)
