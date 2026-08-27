@@ -161,6 +161,25 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   be told from one that was cut off when the grace ran out. Both ended `needs_continuation`
   carrying the same three ceiling figures and nothing on the record separated them.
 
+- Per-node write-set enforcement at the hook, not only in the post-hoc scan. A node's writes are
+  judged against ITS OWN declared `write_set` globs plus its own `nodes/<node_id>/<hash8>/`, and an
+  EMPTY declaration denies every write rather than allowing any. Before this the request carried
+  `write_set` to the executor and no adapter read it, so the PreToolUse hook bounded writes only by
+  the whole run directory - one node could write another's tree and the run would not notice until
+  the isolation scan, which sees a content diff and cannot say whose write it saw. `domain.scan.is_covered`
+  is the matcher both the hook and the scan use; their lists differ deliberately for that reason.
+  Still unenforced either way: neither hook sees a write made by shell redirection.
+- The design-2.4 spec validator: nine refuse rules over a frozen context value object in
+  `domain/validate.py`, plus `validate_dispatchable`, which adds the one rule needing real
+  filesystem resolution (a `brief_ref` that resolves inside the run store) behind a port so the
+  traversal-defeating `realpath` stays inside the validator instead of becoming the caller's job.
+  **It is unreachable from any real path in `src/`, and that is deliberate rather than an
+  oversight.** Design 2.4 governs PLANNER-emitted specs; graph A's `apply` node is hand-authored and
+  legitimate and these rules refuse it correctly, so wiring the chain into the dispatch path would
+  refuse a graph that runs today. It gates a planner's output, and there is no planner yet. Two of
+  the three `RunLimits` fields it reads - `planner_kinds` and `per_kind_ceiling` - therefore bound
+  nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
+
 ### Fixed
 - A rate limit killed a run permanently and reported it as a login failure. The Claude CLI
   describes an exhausted quota and a rejected credential identically - the same
