@@ -65,8 +65,17 @@ class Dispatcher:
     The journal key carries no node id (design 3.2's identity table), so two nodes whose
     work is identical - same spec identity, same brief, same input, same dependency
     prefix - share one key: the second is SERVED the first's record, body unrun, and that
-    record's ``node_id`` names the FIRST node. That is deliberate dedup (a map over a
-    fleet that lists the same item twice is the legitimate case), not a collision.
+    record's ``node_id`` names the FIRST node. One shape this serves is legitimate dedup,
+    a map over a fleet that lists the same item twice.
+
+    It is nonetheless an OPEN DEFECT rather than the intended contract. The user decided
+    on 2026-08-20 that a stored record is served only to the node it belongs to: a
+    different node id hitting the same key simply runs and gets its own record, and the
+    collision surfaces as a run-summary drift signal instead of being silent. That is M3
+    Task 25 and it is unbuilt, so what ships today is the behaviour described above, with
+    the cost that a served record's asker is recorded nowhere. It is also an M6
+    prerequisite: two nodes colliding on one key is rare in a hand-authored graph and
+    ordinary in a model-emitted one.
 
     Attributes:
         journal: Where a dispatch's ``started`` and ``result`` lines are appended.

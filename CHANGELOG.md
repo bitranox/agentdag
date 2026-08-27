@@ -56,6 +56,110 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   all `false` - the honest, unchanged-in-kind truth about today's kernel. A record served
   from the journal on replay keeps the declaration it was originally dispatched under,
   even when a later launch is wired with a different `Sandbox` adapter.
+- A per-node deadline. `deadline_s` is clamped to the policy's `deadline_ceiling_s` by
+  `Coordinator.work` before it reaches the executor, and the executor checks it at the same
+  per-turn seam the token cap uses, against a different quantity entirely: wall-clock seconds
+  since dispatch start, read from an injected clock, never a token count. A node stopped that
+  way is recorded `cancelled`/`deadline`, `transient=False`, with no artefact refs, because an
+  interrupted dispatch's own terminal message never says it was interrupted in either
+  direction, so the record is stamped on the path that called `interrupt()`. There is no
+  deadline for the run as a whole.
+- `agentdag run cancel`, and the startup sweep for a scope a dead coordinator left behind.
+  `request_cancel` writes a `CancelIntent` under `decisions/`, marks the run `cancelling` and
+  returns at once; `resolve_cancel` kills the run's scope and, only once its lock can be taken,
+  folds the intent and the VERIFIED outcome into the journal, never trusting the stop verb's
+  own return where the scope cannot confirm a cross-process kill at all, and never re-journaling
+  a cancel two callers raced to resolve. Two new journal lines, `cancel_requested` and `cancel`.
+  `sweep_stale_scope` is the unconditional housekeeping half, called before every relaunch, so a
+  scope still draining from a dead coordinator is stopped before a new one dispatches into the
+  same worktrees. `agentdag run resume` now refuses a cancelling or cancelled run rather than
+  silently working past a cancel.
+- An owner for the approve deadline, and `agentdag run apply-deadlines` to drive it. A suspended
+  approve node's coordinator has EXITED, so nothing was applying the payload's default at
+  `decide_by`; the pass is external by necessity, runs over every run in a runs directory and
+  takes each run's lock. `decide_by` is READ from the payload and never recomputed, because the
+  payload's content hash is the approve node's dispatch identity and a deadline read from the
+  clock would move on every launch. A human and the pass racing for one (node id, payload hash)
+  resolve on the filesystem's own atomic link: exactly one wins, the loser is refused, and the
+  journal carries one decision. The applied decision carries `by=system`, `reason=deadline` and a
+  `token_id` naming the timer, which moved the run summary's "was a human involved" question off
+  `token_id` and onto `by`. A `systemd --user` timer and service sit in the repository under
+  `deploy/` for an operator to install; nothing here installs anything, and the wheel ships only
+  `src/agentdag`, so an installed user does not receive those unit files.
+- A notification sink, so a run tells an absent operator what it did. Four states are notifiable:
+  `suspended` (carrying the payload's question and its `decide_by`), `done` and `failed`, which
+  the coordinator emits as it takes them, and `crashed`, which it cannot emit because a crash is
+  the process leaving without writing anything. `crashed` is observed from outside by the same
+  periodic pass that applies approve deadlines, and only when three facts agree: the state says
+  running, the lock is takeable, and the journal is non-empty. That gives `RunStatus.CRASHED` its
+  first producer. A sink cannot fail a run - whatever it raises is contained, because a mail
+  server being down is not a run failure - and the cost of that is silence. Two sinks behind one
+  port: the no-op default, and mail through the `btx_lib_mail` adapter the email commands already
+  use; an explicit `mail` with no SMTP host refuses rather than falling back to silence.
+- `agentdag notify-test`, the one place a broken sink is loud. It resolves the sink through the
+  same function a run does, so it cannot report healthy what `run start` would refuse, then emits
+  a probe event and turns the result into a message and an exit code. With no sink configured it
+  says so and exits 0. Its limit is worth knowing: it proves the sink worked once, now.
+- A retry path for a failed CODE node, in two halves. The coordinator re-dispatches automatically
+  when the record says the failure was infrastructure rather than an answer: the error must be
+  transient, the kind must be one the coordinator runs as code, and the attempt number must be
+  under `thresholds.max_attempts` (shipped as 2, so one retry; 1 disables it). A red gate is
+  `failed` with no error at all because it ran and reported a real answer, so it is never retried
+  automatically, and design 2.3 rule 5 owns a model node's retry by escalating a rank instead.
+- `agentdag run retry RUN_ID NODE_ID`, the operator verb for the case the automatic rule cannot
+  reach: somebody who fixes the repo by hand changes nothing a journal key can see, so that
+  failure is otherwise served back on every later launch. The grant is a journal line folded from
+  an inbox file the way an approve decision is, bound to the (node id, journal key) pair of the
+  failed attempt, and self-limiting by construction because the attempt it authorises runs under
+  `attempt + 1`, an identity field, so it lands on a different key and can never match twice. It
+  is its own verb rather than a flag on `resume`, because a red gate does not fail the run and
+  `resume` refuses a done run by design. The verb walks the node's attempt chain first and refuses
+  a grant naming a key the relaunch could never walk to, naming the attempt the relaunch reaches.
+  No journal event is added for either half: `attempt` is an identity field, so every try already
+  appends its own `started` and `result` under its own key.
+- The context ceiling of design 3.8, first half: a node whose SINGLE turn's context passes its
+  row's `handover_at_tokens` is interrupted and ends `needs_continuation` instead of running on.
+  It is a third quantity at the same turn seam and deliberately not the token cap's: a spend cap
+  asks how much a dispatch has used in total, which only a sum can answer, while a context ceiling
+  asks how full the window is right now, which only a single turn's own figure can answer. It is
+  checked last and only when neither hard stop fired, so a node out of budget or out of time is not
+  offered a successor that would outlive the bound that stopped it.
+- That record KEEPS its artefact ref and carries no error. The cap and deadline paths empty
+  `artefact_refs` so a half-finished worktree is never presented as complete, which is right when a
+  node stops for good; a handover is the opposite case, because that tree is what the successor
+  continues from. `ResolvedRow` now carries `handover_at_tokens`, so the figure reaches the
+  executor from the model row that owns it rather than from a node or a run limit.
+- The context ceiling of design 3.8, second half: a node that ends `needs_continuation` is now
+  CONTINUED by a successor rather than returned as-is. The successor is dispatched with
+  `continuation + 1` - an identity field, so a different journal key and a genuine re-run, exactly
+  as `attempt + 1` works for a retry - and its attempt counter starts over, because a successor is a
+  fresh dispatch whose own transient failures deserve the allowance any node gets.
+- `max_continuations` bounds the chain and is the only thing that does, since a handover is not a
+  failure and no retry rule or budget refusal is reached by handing over. Reaching it dispatches a
+  body that refuses with `continuation_limit` rather than returning a record built on the spot, so
+  the refusal is journaled and hashed like any other outcome and a replay reaches the same end.
+- `ResultRecord.continuation` records which link of a chain produced a record, defaulted so a
+  journal line written before this still validates; the shipped result-record schema carries it.
+- A node crossing its context ceiling is ASKED to hand over before it is stopped, because a node
+  interrupted at the moment of asking cannot write the record its successor is meant to read. The
+  wording is measured rather than chosen: over 40 dispatches a notice claiming the node was near
+  its context ceiling was refused 4 of 4, since the node reads its own remaining budget and finds
+  the claim false, while a notice asserting only that the coordinator is ending the turn, against a
+  prompt that pre-authorises it, was obeyed 4 of 4. So the duty travels in the node's own prompt,
+  where it has standing, and the notice through the executor's `PreToolUse` hook, which is not a
+  channel that can confer any. The grace is bounded, counted in API requests keyed by `message_id`
+  rather than in stream events, and `interrupt()` at its expiry is the shipped backstop.
+- The coordinator stamps a handover record's identity where it persists the record. The shipped
+  schema requires `node_id`, `attempt` and `continuation`, the duty asks a node for none of them,
+  and a node could not answer honestly anyway, so every compliant record failed the full schema on
+  exactly those three keys. The stamp uses the CURRENT spec and happens only on a REAL dispatch, so
+  a replayed handover keeps the identity it was written with. The node's own bytes are kept beside
+  it as `handover.as-written.json`, written BEFORE the stamp, because stamping reformats and
+  reorders and that wording is the evidence every faithfulness question is answered from. An absent
+  or unparseable record is left exactly as found.
+- `grace_expired` on the record, declared TYPED, so a node that wrote its handover and stopped can
+  be told from one that was cut off when the grace ran out. Both ended `needs_continuation`
+  carrying the same three ceiling figures and nothing on the record separated them.
 
 ### Fixed
 - A rate limit killed a run permanently and reported it as a login failure. The Claude CLI
@@ -95,33 +199,6 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   why a node holding about 250000 tokens was interrupted against a 400000 cap and its
   finished, correct work was discarded unexamined.
 
-### Added
-- The context ceiling of design 3.8, first half: a node whose SINGLE turn's context passes its
-  row's `handover_at_tokens` is interrupted and ends `needs_continuation` instead of running on.
-  It is a third quantity at the same turn seam and deliberately not the token cap's: a spend cap
-  asks how much a dispatch has used in total, which only a sum can answer, while a context ceiling
-  asks how full the window is right now, which only a single turn's own figure can answer. It is
-  checked last and only when neither hard stop fired, so a node out of budget or out of time is not
-  offered a successor that would outlive the bound that stopped it.
-- That record KEEPS its artefact ref and carries no error. The cap and deadline paths empty
-  `artefact_refs` so a half-finished worktree is never presented as complete, which is right when a
-  node stops for good; a handover is the opposite case, because that tree is what the successor
-  continues from. `ResolvedRow` now carries `handover_at_tokens`, so the figure reaches the
-  executor from the model row that owns it rather than from a node or a run limit.
-
-### Added
-- The context ceiling of design 3.8, second half: a node that ends `needs_continuation` is now
-  CONTINUED by a successor rather than returned as-is. The successor is dispatched with
-  `continuation + 1` - an identity field, so a different journal key and a genuine re-run, exactly
-  as `attempt + 1` works for a retry - and its attempt counter starts over, because a successor is a
-  fresh dispatch whose own transient failures deserve the allowance any node gets.
-- `max_continuations` bounds the chain and is the only thing that does, since a handover is not a
-  failure and no retry rule or budget refusal is reached by handing over. Reaching it dispatches a
-  body that refuses with `continuation_limit` rather than returning a record built on the spot, so
-  the refusal is journaled and hashed like any other outcome and a replay reaches the same end.
-- `ResultRecord.continuation` records which link of a chain produced a record, defaulted so a
-  journal line written before this still validates; the shipped result-record schema carries it.
-
 ### Notes
 - The baseline deliberately has no journal, no token cap and no unattended approve; those are
   later milestones and their absence is what makes their cost measurable.
@@ -136,17 +213,19 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - The Bash denylist blocks only the exact command shapes the policy lists. Measured against
   the shipped policy, `curl -XPOST`, `curl -d`, a GET carrying its data in the URL,
   `git -C some/path push` and `python3 -c ...` all pass.
-- Per-node write-set enforcement is a post-hoc scan, not a live block, and under `--parallel`
-  greater than 1 a stray write landing inside a SIBLING's declared region is not attributable
-  to one node; the scan reports that rather than naming one.
+- Per-node write-set enforcement is a live block on the matched write tools plus a post-hoc
+  scan, and NEITHER sees a write made through shell redirection rather than a matched tool.
+  Under `--parallel` greater than 1 the scan works from a content diff, so a stray write
+  landing inside a SIBLING's declared region is not attributable to one node; the scan reports
+  that rather than naming one.
 - `by` and `token_id` on a decision are not an authentication mechanism: any process running
   as the same operating-system user can record one.
 - Cancel and deadline teardown reaps grandchildren only under the systemd scope. Under
   `NoScope` (off Linux, or with no live `systemd --user` manager) the coordinator's process
   group is killed on POSIX and only the one launched process on Windows.
-- A failed CODE node (gate, scan, tally, discover) is final in this version: its record is
-  served on every resume and no command mints a new attempt, so such a run can only be
-  restarted as a new run. M3 adds the retry path.
+- Once a failed CODE node's attempts are spent, nothing AUTOMATIC mints a further one: the
+  record is served on every resume until a person grants an attempt with `agentdag run retry`.
+  Nothing withdraws a grant, and nothing lists a run's grants short of reading its journal.
 
 ## [0.0.1] - 2026-08-17
 
