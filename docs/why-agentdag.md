@@ -16,15 +16,15 @@ organised and degrades for reasons nobody can see.
 Put the two side by side. The last column is the one that matters, because a team's shape is nothing
 more than the accumulated answer to these limits.
 
-| Limit                        | A person                                                                                                      | A language model                                                                                                                                                                               | What it does to the team                                                                                                                                                                                 |
-|------------------------------|---------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full                                                                       | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle                                                   |
-| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up                                                                         | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                                                                |
-| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that remembers none of the last one                                                                                         | anything that must outlive a step is written down, or it did not happen                                                                                                                                  |
-| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                                                                       | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                                                               |
-| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                                                                               | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code                                               |
-| Cost of one question         | two minutes of work costs two minutes                                                                         | a large fixed cost before any work: tens of thousands of tokens for the first node, and under today's settings about a tenth of that for each one after it, whether or not it shares its brief | give a node enough work to be worth starting; the brief is late in the cached prefix so it may vary per node, but a loaded settings cascade measures as NOT cacheable and costs full price on every node |
-| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | dispatching to a fresh subagent separates the contexts properly; what returns is a summary, and the coordinator keeps every one of them                                                        | constrain the return channel: a typed record and a path, so the coordinator decides what happens next without ever holding what happened                                                                 |
+| Limit                        | A person                                                                                                      | A language model                                                                                                                                                                                          | What it does to the team                                                                                                                                                                                  |
+|------------------------------|---------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| How much it can hold at once | about four to seven things, and no training changes that                                                      | a window of hundreds of thousands of tokens, several hundred pages, but attention thins across it long before it is full                                                                                  | both need work cut into contained pieces, for opposite reasons: the person cannot fit it in, the model can fit it in and stops attending to the middle                                                    |
+| Getting knowledge in         | slow and expensive: days to weeks to bring somebody up to speed, which is the cost hierarchy exists to ration | any node reads the same store in seconds, so giving one node what another knows costs a read rather than a training-up                                                                                    | no chain of command and no trickle-down, because the scarcity layers were invented to manage is not there                                                                                                 |
+| What survives afterwards     | it sticks; yesterday is still in the room                                                                     | nothing survives a dispatch here: each node runs in a fresh client that remembers none of the last one                                                                                                    | anything that must outlive a step is written down, or it did not happen                                                                                                                                   |
+| Being interrupted            | tap them on the shoulder and they stop mid-sentence                                                           | reachable but not preemptable: a message lands at its next tool call, which may be after the thing you wanted to prevent                                                                                  | a message can steer a run, but nothing correctness depends on may wait for one, so exclusion is structural and order is fixed at plan time                                                                |
+| Knowing it is wrong          | unreliable, but it can feel unsure and say so                                                                 | confidently wrong, and asking it about its own work adds nothing                                                                                                                                          | what decides is mechanical wherever a mechanical check exists; where judgement is unavoidable it comes from a separate node with no stake, counted by code                                                |
+| Cost of one question         | two minutes of work costs two minutes                                                                         | a large fixed cost before any work: tens of thousands of tokens for the first node on a given model, and about a tenth of that for each later node ON THAT SAME MODEL, whether or not it shares its brief | give a node enough work to be worth starting, and keep a graph on FEW model rows: a cache does not cross rows, so each row costs a full startup. The brief is late in the prefix, so it may vary per node |
+| Coordinating who does what   | cheap: a two-minute conversation settles it, which is why organisations run on meetings                       | dispatching to a fresh subagent separates the contexts properly; what returns is a summary, and the coordinator keeps every one of them                                                                   | constrain the return channel: a typed record and a path, so the coordinator decides what happens next without ever holding what happened                                                                  |
 
 Two of those rows are worth reading together, because they invert. For people, moving knowledge
 between heads is the expensive part and talking is the cheap part, so organisations grow layers to
@@ -85,10 +85,11 @@ read nothing from cache, the second read 26,159 of its 26,161 input tokens from 
 count, and a cached read is billed at roughly a tenth.
 
 So the cost of a fleet is one full startup plus a tenth of one per node after it, provided the nodes
-share a brief, and it survives a workflow that gives each node its OWN brief: the brief sits late
-in the prefix, so rewriting one re-created 3,743 of 26,860 tokens, about a seventh, rather than the
-whole startup. An earlier version of this paragraph said such a workflow "would pay it in full
-every time", which measurement refuted.
+run on the same model, and it survives a workflow that gives each node its OWN brief: the brief sits
+late in the prefix, so rewriting one re-created about a seventh of the startup rather than all of
+it. An earlier version of this paragraph said such a workflow "would pay it in full every time",
+which measurement refuted. What it does NOT survive is a change of model: a prefix warmed on one row
+gives another row nothing, so the cost is one full startup per row a graph uses.
 
 Two limits on that, both worth knowing before budgeting against it. The tenth applies to the
 STARTUP, not to the node: a node that works for many turns spends most of its budget on its own
@@ -230,23 +231,27 @@ pays it in full, so sixteen nodes at 38,790 apiece is a run carrying over 620,00
 
 This paragraph used to continue that every node after the first "reads almost all of it back from
 cache at roughly a tenth of the price", making the 620,000 "largely fictional as a bill". It flagged
-that as an inference - the caching had been measured with no cascade loaded at all - and said that if
-the inference were wrong the trade collapses, so it was the first thing to measure once a node loaded
-one. **It has now been measured, and it was wrong.** A loaded cascade does not cache: an identical
-brief in an identical working directory, dispatched back to back, cached 49.7 percent and re-created
-about 23,800 tokens every time, reproducibly. A later cascade node costs roughly twelve times a later
-node under today's settings, and about seven times what the fictional-bill argument assumed. Neither
-of the things a fan-out varies is responsible - a different brief costs 375 tokens on top, a different
-working directory 435 - so the shortfall is in the cascade itself.
+that as an inference - the caching had been measured with no cascade loaded - and said that if the
+inference were wrong the trade collapses, so it was the first thing to measure once a node loaded
+one. It has now been measured, twice, and the answer splits.
 
-Why it fails to cache is still open. A cache-breakpoint ceiling fits the numbers and so does volatile
-content inside the cascade; they need different fixes, and the SDK's own option for stripping the
-volatile sections did not close the gap.
+**A loaded cascade does cache, but not dependably.** Two back-to-back dispatches with an identical
+brief in an identical working directory read the whole prefix back in one run and only half of it in
+another, where the prompt had grown by 120 tokens between them for reasons nobody has identified
+yet. So the discount is real and is not yet something to lean on.
 
-So the trade is not free, and the honest form of this section is that loading the cascade buys a more
-capable node at a real per-node price rather than at a rounding error. Whether that price is worth
-paying is a live decision again, not a settled one. The capability argument below is unaffected: it
-never rested on the discount.
+**The larger correction is that a cache does not cross model rows.** A prefix warmed on one model
+was re-sent to two others and both read nothing back, while a second dispatch to the same model read
+all of it. Since a graph assigns nodes to rows by role, a run pays one full startup PER MODEL ROW it
+uses rather than one per run, and loading the cascade multiplies each of those rather than adding to
+a single one. Nothing about sharing a brief or a working directory changes that. The lever it points
+at is using fewer distinct rows in a graph, and reading "promote this node to a stronger model" as
+buying a whole cold start rather than a rate difference.
+
+So the trade is not free, and the honest form of this section is that loading the cascade buys a
+more capable node at a real per-node price that multiplies with the number of model rows in play.
+Whether that price is worth paying is a live decision again, not a settled one. The capability
+argument below is unaffected: it never rested on the discount.
 
 **A corpus is still retrieved, never delivered.** Standing capability is small, identical across nodes
 and cacheable. A body of work content is none of the three: every node needs a different slice, so
