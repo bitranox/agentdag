@@ -28,7 +28,11 @@ class ReplayIndex:
     """The folded view a resume decision is made against (design 3.2, 3.3).
 
     Attributes:
-        results: The LATEST result record for every key that has one.
+        results: The LATEST result record per (node id, journal key). The node id is half
+            the identity, not decoration - the same reason ``grants`` below carries one: a
+            key holds no node id, so two nodes whose work is identical share one, and keying
+            by the key alone would serve whichever record landed last to BOTH of them. A
+            record is served only to the node it belongs to (user decision, 2026-08-20).
         crash_window: Keys with a ``started`` line and no later ``result`` - the
             candidates for redispatch when the coordinator resumes after a crash.
         decisions: The LATEST approve decision per (node id, payload hash) - a decision's
@@ -46,7 +50,7 @@ class ReplayIndex:
             not been given one yet.
     """
 
-    results: dict[str, ResultRecord]
+    results: dict[tuple[str, str], ResultRecord]
     crash_window: set[str]
     decisions: dict[tuple[str, str], ApproveDecisionLine]
     grants: set[tuple[str, str]]
@@ -64,6 +68,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
     Returns:
         The folded index: a ``started`` line appends its key to ``key_sequence`` and
         adds it to ``crash_window``; the matching ``result`` moves it into ``results``
+        under its record's (node id, key)
         and drops it from ``crash_window``; ``approve_decision`` overwrites the
         (node id, payload hash) entry in ``decisions``; ``retry_grant`` adds its
         (node id, key) to ``grants``; ``run_started`` sets ``run_started``.
@@ -79,10 +84,10 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
         ...                           ResultLine(key=key, record=record, at=at)])
         >>> idx.crash_window
         set()
-        >>> key in idx.results
+        >>> ("a", key) in idx.results
         True
     """
-    results: dict[str, ResultRecord] = {}
+    results: dict[tuple[str, str], ResultRecord] = {}
     crash_window: set[str] = set()
     decisions: dict[tuple[str, str], ApproveDecisionLine] = {}
     grants: set[tuple[str, str]] = set()
@@ -94,7 +99,7 @@ def build_replay_index(lines: Sequence[JournalLine]) -> ReplayIndex:
             key_sequence.append(line.key)
             crash_window.add(line.key)
         elif line.event == "result":
-            results[line.key] = line.record
+            results[line.record.node_id, line.key] = line.record
             crash_window.discard(line.key)
         elif line.event == "approve_decision":
             decisions[line.node_id, line.payload_hash] = line

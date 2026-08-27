@@ -265,7 +265,11 @@ def test_a_crash_between_started_and_result_resumes_by_redispatching_exactly_tha
     # untouched, and every key added after it must be new work, never one already finished.
     assert started_keys(after)[: len(started_keys(before))] == started_keys(before)
     fresh = started_keys(after)[len(started_keys(before)) :]
-    assert set(index.results).isdisjoint(fresh)
+    # `index.results` is keyed by (node id, key), so take the KEY half: comparing the pairs
+    # against a list of bare keys would be disjoint whatever happened, and assert nothing.
+    finished = {finished_key for _, finished_key in index.results}
+    assert finished and fresh, "both sides must be non-empty, or the disjointness is vacuous"
+    assert finished.isdisjoint(fresh)
     assert sorted(node_by_key(after)[key] for key in fresh) == [
         "g_scan@1",
         "g_test@1",

@@ -343,3 +343,45 @@ def test_a_launch_folds_the_retry_grants_an_operator_recorded_while_nothing_was_
     grants = [line for line in lines if line.event == "retry_grant"]
     assert [line.key for line in grants] == [granted_key]
     assert [line.reason for line in lines if line.event == "resume"] == ["retry"]
+
+
+@pytest.mark.os_agnostic
+def test_run_summary_reports_a_key_two_different_nodes_landed_on() -> None:
+    # Task 25's other half. The dispatcher no longer serves one node's record to another, so a
+    # collision costs a second dispatch instead of a wrong record - but it is still a graph the
+    # author probably did not mean, and design 3.5 says it surfaces here rather than silently.
+    line = run_summary_line(
+        run_id="r1",
+        policy_version="sha256:0",
+        results=[result("a", key="k1"), result("twin", key="k1"), result("c", key="k2")],
+        journal_bytes=1,
+        journal_lines=1,
+        replay_seconds=None,
+        human_interactions=0,
+        tokens_by_row={},
+        at=AT,
+        brief_lengths={},
+    )
+
+    assert line.key_collisions == [{"key": "k1", "node_ids": ["a", "twin"]}]
+
+
+@pytest.mark.os_agnostic
+def test_a_node_dispatched_twice_under_one_key_is_not_a_collision() -> None:
+    # A retry or a crash-window redispatch writes two records for ONE node under one key. That
+    # is the ordinary shape and must not be reported: a signal that fires on every retry is one
+    # nobody reads.
+    line = run_summary_line(
+        run_id="r1",
+        policy_version="sha256:0",
+        results=[result("a", key="k1"), result("a", key="k1")],
+        journal_bytes=1,
+        journal_lines=1,
+        replay_seconds=None,
+        human_interactions=0,
+        tokens_by_row={},
+        at=AT,
+        brief_lengths={},
+    )
+
+    assert line.key_collisions == []

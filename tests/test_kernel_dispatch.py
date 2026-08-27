@@ -320,12 +320,17 @@ def test_a_body_raising_a_kernel_error_is_recorded_non_transient(tmp_path: Path)
 
 
 @pytest.mark.os_agnostic
-def test_two_node_ids_doing_identical_work_dispatch_once_and_both_get_the_record(tmp_path: Path) -> None:
-    # The journal key carries no node id BY DESIGN (design 3.2's identity table), so two
-    # nodes whose spec identity, brief, input and dependency prefix all match share one key:
-    # the second is served the first's record, body unrun. That is idempotent dedup - a map
-    # over a fleet listing the same item twice is the legitimate case - and the served
-    # record names the FIRST node, which is what a reader of records.json must expect.
+def test_a_second_node_id_on_an_existing_key_runs_rather_than_being_served(tmp_path: Path) -> None:
+    # Task 25, the resume case. The journal key still carries no node id (design 3.2's identity
+    # table is unchanged, and the assertion on dispatched_keys below pins that), so two nodes
+    # whose spec identity, brief, input and dependency prefix all match still SHARE one key.
+    # What changed on 2026-08-20 is who a stored record may be served to: only the node it
+    # belongs to. So the second id runs and gets its own record instead of being handed the
+    # first's under the first's name.
+    #
+    # The cost this accepts, recorded rather than dropped: a map over a fleet that lists the
+    # same item twice now dispatches twice. That was the legitimate shape of the old dedup, and
+    # it is paid for knowing which node a record actually describes.
     dispatcher, journal, run_dir = make(tmp_path / "runs")
     ran: list[str] = []
 
@@ -338,17 +343,22 @@ def test_two_node_ids_doing_identical_work_dispatch_once_and_both_get_the_record
 
     first = asyncio.run(dispatcher.dispatch(spec("twin_a"), brief="b", input_obj={}, body=counting("twin_a")))
     # A fresh dispatcher, because within ONE run the replay index is built at construction:
-    # the second id is served only once the first's result line is in the folded journal,
-    # which is exactly the resume case this dedup matters for.
+    # the second id could only ever be served once the first's result line is in the folded
+    # journal, which is exactly the resume case this contract is about.
     resumed = Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=TickingClock())
     second = asyncio.run(resumed.dispatch(spec("twin_b"), brief="b", input_obj={}, body=counting("twin_b")))
 
-    assert ran == ["twin_a"]  # the second id ran no body at all
+    assert ran == ["twin_a", "twin_b"]
     assert first.node_id == "twin_a"
-    assert second.node_id == "twin_a"  # the served record names the node that DID the work
+    assert second.node_id == "twin_b"  # its own record, under its own name
     assert second.input_hash == first.input_hash
-    assert resumed.dispatched_keys == dispatcher.dispatched_keys
-    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]
+    assert resumed.dispatched_keys == dispatcher.dispatched_keys  # the KEY is unchanged
+    assert [type(line).__name__ for line in journal.lines()] == [
+        "StartedLine",
+        "ResultLine",
+        "StartedLine",
+        "ResultLine",
+    ]
 
 
 @pytest.mark.os_agnostic
@@ -371,3 +381,72 @@ def test_a_body_raising_suspended_propagates_and_leaves_no_result_line(tmp_path:
 
     assert caught.value.node_id == "c"
     assert [type(line).__name__ for line in journal.lines()] == ["StartedLine"]
+
+
+@pytest.mark.os_agnostic
+def test_a_twin_node_on_the_same_key_runs_and_gets_its_own_record(tmp_path: Path) -> None:
+    """Task 25. The key carries no node id, so two nodes whose work is identical share one.
+    A stored record is served only to the node it belongs to (user decision, 2026-08-20), so
+    the twin RUNS - it must not be handed the first node's record with the first node's id.
+    """
+    dispatcher, journal, _ = make(tmp_path / "runs")
+    ran: list[str] = []
+
+    async def body(_: Path) -> NodeOutcome:
+        ran.append("x")
+        return done(n=1)
+
+    first = asyncio.run(dispatcher.dispatch(spec("a"), brief="b", input_obj={}, body=body))
+    twin = asyncio.run(dispatcher.dispatch(spec("twin"), brief="b", input_obj={}, body=body))
+
+    assert dispatcher.dispatched_keys[0] == dispatcher.dispatched_keys[1]  # the collision itself
+    assert len(ran) == 2, "the twin's body must run; it was served the first node's record"
+    assert first.node_id == "a"
+    assert twin.node_id == "twin"
+    assert [type(line).__name__ for line in journal.lines()] == [
+        "StartedLine",
+        "ResultLine",
+        "StartedLine",
+        "ResultLine",
+    ]
+
+
+@pytest.mark.os_agnostic
+def test_on_replay_each_twin_is_served_its_own_record(tmp_path: Path) -> None:
+    """Both records sit in the journal under ONE key, so serving by key alone would hand
+    whichever landed last to both nodes."""
+    dispatcher, journal, run_dir = make(tmp_path / "runs")
+
+    async def body(_: Path) -> NodeOutcome:
+        return done(n=1)
+
+    async def boom(_: Path) -> NodeOutcome:
+        raise AssertionError("body must not run on replay")
+
+    asyncio.run(dispatcher.dispatch(spec("a"), brief="b", input_obj={}, body=body))
+    asyncio.run(dispatcher.dispatch(spec("twin"), brief="b", input_obj={}, body=body))
+
+    replay = Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=TickingClock())
+    a = asyncio.run(replay.dispatch(spec("a"), brief="b", input_obj={}, body=boom))
+    twin = asyncio.run(replay.dispatch(spec("twin"), brief="b", input_obj={}, body=boom))
+
+    assert (a.node_id, twin.node_id) == ("a", "twin")
+    assert len(journal.lines()) == 4  # zero new dispatches
+
+
+@pytest.mark.os_agnostic
+def test_the_same_node_replaying_its_own_key_is_still_served(tmp_path: Path) -> None:
+    """The fix must not cost replay: a node meeting its OWN record still skips the body."""
+    dispatcher, journal, run_dir = make(tmp_path / "runs")
+
+    async def body(_: Path) -> NodeOutcome:
+        return done(n=1)
+
+    async def boom(_: Path) -> NodeOutcome:
+        raise AssertionError("body must not run on replay")
+
+    asyncio.run(dispatcher.dispatch(spec("a"), brief="b", input_obj={}, body=body))
+    replay = Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=TickingClock())
+    asyncio.run(replay.dispatch(spec("a"), brief="b", input_obj={}, body=boom))
+
+    assert len(journal.lines()) == 2

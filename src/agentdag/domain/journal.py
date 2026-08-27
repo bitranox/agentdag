@@ -204,6 +204,14 @@ class RunSummaryLine(_Line):
     tokens_by_row: dict[str, int]
     journal_lines: int
     human_interactions: int
+    key_collisions: list[dict[str, Any]] = []
+    """Every journal key that more than one NODE landed on, as ``{key, node_ids}``.
+
+    A key carries no node id, so two nodes whose work is identical share one. Since the
+    2026-08-20 decision each still gets its own record, so a collision is no longer a wrong
+    record - but it is a graph its author probably did not mean, and it costs a dispatch, so
+    it surfaces here instead of being silent. One node with several records under one key (a
+    retry, a crash-window redispatch) is the ordinary shape and is NOT reported."""
 
 
 JournalLine = Annotated[

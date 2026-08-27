@@ -602,6 +602,30 @@
           },
           "description": "Per synth: the share of input record ids it named. An INSTRUCTION-COMPLIANCE signal, not a measure of attention - a synth can echo the ids it was handed - so it is read only alongside a content spot-check (design 3.5, M12)."
         },
+        "key_collisions": {
+          "type": "array",
+          "description": "Every journal key that more than one NODE landed on. A key carries no node id, so two nodes whose work is identical share one; since 2026-08-20 each still gets its own record, so this is a graph the author probably did not mean and a wasted dispatch, not a wrong record. Several records from ONE node under one key is a retry or a crash-window redispatch and is not reported. Not required: a run_summary line written before this signal existed stays valid, and the model defaults it to an empty list.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "node_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2
+              }
+            },
+            "required": [
+              "key",
+              "node_ids"
+            ],
+            "additionalProperties": false
+          }
+        },
         "journal_bytes": {
           "type": "integer",
           "minimum": 0

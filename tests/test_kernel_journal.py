@@ -52,7 +52,7 @@ def test_journal_appends_one_line_per_call_and_replays_them_typed(tmp_path: Path
     assert (tmp_path / "audit.jsonl").read_text() == journal_text
 
     idx = build_replay_index(j.lines())
-    assert set(idx.results) == {key(1)}
+    assert set(idx.results) == {("a", key(1))}
     assert idx.crash_window == {key(2)}
     assert idx.key_sequence == [key(1), key(2)]
     assert idx.run_started is not None
@@ -91,7 +91,7 @@ def test_replay_index_keeps_a_decision_per_node_and_payload_and_the_result_of_a_
 
     assert idx.decisions["a_push_list", "sha256:aa"].decision == "hold"
     assert idx.decisions["a_push_list", "sha256:bb"].decision == "approve"
-    assert key(3) in idx.results
+    assert ("c", key(3)) in idx.results
     assert idx.crash_window == set()
     # every started is a dispatch attempt; the sequence is the replay-purity oracle
     assert idx.key_sequence == [key(3), key(3)]

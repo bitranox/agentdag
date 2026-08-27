@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...domain.journal import RunSummaryLine
 from ...domain.keys import hash8
@@ -102,6 +102,7 @@ def run_summary_line(
         journal_bytes=journal_bytes,
         replay_seconds=replay_seconds,
         records_per_node=_records_per_node(results),
+        key_collisions=_key_collisions(results),
         tokens_by_row=dict(tokens_by_row),
         journal_lines=journal_lines,
         human_interactions=human_interactions,
@@ -220,6 +221,24 @@ def _brief_lengths(run_dir: RunDir, results: Sequence[ResultLine]) -> dict[str, 
             continue
         lengths[line.key] = len(text)
     return lengths
+
+
+def _key_collisions(results: Sequence[ResultLine]) -> list[dict[str, Any]]:
+    """Report every key that more than one NODE landed on (Task 25).
+
+    Args:
+        results: Every ``result`` line the journal holds.
+
+    Returns:
+        One ``{"key": ..., "node_ids": [...]}`` per colliding key, keys in first-seen order
+        and node ids sorted. A key with several records from ONE node is a retry or a
+        crash-window redispatch, not a collision, and is not reported - a signal that fires
+        on every retry is one nobody reads.
+    """
+    by_key: dict[str, set[str]] = {}
+    for line in results:
+        by_key.setdefault(line.key, set()).add(line.record.node_id)
+    return [{"key": key, "node_ids": sorted(node_ids)} for key, node_ids in by_key.items() if len(node_ids) > 1]
 
 
 def _records_per_node(results: Sequence[ResultLine]) -> float:

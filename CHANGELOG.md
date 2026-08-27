@@ -7,6 +7,18 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Added
+- A stored record is served only to the node it belongs to (M3 Task 25). The journal key still
+  carries no node id, so two nodes whose spec identity, brief, input and dependency prefix all
+  match still share one; the replay index is now keyed by `(node id, key)`, so a second node
+  hitting an existing key runs and gets its own record under its own name instead of being handed
+  the first node's. Keying the index rather than only checking `node_id` at the serve site is what
+  keeps replay pure: two records under one key means a lookup by key alone returns the last, and
+  the first node would re-run work it had already done. The cost, stated: the shape this used to
+  serve as dedup, a map listing the same item twice, now dispatches twice.
+- `key_collisions` on the run summary line: every journal key that more than one NODE landed on,
+  as `{key, node_ids}`. Several records from one node under one key (a retry, a crash-window
+  redispatch) is the ordinary shape and is not reported. The property is OPTIONAL in
+  `journal-line.schema.json`, so a run_summary line written before the signal existed stays valid.
 - Graph A (fleet migration) baseline: `agentdag graph-a scratch` mirrors a list of real
   repositories into a scratch fleet, and `agentdag graph-a run` migrates every mirror in its
   own worktree, runs the project gate, tallies the outcome and pushes what passed after one
