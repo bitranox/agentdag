@@ -235,10 +235,18 @@ that as an inference - the caching had been measured with no cascade loaded - an
 inference were wrong the trade collapses, so it was the first thing to measure once a node loaded
 one. It has now been measured, twice, and the answer splits.
 
-**A loaded cascade does cache, but not dependably.** Two back-to-back dispatches with an identical
-brief in an identical working directory read the whole prefix back in one run and only half of it in
-another, where the prompt had grown by 120 tokens between them for reasons nobody has identified
-yet. So the discount is real and is not yet something to lean on.
+**A loaded cascade does cache.** Two back-to-back dispatches with an identical brief in an
+identical working directory read the whole prefix back. An earlier reading where only half of it
+came back was traced, by capturing and diffing the real request bodies, to a one-shot notice that
+this machine's own session-start hooks inject into a fresh project directory - not to anything in
+the cascade or the tooling. That notice lands after the last cache breakpoint, so it does not cost
+the prefix.
+
+It is worth saying what the same capture showed about hooks, because it bears on the conditions
+below: a session-start hook injects one-shot, state-dependent text into a node's prompt, and since
+every node runs in a fresh workspace, every node looks like a brand-new project to one. Loaded
+without care, such a hook will hand an unattended agent an instruction that has nothing to do with
+its task.
 
 **The larger correction is that the cache key includes the model.** A prefix warmed on one model
 was re-sent to two others and both read nothing back, while a second dispatch to the same model read
