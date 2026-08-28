@@ -151,6 +151,7 @@ def test_child_env_is_an_allowlist_and_the_credential_never_touches_the_operator
         "HOME",
         "CLAUDE_CONFIG_DIR",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "REMEMBER_PROMPT_STAMP",
         "PATH",
         "LANG",
         "LC_ALL",
@@ -325,6 +326,25 @@ def test_build_options_env_blanks_the_inherited_oauth_token_under_the_credential
     executor = ClaudeExecutor(CredentialCopy(src), deny_bash=())
     env = executor.build_options_env(_request(tmp_path))
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+
+
+@pytest.mark.os_agnostic
+def test_build_options_env_pins_the_remember_plugin_stamp_to_stable(tmp_path: Path) -> None:
+    """The operator's ``remember`` plugin registers a ``UserPromptSubmit`` hook whose shell
+    reads ``_REMEMBER_STAMP="${REMEMBER_PROMPT_STAMP:-full}"`` - an EXPLICIT positive value
+    is required because ``${VAR:-default}`` substitutes on unset OR EMPTY, so this dispatch's
+    own ``_blank_everything_else`` writing ``""`` for every inherited name it does not decide
+    to carry is indistinguishable, to that hook, from the variable never having been set: both
+    fall through to ``full``, whose wall clock and live context percentage change on every
+    dispatch and defeat prompt-cache reuse for everything the stamp precedes. Asserts on the
+    VALUE, not on absence/falsiness - a test phrased either of those ways would pass before
+    the fix, after it, and again if the fix were later removed, proving nothing.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    env = executor.build_options_env(_request(tmp_path))
+    assert env.get("REMEMBER_PROMPT_STAMP") == "stable"
 
 
 @pytest.mark.os_agnostic
