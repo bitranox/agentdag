@@ -204,3 +204,7 @@ EXECUTION-USER-REVIEW.md
 
 # Session handover (scaffolding: one file, one moment, replaced wholesale each time)
 handover.md
+
+# Build plans at three altitudes: local working documents beside the code, moved from
+# RESEARCH/workflow/plans on 2026-08-28; their history to that day is in the RESEARCH repo
+PLANS/
