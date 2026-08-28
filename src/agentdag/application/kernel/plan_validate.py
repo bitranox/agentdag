@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ...domain.condition import RESERVED_TOP_LEVEL_FIELDS, AllOf, AnyOf, Compare, FieldRef, Not, referenced_fields
-from .registry import UnregisteredOp
+from .registry import UnregisteredOpError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -366,7 +366,7 @@ def _op_or_none(entry: Entry, registry: OpRegistry) -> OpSpec | None:
     """Return ``entry``'s registered op, or ``None`` when it names none - never raises."""
     try:
         return registry.get(entry.op)
-    except UnregisteredOp:
+    except UnregisteredOpError:
         return None
 
 

@@ -171,12 +171,6 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # consumer's import.
 "src/agentdag/domain/kernel_errors.py" = ["N818"]
 
-# Op registry (task 30): UnregisteredOp is the design/brief's own binding name
-# (application/kernel/registry.py) - Step 1's own test raises it verbatim as
-# pytest.raises(UnregisteredOp), so an Error-suffix rename would break that
-# binding, the same reasoning as the kernel_errors.py entry above.
-"src/agentdag/application/kernel/registry.py" = ["N818"]
-
 [tool.pyright]
 typeCheckingMode = "strict"
 extraPaths = [

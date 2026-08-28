@@ -16,7 +16,7 @@ a composition root whose op set needed a running coordinator to even construct w
 nothing to validate a plan against before a run starts.
 
 Contents:
-    * :class:`UnregisteredOp` - a plan named an op nobody registered.
+    * :class:`UnregisteredOpError` - a plan named an op nobody registered.
     * :class:`PlanContext` - what a registered op's body needs beyond the ``Entry`` itself.
     * :data:`Body` - the fully-bound async call an ``OpSpec.build`` hands back.
     * :class:`OpSpec` - one registered op: its args model, its output contract, whether it
@@ -42,10 +42,10 @@ if TYPE_CHECKING:
     from ...domain.plan import Entry
     from .context import Coordinator
 
-__all__ = ["Body", "OpRegistry", "OpSpec", "PlanContext", "UnregisteredOp"]
+__all__ = ["Body", "OpRegistry", "OpSpec", "PlanContext", "UnregisteredOpError"]
 
 
-class UnregisteredOp(KernelError):
+class UnregisteredOpError(KernelError):
     """A plan names an op that nothing registered - refused by absence, not a closed enum."""
 
 
@@ -177,14 +177,14 @@ class OpRegistry:
             The registered :class:`OpSpec`.
 
         Raises:
-            UnregisteredOp: nothing registered ``name`` - a plan entry naming it is refused
+            UnregisteredOpError: nothing registered ``name`` - a plan entry naming it is refused
                 by absence (:func:`~agentdag.application.kernel.plan_validate.validate_plan`),
                 never by a closed enum this registry would have to be extended to accept.
         """
         try:
             return self._ops[name]
         except KeyError as exc:
-            raise UnregisteredOp(f"no op named {name!r} is registered") from exc
+            raise UnregisteredOpError(f"no op named {name!r} is registered") from exc
 
     def names(self) -> frozenset[str]:
         """Return every registered op name."""

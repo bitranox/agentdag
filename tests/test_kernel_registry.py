@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from agentdag.application.kernel.registry import Body, OpRegistry, OpSpec, PlanContext, UnregisteredOp
+from agentdag.application.kernel.registry import Body, OpRegistry, OpSpec, PlanContext, UnregisteredOpError
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.condition import RESERVED_TOP_LEVEL_FIELDS
 from agentdag.domain.kernel_errors import KernelError
@@ -49,7 +49,7 @@ def test_registry_refuses_duplicate_and_absent() -> None:
     reg.register(WORK)
     with pytest.raises(KernelError):
         reg.register(WORK)
-    with pytest.raises(UnregisteredOp):
+    with pytest.raises(UnregisteredOpError):
         reg.get("apply")  # never registered, by decision
     assert "apply" not in reg.names()
 
@@ -61,7 +61,7 @@ def test_registry_names_lists_exactly_the_registered_ops() -> None:
 
 
 def test_unregistered_op_is_a_kernel_error() -> None:
-    """``UnregisteredOp`` is a member of the ``KernelError`` family, not a bespoke exception."""
+    """``UnregisteredOpError`` is a member of the ``KernelError`` family, not a bespoke exception."""
     reg = OpRegistry()
     with pytest.raises(KernelError):
         reg.get("apply")
