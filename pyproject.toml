@@ -170,10 +170,6 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # primitives, executor, CLI) imports them verbatim, so an Error-suffix rename would break every
 # consumer's import.
 "src/agentdag/domain/kernel_errors.py" = ["N818"]
-# Condition tree (task 29): Any_ is the interface's own binding name - later tasks (30, 31)
-# import it verbatim - with the trailing underscore only there to avoid shadowing typing.Any,
-# not a style lapse a plain rename would fix.
-"src/agentdag/domain/condition.py" = ["N801"]
 
 [tool.pyright]
 typeCheckingMode = "strict"

@@ -1,8 +1,10 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdag.internal/schemas/plan.schema.json",
   "$defs": {
-    "All": {
+    "AllOf": {
       "additionalProperties": false,
-      "description": "True once every child is True; False once any child is False (Kleene AND).",
+      "description": "True once every child is True; False once any child is False (Kleene AND).\n\nNamed after JSON Schema's own ``allOf`` vocabulary for the same construct. The\nwire field is plain ``all``.",
       "properties": {
         "all": {
           "items": {
@@ -11,10 +13,10 @@
                 "$ref": "#/$defs/Compare"
               },
               {
-                "$ref": "#/$defs/All"
+                "$ref": "#/$defs/AllOf"
               },
               {
-                "$ref": "#/$defs/Any_"
+                "$ref": "#/$defs/AnyOf"
               },
               {
                 "$ref": "#/$defs/Not"
@@ -28,12 +30,12 @@
       "required": [
         "all"
       ],
-      "title": "All",
+      "title": "AllOf",
       "type": "object"
     },
-    "Any_": {
+    "AnyOf": {
       "additionalProperties": false,
-      "description": "True once any child is True; False once every child is False (Kleene OR).\n\nNamed ``Any_`` (not ``Any``) to avoid shadowing :func:`typing.Any`; the field\nitself is plain ``any``, which is not a Python keyword.",
+      "description": "True once any child is True; False once every child is False (Kleene OR).\n\nNamed after JSON Schema's own ``anyOf`` vocabulary for the same construct. The\nwire field is plain ``any``.",
       "properties": {
         "any": {
           "items": {
@@ -42,10 +44,10 @@
                 "$ref": "#/$defs/Compare"
               },
               {
-                "$ref": "#/$defs/All"
+                "$ref": "#/$defs/AllOf"
               },
               {
-                "$ref": "#/$defs/Any_"
+                "$ref": "#/$defs/AnyOf"
               },
               {
                 "$ref": "#/$defs/Not"
@@ -59,7 +61,7 @@
       "required": [
         "any"
       ],
-      "title": "Any_",
+      "title": "AnyOf",
       "type": "object"
     },
     "Budget": {
@@ -167,10 +169,10 @@
               "$ref": "#/$defs/Compare"
             },
             {
-              "$ref": "#/$defs/All"
+              "$ref": "#/$defs/AllOf"
             },
             {
-              "$ref": "#/$defs/Any_"
+              "$ref": "#/$defs/AnyOf"
             },
             {
               "$ref": "#/$defs/Not"
@@ -392,7 +394,7 @@
     },
     "Not": {
       "additionalProperties": false,
-      "description": "Negation of one child condition.\n\nThe Python attribute is ``not_`` because ``not`` is a keyword; it is validated\nand serialised on the wire as ``not``. ``populate_by_name`` also keeps the\nPython name itself usable, so ``Not(not_=...)`` works directly - a plain\n``alias=`` would make a type checker's synthesised constructor accept only the\nalias, so this uses ``validation_alias``/``serialization_alias`` instead, which\nkeeps ``not_`` as the recognised parameter name.",
+      "description": "Negation of one child condition.\n\nThe Python attribute is ``not_`` because ``not`` is a keyword; it is validated\nand serialised on the wire as ``not``. ``populate_by_name`` also keeps the\nPython name itself usable, so ``Not(not_=...)`` works directly - a plain\n``alias=`` would make a type checker's synthesised constructor accept only the\nalias, so this uses ``validation_alias``/``serialization_alias`` instead, which\nkeeps ``not_`` as the recognised parameter name. ``serialize_by_alias`` makes\nthe DEFAULT dump (``model_dump()``/``model_dump_json()`` with no ``by_alias``\nargument) emit ``not`` too - without it, only an explicit ``by_alias=True`` did,\nand the shipped schema's ``additionalProperties: false`` rejects the Python\nname ``not_``.",
       "properties": {
         "not": {
           "anyOf": [
@@ -400,10 +402,10 @@
               "$ref": "#/$defs/Compare"
             },
             {
-              "$ref": "#/$defs/All"
+              "$ref": "#/$defs/AllOf"
             },
             {
-              "$ref": "#/$defs/Any_"
+              "$ref": "#/$defs/AnyOf"
             },
             {
               "$ref": "#/$defs/Not"
@@ -469,10 +471,10 @@
           "$ref": "#/$defs/Compare"
         },
         {
-          "$ref": "#/$defs/All"
+          "$ref": "#/$defs/AllOf"
         },
         {
-          "$ref": "#/$defs/Any_"
+          "$ref": "#/$defs/AnyOf"
         },
         {
           "$ref": "#/$defs/Not"
@@ -490,10 +492,10 @@
           "$ref": "#/$defs/Compare"
         },
         {
-          "$ref": "#/$defs/All"
+          "$ref": "#/$defs/AllOf"
         },
         {
-          "$ref": "#/$defs/Any_"
+          "$ref": "#/$defs/AnyOf"
         },
         {
           "$ref": "#/$defs/Not"

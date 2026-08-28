@@ -17,6 +17,9 @@ Contents:
     * :class:`Plan` - a goal, its entries, and the two run-level conditions.
     * :func:`evaluate_holds_while` - decide a plan's ``holds_while``, an absent
       guard reading as vacuously true.
+    * :data:`PLAN_SCHEMA_ID`, :func:`plan_json_schema` - the ``$id`` this schema
+      ships under, and the single source both the committed
+      ``schemas/plan.schema.json`` and its drift test are generated from.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from pydantic import BaseModel, ConfigDict
 from .condition import Condition, evaluate
 from .models import NodeSpec
 
-__all__ = ["Entry", "Plan", "evaluate_holds_while"]
+__all__ = ["PLAN_SCHEMA_ID", "Entry", "Plan", "evaluate_holds_while", "plan_json_schema"]
 
 
 class Entry(BaseModel):
@@ -115,3 +118,31 @@ def evaluate_holds_while(plan: Plan, records: Mapping[str, Mapping[str, object]]
     if plan.holds_while is None:
         return True
     return evaluate(plan.holds_while, records)
+
+
+PLAN_SCHEMA_ID = "https://agentdag.internal/schemas/plan.schema.json"
+"""This schema's ``$id``, matching the URI shape every other shipped schema in
+``agentdag/schemas/`` uses (e.g. ``node-spec.schema.json``'s own ``$id``)."""
+
+
+def plan_json_schema() -> dict[str, object]:
+    """``Plan.model_json_schema()``, augmented with the ``$schema``/``$id`` pair every
+    other shipped schema in ``agentdag/schemas/`` carries.
+
+    ``model_json_schema()`` alone omits both: pydantic has no opinion on where a
+    schema is hosted. The committed ``schemas/plan.schema.json`` and the drift test
+    in ``tests/test_domain_plan.py`` both call this one function rather than each
+    hardcoding the same two literals, so they cannot drift from EACH OTHER - only
+    from the live ``Plan`` model, which is exactly what the drift test exists to
+    catch.
+
+    Returns:
+        The full schema dict, with ``$schema`` and ``$id`` first (matching the
+        sibling schemas' own key order), followed by whatever
+        ``Plan.model_json_schema()`` produces.
+    """
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": PLAN_SCHEMA_ID,
+        **Plan.model_json_schema(),
+    }
