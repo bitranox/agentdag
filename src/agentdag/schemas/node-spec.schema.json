@@ -74,7 +74,7 @@
         "minLength": 1,
         "pattern": "^(facts|docs:[A-Za-z0-9._-]+|run:[A-Za-z0-9._-]+|staging:[A-Za-z0-9._-]+)$"
       },
-      "description": "semdex dataset names this node may read (2.1), one of the namespaces of design 3.7. Enters the journal key as the allowed list (3.2). NOT IN SLICE 1: needs semdex 4.4 (filter port) and 4.9 (staging queue); see ../../plans/build-plan-high.md cuts."
+      "description": "semdex dataset names this node may read (2.1), one of the namespaces of design 3.7. Enters the journal key as the allowed list (3.2). NOT IN SLICE 1: needs semdex 4.4 (filter port) and 4.9 (staging queue); see ../../../PLANS/build-plan-high.md cuts."
     },
     "stage_into": {
       "type": "string",

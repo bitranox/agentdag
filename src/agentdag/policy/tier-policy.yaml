@@ -251,7 +251,7 @@ run_limits:
 # probe and enforce are ARGV lists from a fixed allowlist with typed substitution, never shell
 # strings, and this file is root-owned and not writable by the coordinator user (design 3.1, O15).
 # IN SLICE 1 only the bmk-tool-env row is actually consumed (requires: in graph A); the rest of
-# this list, the probes and the discovery pass are later (../../plans/build-plan-high.md).
+# this list, the probes and the discovery pass are later (../../../PLANS/build-plan-high.md).
 resources:
   - name: bmk-tool-env            # the machine-wide bmk tool environment `make test` uses
     kind: mutex
