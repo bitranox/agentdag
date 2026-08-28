@@ -18,6 +18,8 @@ the [documentation index](../README.md).
 - `src/agentdag/domain/journal.py`  -  The six journal line shapes and their canonical serialisation
 - `src/agentdag/domain/keys.py`  -  The content-addressed journal key: which fields are identity, canonical JSON, the dependency prefix hash
 - `src/agentdag/domain/policy.py`  -  The tier policy shapes (TierRow, KindDefault, Thresholds, RunLimits, ResourceRow) and row resolution
+- `src/agentdag/domain/condition.py`  -  The Condition tree (FieldRef, Compare, All, Any_, Not) and its pure, three-valued evaluator over another entry's key_facts
+- `src/agentdag/domain/plan.py`  -  Plan and Entry: what a planner emits, gated by Conditions (holds_while, done_when, per-entry acceptance)
 - `src/agentdag/domain/scan.py`  -  Pure manifest comparison: what changed, and which changes no declared write set covers
 - `src/agentdag/domain/scrub.py`  -  Secret scrubbing applied before anything is written to a transcript
 - `src/agentdag/domain/kernel_errors.py`  -  Kernel error family, including Suspended, which is control flow rather than a failure

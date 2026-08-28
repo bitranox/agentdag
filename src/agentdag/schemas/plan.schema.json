@@ -1,0 +1,520 @@
+{
+  "$defs": {
+    "All": {
+      "additionalProperties": false,
+      "description": "True once every child is True; False once any child is False (Kleene AND).",
+      "properties": {
+        "all": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Compare"
+              },
+              {
+                "$ref": "#/$defs/All"
+              },
+              {
+                "$ref": "#/$defs/Any_"
+              },
+              {
+                "$ref": "#/$defs/Not"
+              }
+            ]
+          },
+          "title": "All",
+          "type": "array"
+        }
+      },
+      "required": [
+        "all"
+      ],
+      "title": "All",
+      "type": "object"
+    },
+    "Any_": {
+      "additionalProperties": false,
+      "description": "True once any child is True; False once every child is False (Kleene OR).\n\nNamed ``Any_`` (not ``Any``) to avoid shadowing :func:`typing.Any`; the field\nitself is plain ``any``, which is not a Python keyword.",
+      "properties": {
+        "any": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Compare"
+              },
+              {
+                "$ref": "#/$defs/All"
+              },
+              {
+                "$ref": "#/$defs/Any_"
+              },
+              {
+                "$ref": "#/$defs/Not"
+              }
+            ]
+          },
+          "title": "Any",
+          "type": "array"
+        }
+      },
+      "required": [
+        "any"
+      ],
+      "title": "Any_",
+      "type": "object"
+    },
+    "Budget": {
+      "description": "Per-node budget: tokens per model row are the measured and capped quantity.\n\n``usd`` is an optional derived ceiling that binds only metered rows\n(design 2.1/3.4, decided 2026-08-17).",
+      "properties": {
+        "tokens": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Tokens",
+          "type": "object"
+        },
+        "usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usd"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "Compare": {
+      "additionalProperties": false,
+      "description": "One leaf: ``ref``'s value, compared to a literal ``value`` under ``op``.",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/FieldRef"
+        },
+        "op": {
+          "enum": [
+            "==",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">="
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "ref",
+        "op",
+        "value"
+      ],
+      "title": "Compare",
+      "type": "object"
+    },
+    "Entry": {
+      "additionalProperties": false,
+      "description": "One dispatchable step of a :class:`Plan`.\n\n``op`` names a registry entry (or the literal ``\"plan\"`` for a nested planner\nstep) - the registry itself is a later task, so this model only carries the name,\nnever resolves it. ``acceptance`` is this entry's own gate, separate from the\nplan-wide ``done_when``: a plan can require every entry to individually pass\nwhile also stating what the plan as a whole must reach.",
+      "properties": {
+        "spec": {
+          "$ref": "#/$defs/NodeSpec"
+        },
+        "op": {
+          "title": "Op",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        },
+        "brief": {
+          "title": "Brief",
+          "type": "string"
+        },
+        "output_contract": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Contract",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "acceptance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Compare"
+            },
+            {
+              "$ref": "#/$defs/All"
+            },
+            {
+              "$ref": "#/$defs/Any_"
+            },
+            {
+              "$ref": "#/$defs/Not"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptance"
+        }
+      },
+      "required": [
+        "spec",
+        "op",
+        "args",
+        "brief",
+        "output_contract"
+      ],
+      "title": "Entry",
+      "type": "object"
+    },
+    "FieldRef": {
+      "additionalProperties": false,
+      "description": "One pointer into another entry's ``key_facts``: which entry, and which key.",
+      "properties": {
+        "entry": {
+          "title": "Entry",
+          "type": "string"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry",
+        "field"
+      ],
+      "title": "FieldRef",
+      "type": "object"
+    },
+    "Isolation": {
+      "description": "How a node's working directory is prepared (design 2.1, C8).",
+      "enum": [
+        "worktree",
+        "dir",
+        "none"
+      ],
+      "title": "Isolation",
+      "type": "string"
+    },
+    "Kind": {
+      "description": "The dispatched primitive a node runs (design 2.1, 4).",
+      "enum": [
+        "work",
+        "gate",
+        "synth",
+        "planner",
+        "approve",
+        "map",
+        "reduce",
+        "wait",
+        "batch",
+        "stage",
+        "apply"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "NodeSpec": {
+      "additionalProperties": false,
+      "description": "What the planner emits and the coordinator validates and dispatches (design 2.1).\n\n``continuation`` is the 3.8 successor counter. ``compact`` asks a long serial\nwork node's executor to compress its own history at ``trigger_tokens``, keeping\nthe last ``keep_last_n`` turns/messages (design 2.1, section 4 \"compact\").\n\n``brief_ref`` is filled by whoever first PERSISTS this spec to disk (a later task) -\nthe dispatcher itself never writes a ``NodeSpec``, only ``brief.md``, ``input.json``\nand ``record.json`` under ``nodes/<node_id>/<hash8>/``. It is empty only in memory,\nwhile a workflow module still holds a spec it authored. The journal key is computed\nfrom the brief's CONTENT hash, never from ``brief_ref``, so a spec that moves to a\ndifferent path without its brief text changing is still the same call. The schema's\n``minLength: 1`` binds a spec once it is on disk, not this in-memory default.",
+      "properties": {
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "brief_ref": {
+          "default": "",
+          "title": "Brief Ref",
+          "type": "string"
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executor"
+        },
+        "tier_role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TierRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
+        "knowledge": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Knowledge",
+          "type": "array"
+        },
+        "stage_into": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage Into"
+        },
+        "write_set": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Write Set",
+          "type": "array"
+        },
+        "requires": {
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "isolation": {
+          "$ref": "#/$defs/Isolation",
+          "default": "none"
+        },
+        "deps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Deps",
+          "type": "array"
+        },
+        "deadline_s": {
+          "title": "Deadline S",
+          "type": "number"
+        },
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "attempt": {
+          "default": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "continuation": {
+          "default": 0,
+          "title": "Continuation",
+          "type": "integer"
+        },
+        "compact": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compact"
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "deadline_s"
+      ],
+      "title": "NodeSpec",
+      "type": "object"
+    },
+    "Not": {
+      "additionalProperties": false,
+      "description": "Negation of one child condition.\n\nThe Python attribute is ``not_`` because ``not`` is a keyword; it is validated\nand serialised on the wire as ``not``. ``populate_by_name`` also keeps the\nPython name itself usable, so ``Not(not_=...)`` works directly - a plain\n``alias=`` would make a type checker's synthesised constructor accept only the\nalias, so this uses ``validation_alias``/``serialization_alias`` instead, which\nkeeps ``not_`` as the recognised parameter name.",
+      "properties": {
+        "not": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Compare"
+            },
+            {
+              "$ref": "#/$defs/All"
+            },
+            {
+              "$ref": "#/$defs/Any_"
+            },
+            {
+              "$ref": "#/$defs/Not"
+            }
+          ],
+          "title": "Not"
+        }
+      },
+      "required": [
+        "not"
+      ],
+      "title": "Not",
+      "type": "object"
+    },
+    "Requirement": {
+      "description": "One shared resource a node consumes, scheduled against the host-level lease store.",
+      "properties": {
+        "resource": {
+          "title": "Resource",
+          "type": "string"
+        },
+        "amount": {
+          "title": "Amount",
+          "type": "number"
+        }
+      },
+      "required": [
+        "resource",
+        "amount"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "TierRole": {
+      "description": "The role the tier policy resolves to a model row (design 2.1, 2.3).",
+      "enum": [
+        "mechanical",
+        "standard",
+        "deep",
+        "top"
+      ],
+      "title": "TierRole",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What a planner produces for one goal: its entries and the conditions gating them.\n\n``done_when`` is REQUIRED - a plan with no way to tell it is finished is not a\nplan the coordinator can run unattended. ``holds_while`` is optional: an absent\nguard is vacuously true (see :func:`evaluate_holds_while`), since most plans have\nnothing they need to keep holding beyond their entries' own acceptance gates.",
+  "properties": {
+    "goal": {
+      "title": "Goal",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/Entry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "holds_while": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Compare"
+        },
+        {
+          "$ref": "#/$defs/All"
+        },
+        {
+          "$ref": "#/$defs/Any_"
+        },
+        {
+          "$ref": "#/$defs/Not"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Holds While"
+    },
+    "done_when": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Compare"
+        },
+        {
+          "$ref": "#/$defs/All"
+        },
+        {
+          "$ref": "#/$defs/Any_"
+        },
+        {
+          "$ref": "#/$defs/Not"
+        }
+      ],
+      "title": "Done When"
+    },
+    "deps": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Deps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "goal",
+    "entries",
+    "done_when"
+  ],
+  "title": "Plan",
+  "type": "object"
+}
