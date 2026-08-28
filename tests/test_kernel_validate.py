@@ -28,6 +28,9 @@ def limits(**over: Any) -> RunLimits:
         "per_kind_ceiling": {"work": TierRole.DEEP},
         "planner_kinds": [Kind.WORK, Kind.GATE, Kind.STAGE, Kind.APPROVE],
         "top_role_budget_floor": 0.05,
+        "max_replans": 3,
+        "max_nodes_per_run": 200,
+        "max_nodes_per_plan": 40,
     }
     base.update(over)
     return RunLimits(**base)

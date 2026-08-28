@@ -144,7 +144,15 @@ class Thresholds(BaseModel):
 
 
 class RunLimits(BaseModel):
-    """The whole-run ceilings design 2.3 ("Run limits")/2.4/3.4 validate and clamp against."""
+    """The whole-run ceilings design 2.3 ("Run limits")/2.4/3.4 validate and clamp against.
+
+    ``max_replans``, ``max_nodes_per_run`` and ``max_nodes_per_plan`` are M6's own additions
+    (Task 30): the first two bound a whole run across however many plans and re-plans it takes
+    (parsed here; not yet enforced by anything - a later task's job), while
+    ``max_nodes_per_plan`` is enforced today by
+    :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s size rule, which refuses
+    a single plan carrying more entries than this.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -153,6 +161,12 @@ class RunLimits(BaseModel):
     per_kind_ceiling: dict[str, TierRole]
     planner_kinds: list[Kind]
     top_role_budget_floor: float
+    max_replans: int
+    """How many times a run's own top-level plan may be re-planned before it gives up."""
+    max_nodes_per_run: int
+    """How many nodes a whole run may dispatch, across every plan it accepts."""
+    max_nodes_per_plan: int
+    """How many entries a single accepted :class:`~agentdag.domain.plan.Plan` may carry."""
 
 
 class ResourceRow(BaseModel):
@@ -218,7 +232,8 @@ def resolve_row(table: PolicyTable, *, tier_role: TierRole | None, model: str | 
         ...     "thresholds": {"min_node_tokens": 1, "reduce_tree_fanin": 1, "journal_max_lines": 1,
         ...                    "max_continuations": 1, "max_attempts": 1},
         ...     "run_limits": {"tokens_per_row": {}, "deadline_ceiling_s": 1.0, "per_kind_ceiling": {},
-        ...                    "planner_kinds": [], "top_role_budget_floor": 0.0},
+        ...                    "planner_kinds": [], "top_role_budget_floor": 0.0,
+        ...                    "max_replans": 3, "max_nodes_per_run": 200, "max_nodes_per_plan": 40},
         ...     "resources": [],
         ... }
         >>> table = PolicyTable.model_validate(data)
