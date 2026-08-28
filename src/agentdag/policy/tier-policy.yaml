@@ -250,16 +250,21 @@ run_limits:
 # 8 GiB free is not evicted when free drops to 7 (one threshold, so it is not a hysteresis band).
 # probe and enforce are ARGV lists from a fixed allowlist with typed substitution, never shell
 # strings, and this file is root-owned and not writable by the coordinator user (design 3.1, O15).
-# IN SLICE 1 only the bmk-tool-env row exists, with its enforce lock; the rest of this list, the
-# probes and the discovery pass are later (../../plans/build-plan-high.md).
+# IN SLICE 1 only the bmk-tool-env row is actually consumed (requires: in graph A); the rest of
+# this list, the probes and the discovery pass are later (../../plans/build-plan-high.md).
 resources:
   - name: bmk-tool-env            # the machine-wide bmk tool environment `make test` uses
     kind: mutex
     unit: slot
     capacity: 1
     # a mutex SHOULD name the real lock the gate command itself takes: admission binds only what
-    # this coordinator dispatches, never a second agent session or the user's own `make test`
-    enforce: ["flock", "/run/lock/agentdag/bmk-tool-env"]
+    # this coordinator dispatches, never a second agent session or the user's own `make test`.
+    # No such lock exists today: the coordinator's own host-wide gate FileLock (this path's
+    # origin) was retired 2026-08-20 (b9ee2de) once bmk >= 3.17.0 began guarding its shared tool
+    # env itself - a lock inside bmk's own uv tool dir, not one this coordinator can safely
+    # re-take without serialising the concurrent gates that refactor restored. Admission-only
+    # until the host-level lease registry (later work) names a real mechanism.
+    enforce: null
   - name: pypi-publish            # one publish at a time per package; the workflow names the package as amount 1
     kind: mutex
     unit: slot
