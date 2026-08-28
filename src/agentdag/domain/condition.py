@@ -75,10 +75,13 @@ def referenceable_view(record: ResultRecord) -> dict[str, object]:
     a one-line change and no caller can assemble a different view by hand.
 
     ``status`` enters as the enum's ``.value`` - a plain :class:`str` - never the
-    :class:`~agentdag.domain.models.NodeStatus` member itself: the default ``str()``/
-    f-string form of an enum member differs between Python 3.10 and 3.11+, so letting the
-    member reach a comparison, a key or a serialised payload makes the answer depend on the
-    interpreter. A condition therefore compares against ``NodeStatus.<MEMBER>.value``.
+    :class:`~agentdag.domain.models.NodeStatus` member itself, so what a condition compares
+    against never depends on how the enum happens to RENDER. On this project's floor
+    (``requires-python = ">=3.12"``) that costs nothing and changes nothing:
+    :class:`~agentdag.domain.models.NodeStatus` is a :class:`~enum.StrEnum`, whose member
+    and value already compare equal and format alike. The pin is what keeps every
+    comparison, key and serialised payload correct if that base ever changes - a condition
+    therefore compares against ``NodeStatus.<MEMBER>.value``.
 
     Args:
         record: The record whose view is wanted.
@@ -91,6 +94,21 @@ def referenceable_view(record: ResultRecord) -> dict[str, object]:
             emitted the record, not a precedence puzzle to resolve silently: one of the
             two values would win and every condition naming that field would then read
             something other than what its author meant.
+
+            Unreachable from the code that BUILDS records - nothing in ``src/`` writes a
+            ``key_fact`` named like a reserved field, which
+            ``tests/test_kernel_registry.py``'s AST scan over every ``key_facts={...}``
+            literal keeps true. The way in is REPLAY: records come back off disk through
+            :func:`~agentdag.domain.journal.parse_journal_line`, which validates the SHAPE
+            and has no opinion about key names, so an older build's or a hand-edited
+            journal's line can carry one. Decided deliberately (2026-08-28) rather than
+            degrading to ``None``: such a record is corrupt, and on the replay path - where
+            nobody is watching and the alternative is a condition quietly reading the wrong
+            value - loud beats silent. The cost is stated plainly: :func:`evaluate` is
+            therefore NOT total over a corrupt journal. Inside a dispatch that is contained,
+            because ``_run_body`` records the raise as a FAILED, non-transient node rather
+            than ending the run (``tests/test_kernel_op_bodies.py`` pins that); a condition
+            evaluated outside one propagates.
 
     Example:
         >>> from agentdag.domain.condition import referenceable_view

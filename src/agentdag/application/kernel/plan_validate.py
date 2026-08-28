@@ -14,6 +14,8 @@ one" (that module's own docstring). This module is the "how". The rules:
   of ``graph``;
 * every dep must name an already-admitted node or an earlier entry in this same plan;
 * the plan must not carry more entries than policy allows;
+* for a ROOT plan only, ``done_when`` must be able to settle True AT ALL - a tree that no
+  records can satisfy admits a run that can only ever go to its limits;
 * and, for a ROOT plan only, ``done_when`` must not be settleable WITHOUT a record from an op
   that can change state (decision 4): a gate or a scan re-runs a check, and a check that
   reads the same before and after cannot tell finished from never-started.
@@ -91,8 +93,9 @@ def validate_plan(
             own ``spec.deps`` may name (besides an earlier entry in this same plan).
         limits: The run's ceilings, including ``max_nodes_per_plan``.
         is_root: Whether ``plan`` is the run's own top-level plan, whose ``done_when`` must
-            not be settleable without a record from a state-changing op. ``False`` for a
-            nested plan a ``plan`` op dispatches, which a parent judges instead.
+            be able to settle True at all AND must not be settleable without a record from a
+            state-changing op. ``False`` for a nested plan a ``plan`` op dispatches, which a
+            parent judges instead - a nested plan's ``done_when`` is not what ends the run.
         allocate_id: Mints one fresh node id per accepted entry; called only on acceptance,
             never while a plan is still being checked.
 
@@ -109,6 +112,7 @@ def validate_plan(
         *_size_reasons(plan, limits),
     ]
     if is_root:
+        reasons.extend(_root_settleable_reasons(plan))
         reasons.extend(_root_state_change_reasons(plan, registry))
     if reasons:
         return Refused(reasons=tuple(reasons))
@@ -231,6 +235,74 @@ def _size_reasons(plan: Plan, limits: RunLimits) -> list[str]:
     return []
 
 
+def _root_settleable_reasons(plan: Plan) -> list[str]:
+    """Return the reason a ROOT plan's ``done_when`` can never settle True, if any.
+
+    Admission is the only place this is cheap to catch: a plan whose ``done_when`` no set of
+    records can satisfy is accepted, dispatched, and then runs until some LIMIT stops it,
+    with nothing anywhere saying why it never finished. Refusing it names the defect while
+    the planner is still there to fix it.
+    """
+    if _can_settle_true(plan.done_when):
+        return []
+    return [
+        "done_when can never settle True, whatever records the run produces; a root plan that "
+        "cannot complete would run to its limits instead of finishing"
+    ]
+
+
+def _can_settle_true(cond: Condition) -> bool:
+    """Return whether SOME assignment of records makes ``cond`` evaluate True.
+
+    Structural only, and deliberately so: a :class:`~agentdag.domain.condition.Compare` is
+    taken to be able to go either way, so a contradiction BETWEEN leaves
+    (``AllOf(x == 1, x == 2)``) is not detected here - that needs a solver over the value
+    domain, while what this refuses needs nothing but the shape. The two shapes that are
+    decided by the shape alone are the empty groups the evaluator itself defines:
+    ``AnyOf(any=())`` is vacuously False and ``AllOf(all=())`` is vacuously True
+    (:func:`~agentdag.domain.condition.evaluate`), so a tree that reduces to the first can
+    never say done.
+
+    Recursion, one line per shape, with :func:`_can_settle_false` as its dual so a
+    :class:`~agentdag.domain.condition.Not` is carried through rather than special-cased:
+
+    * an :class:`~agentdag.domain.condition.AllOf` settles True only with EVERY conjunct
+      True, so every child must be able to; ``all(())`` is True, matching the vacuous truth
+      of the empty conjunction;
+    * an :class:`~agentdag.domain.condition.AnyOf` settles True on ANY branch, so one child
+      that can is enough; ``any(())`` is False, which is exactly the case this rule exists
+      for - and it stays False however deeply that empty group is nested, because a parent
+      only reports True through children that can;
+    * a :class:`~agentdag.domain.condition.Not` settles True exactly when its child settles
+      False.
+    """
+    if isinstance(cond, Compare):
+        return True
+    if isinstance(cond, Not):
+        return _can_settle_false(cond.not_)
+    if isinstance(cond, AllOf):
+        return all(_can_settle_true(child) for child in cond.all)
+    return any(_can_settle_true(child) for child in cond.any)
+
+
+def _can_settle_false(cond: Condition) -> bool:
+    """Return whether SOME assignment of records makes ``cond`` evaluate False.
+
+    The dual of :func:`_can_settle_true`, needed only to decide a
+    :class:`~agentdag.domain.condition.Not`: an ``AllOf`` settles False as soon as ONE
+    conjunct does, an ``AnyOf`` only when EVERY branch does, and the empty groups again fall
+    out of ``any(())``/``all(())`` - an empty ``AllOf`` can never be False, so ``Not`` of it
+    can never be True.
+    """
+    if isinstance(cond, Compare):
+        return True
+    if isinstance(cond, Not):
+        return _can_settle_true(cond.not_)
+    if isinstance(cond, AllOf):
+        return any(_can_settle_false(child) for child in cond.all)
+    return all(_can_settle_false(child) for child in cond.any)
+
+
 def _root_state_change_reasons(plan: Plan, registry: OpRegistry) -> list[str]:
     """Return the reason a ROOT plan's ``done_when`` can settle without any state change.
 
@@ -270,7 +342,9 @@ def _requires_state_change(cond: Condition, entries_by_id: Mapping[str, Entry], 
     * an :class:`~agentdag.domain.condition.AnyOf` requires one only when EVERY branch does:
       a disjunction settles on whichever branch holds first, so one branch without a
       state-changing op is a way to be done without one. The empty disjunction never settles
-      True at all, so ``all(())`` reporting a requirement costs nothing.
+      True at all, so ``all(())`` reporting a requirement here costs nothing - it is
+      :func:`_can_settle_true` that refuses that plan, on the ground it can never complete
+      rather than on this rule.
     * a :class:`~agentdag.domain.condition.Not` never requires one. A negation holds by its
       child being FALSE, and a node that never ran has no record - so far from proving work
       happened, ``Not`` is most easily satisfied when nothing did.

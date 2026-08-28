@@ -186,6 +186,15 @@ def manager_state_is_live(stdout: str) -> bool:
 # shape from `dispatch.Body` (`Callable[[Path], Awaitable[NodeOutcome]]`) and deliberately so.
 # Building the registry touches no live Coordinator: every closure below takes one only
 # through the `PlanContext` its RETURNED body reads when finally invoked (a later task).
+#
+# Every registration carries a `# state:` line DIRECTLY above its `can_change_state=`, giving
+# the one-line reason that flag has the value it has, read off this op's own body. The flag is
+# set by what the body DOES - True when a record from this op can tell "this work finished"
+# from "this work never started", False when the op only OBSERVES and its reading is the same
+# before the work and after it - never by the op's NAME; that every `gate:*` comes out False is
+# a consequence of the test, not the test itself (see `registry.OpSpec.can_change_state`).
+# `tests/test_kernel_registry.py` parses those lines back out of this file and fails on a
+# registration that carries none, so an unexamined flag is an omission rather than a default.
 
 
 _WORK_CONTRACT = frozenset(
@@ -428,6 +437,7 @@ def build_op_registry() -> OpRegistry:
             name="work",
             args_model=_WorkArgs,
             output_contract=_WORK_CONTRACT,
+            # state: True - the record IS work an executor did; only running it makes one (context.py:198)
             can_change_state=True,
             build=_build_work,
         )
@@ -437,6 +447,7 @@ def build_op_registry() -> OpRegistry:
             name="gate:make-test",
             args_model=_GateMakeTestArgs,
             output_contract=frozenset({"rc"}),  # application/kernel/context.py:499
+            # state: False - the gate only READS a check that was green before the work too (context.py:489)
             can_change_state=False,
             build=_build_gate_make_test,
         )
@@ -445,11 +456,11 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="scan",
             args_model=_ScanArgs,
-            # A scan is a READ: it diffs two manifests and reports what strayed. It changes
-            # nothing, so `scan.stray == 0` alone is the same never-started-reads-as-finished
-            # loophole decision 4 exists to close for gates. Set from what the body does, not
-            # from the brief's `gate:` NAME PREFIX rule, which this op's name does not match.
             output_contract=frozenset({"stray"}),  # application/kernel/context.py:584
+            # Set from what the body does, not from the brief's `gate:` NAME PREFIX rule, which
+            # this op's name does not match: `scan.stray == 0` alone would otherwise be the same
+            # never-started-reads-as-finished loophole decision 4 closes for gates.
+            # state: False - a manifest diff only OBSERVES; a clean scan reads alike, run or not (context.py:580)
             can_change_state=False,
             build=_build_scan,
         )
@@ -459,6 +470,7 @@ def build_op_registry() -> OpRegistry:
             name="reduce:count",
             args_model=_ReduceCountArgs,
             output_contract=frozenset({"count"}),  # _build_reduce_count's own fold, above
+            # state: True - the fold above counts 0 with nothing dispatched and N once N passed (kernel.py:360)
             can_change_state=True,
             build=_build_reduce_count,
         )
@@ -468,6 +480,7 @@ def build_op_registry() -> OpRegistry:
             name="approve",
             args_model=_ApproveArgs,
             output_contract=frozenset({"decision"}),  # application/kernel/context.py:798
+            # state: True - a Decision exists only because a person answered THIS payload (context.py:787)
             can_change_state=True,
             build=_build_approve,
         )
@@ -479,6 +492,7 @@ def build_op_registry() -> OpRegistry:
             # Empty because the body raises and emits nothing - never a guessed field. A
             # condition can still name a plan entry's `status`, which is reserved.
             output_contract=frozenset(),
+            # state: True (UNVERIFIED: the body raises, kernel.py:408) - a planner EMITS a plan, never observes
             can_change_state=True,
             build=_build_not_yet_wired,
         )
@@ -491,6 +505,7 @@ def build_op_registry() -> OpRegistry:
             # is the brief's binding name and is kept so a plan naming a judge validates; the
             # task that wires the body owns confirming or correcting it.
             output_contract=frozenset({"verdict"}),
+            # state: True (UNVERIFIED: the body raises, kernel.py:408) - a verdict is ABOUT the work, not a re-read
             can_change_state=True,
             build=_build_not_yet_wired,
         )

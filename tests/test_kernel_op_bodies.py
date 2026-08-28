@@ -109,20 +109,54 @@ def op_entry(op: str, node_id: str, args: Mapping[str, object] | None = None) ->
 _KIND_OF: dict[str, Kind] = {"scan": Kind.GATE, "approve": Kind.APPROVE, "reduce:count": Kind.REDUCE}
 
 
-async def seed(co: Coordinator, node_id: str, status: NodeStatus) -> ResultRecord:
-    """Dispatch one trivial code node so the run holds a real record with ``status``."""
+async def seed(
+    co: Coordinator, node_id: str, status: NodeStatus, key_facts: Mapping[str, object] | None = None
+) -> ResultRecord:
+    """Dispatch one trivial code node so the run holds a real record with ``status``.
+
+    ``key_facts`` defaults to this node's own marker; a test passing something else is
+    standing in for a FOREIGN producer (an older build, a hand-edited journal), which is the
+    only way a record can carry a key_fact no body in ``src/`` writes.
+    """
+    facts = dict(key_facts) if key_facts is not None else {"seeded": node_id}
 
     def fold() -> NodeOutcome:
         return NodeOutcome(
             status=status,
-            key_facts={"seeded": node_id},
-            typed_fields=["seeded"],
+            key_facts=facts,
+            typed_fields=sorted(facts),
             executor_used="code",
             model_used="-",
             effort_used="-",
         )
 
     return await co.reduce(code_spec(node_id), fold=fold)
+
+
+def reopened(tmp_path: Path) -> Coordinator:
+    """Bind a SECOND coordinator to the run directory ``coordinator`` already created.
+
+    Its dispatcher folds its replay index from the journal FILE, so every record it serves has
+    been through :func:`~agentdag.domain.journal.parse_journal_line` - which is the only way a
+    record the current code could not have built reaches a fold.
+    """
+    run_dir = FsRunDir.open(tmp_path / "runs", "r1")
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    return Coordinator(
+        run_id="r1",
+        workflow="t",
+        args={},
+        dispatcher=Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=UtcClock()),
+        run_dir=run_dir,
+        clock=UtcClock(),
+        executors={},
+        gate_port=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
+        git=GitCli(),
+        scanner=IsolationScanner(),
+        policy=OneRowPolicy(),
+        sandbox=NoSandbox(),
+        parallel=1,
+    )
 
 
 async def count_over(co: Coordinator, run_root: Path) -> int:
@@ -175,3 +209,45 @@ def test_build_time_arg_errors_are_kernel_errors(tmp_path: Path) -> None:
         REG.get("scan").build(op_entry("scan", "s0", {"watched": 5}), ctx)
     with pytest.raises(KernelError):
         REG.get("approve").build(op_entry("approve", "a0", {}), ctx)
+
+
+def test_reduce_count_over_a_replayed_corrupt_record_fails_loudly_rather_than_miscounting(tmp_path: Path) -> None:
+    """MINOR 3: the fold reads records through the same view a condition does, replay included.
+
+    The corrupt record is not built here and handed to the fold: it is written to the journal
+    by one coordinator and SERVED BACK to a second one, which folds its index from the file -
+    so the record the fold sees came through ``parse_journal_line``. The ``is`` assertion below
+    is what proves that: an identity match against the replay index cannot hold for a record a
+    re-run rebuilt in process.
+
+    What ``referenceable_view``'s raise actually costs here, measured rather than assumed: the
+    ``KernelError`` does NOT escape the run. ``_run_body`` turns it into a FAILED,
+    ``transient=False`` record naming the shadowing field - so the reduce node fails loudly and
+    attributably instead of counting the corrupt record under whichever value won. The run-level
+    raise is reachable only where a condition is evaluated OUTSIDE a dispatch body (see
+    ``tests/test_domain_condition.py``).
+    """
+
+    async def write_the_journal() -> None:
+        await seed(coordinator(tmp_path), "a", NodeStatus.DONE, {"status": "passed"})
+
+    asyncio.run(write_the_journal())
+
+    co = reopened(tmp_path)
+    keys = [key for node_id, key in co.dispatcher.index.results if node_id == "a"]
+    assert len(keys) == 1  # the second coordinator really did read the first one's line back
+
+    async def replay_then_count() -> ResultRecord:
+        served = await seed(co, "a", NodeStatus.DONE, {"status": "passed"})
+        assert served is co.dispatcher.index.results["a", keys[0]]  # served from disk, not re-run
+        ctx = PlanContext(co=co, cwd=co.run_dir.root)
+        record = await REG.get("reduce:count").build(op_entry("reduce:count", "r_count"), ctx)()
+        assert isinstance(record, ResultRecord)
+        return record
+
+    counted = asyncio.run(replay_then_count())
+    assert counted.status is NodeStatus.FAILED
+    assert "count" not in counted.key_facts  # no number was produced at all, right or wrong
+    assert counted.error is not None
+    assert "status" in counted.error.message
+    assert counted.error.transient is False  # a corrupt record is not something a retry fixes

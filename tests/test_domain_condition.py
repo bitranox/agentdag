@@ -9,6 +9,8 @@ shape production never produces.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -23,6 +25,7 @@ from agentdag.domain.condition import (
     referenceable_view,
     referenced_fields,
 )
+from agentdag.domain.journal import ResultLine, dump_journal_line, parse_journal_line
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import NodeStatus, ResultRecord
 
@@ -113,11 +116,12 @@ def test_referenceable_view_merges_key_facts_with_the_reserved_top_level_fields(
 
 
 def test_referenceable_view_pins_status_to_the_enum_value_not_the_member() -> None:
-    """A default ``str()``/f-string form of an enum differs between 3.10 and 3.11+.
+    """The view carries the VALUE, so no comparison depends on how the enum renders.
 
     ``type(...) is str`` rather than ``isinstance``: :class:`NodeStatus` is a
     :class:`~enum.StrEnum`, so an ``isinstance`` check passes for the member too and
-    would assert nothing.
+    would assert nothing - which is also why this pin costs nothing today and only
+    matters if that base ever changes.
     """
     view = referenceable_view(rec())
     assert type(view["status"]) is str
@@ -189,3 +193,33 @@ def test_not_default_dump_also_uses_the_wire_alias() -> None:
     assert "not" in dumped
     assert "not_" not in dumped
     assert Not.model_validate(dumped) == cond
+
+
+def test_a_replayed_record_whose_key_fact_shadows_a_reserved_name_raises_not_degrades() -> None:
+    """MINOR 3: the raise is unreachable from ``src/``, and REACHABLE from disk - and it stands.
+
+    Nothing in ``src/`` writes a ``key_fact`` named ``status``
+    (``tests/test_kernel_registry.py``'s AST scan over every ``key_facts={...}`` literal is the
+    standing proof), so a record that carries one cannot come from our own code. It comes back
+    from a JOURNAL LINE: records are parsed off disk on replay, where an older or hand-edited
+    run can carry anything. This test drives that shape - a line round-tripped through
+    :func:`~agentdag.domain.journal.dump_journal_line`/
+    :func:`~agentdag.domain.journal.parse_journal_line`, with the shadowing key injected into
+    the JSON the way a foreign producer would have written it.
+
+    Decided deliberately (the alternative being to degrade to ``None``): such a record is
+    CORRUPT, and loud beats silent on the replay path, where the quiet answer would be every
+    condition naming that field reading a value other than the one its author meant.
+    """
+    clean = ResultLine(key="v2:sha256:" + "0" * 64, record=rec(), at="2026-08-17T09:12:03+00:00")
+    on_disk = json.loads(dump_journal_line(clean))
+    on_disk["record"]["key_facts"] = {"status": "passed"}
+    replayed = parse_journal_line(json.dumps(on_disk))
+
+    assert isinstance(replayed, ResultLine)  # the PARSE accepts it: nothing upstream of the view refuses it
+    assert replayed.record.key_facts == {"status": "passed"}
+
+    cond = Compare(ref=FieldRef(entry="n", field="status"), op="==", value=NodeStatus.DONE.value)
+    with pytest.raises(KernelError) as exc:
+        evaluate(cond, {"n": replayed.record})
+    assert "status" in str(exc.value)

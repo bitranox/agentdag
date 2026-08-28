@@ -85,8 +85,8 @@ def plan_with(
     """Build a plan over ``entries``, defaulting ``done_when`` to a valid reference into the first.
 
     The default compares ``status`` against ``NodeStatus.DONE.value`` - the enum's own value,
-    never a bare literal and never the member itself, whose default string form differs
-    between Python 3.10 and 3.11+. ``"passed"`` is not a ``NodeStatus`` member at all.
+    never a bare literal and never the member itself, so the comparison never depends on how
+    the enum renders. ``"passed"`` is not a ``NodeStatus`` member at all.
     """
     default_done = Compare(
         ref=FieldRef(entry=entries[0].spec.node_id, field="status"), op="==", value=NodeStatus.DONE.value
@@ -309,8 +309,9 @@ def test_root_done_when_conjoining_a_gate_with_a_judge_is_accepted() -> None:
 def test_root_done_when_over_an_empty_group_is_decided_deliberately() -> None:
     """IMPORTANT 6, the absent case: an empty AllOf is vacuously TRUE, so it completes a run
     with no state change at all and must be refused. An empty AnyOf is vacuously FALSE - it
-    can never say done - so this rule has nothing to object to and lets it through; the
-    plan is then refused for referencing nothing that exists, not by this rule.
+    can never say done - so the state-change rule has nothing to object to; MINOR 4's
+    settleability rule is what refuses it, and this test now pins WHICH rule catches which,
+    so a plan cannot pass both by satisfying neither.
     """
     out = validate_plan(
         plan_with(entries=[entry(op="work", node_id="n0")], done_when=AllOf(all=())),
@@ -330,7 +331,9 @@ def test_root_done_when_over_an_empty_group_is_decided_deliberately() -> None:
         is_root=True,
         allocate_id=ids(),
     )
-    assert isinstance(empty_any, Accepted)
+    assert isinstance(empty_any, Refused)
+    assert any("never settle True" in r for r in empty_any.reasons)
+    assert not any("cannot change state" in r for r in empty_any.reasons)
 
 
 def test_a_read_only_scan_cannot_complete_a_root_plan_on_its_own() -> None:
@@ -401,3 +404,82 @@ def test_a_condition_on_a_field_no_body_emits_is_still_refused() -> None:
         allocate_id=ids(),
     )
     assert isinstance(out, Refused) and any("artifact_ref" in r for r in out.reasons)
+
+
+def test_root_done_when_that_can_never_settle_true_is_refused() -> None:
+    """MINOR 4: ``all(())`` is vacuously True, so an EMPTY ``AnyOf`` passed the root rule.
+
+    It can never evaluate True (``evaluate(AnyOf(any=()), ...)`` is ``False`` by design), so
+    the run it admits can only ever go to its limits. Both shapes the ruling names: the bare
+    empty disjunction as the whole ``done_when``, and one NESTED inside an ``AllOf`` whose
+    other conjunct is perfectly satisfiable - which a check special-casing the literal empty
+    tuple at the top level would let straight through.
+    """
+    bare = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=AnyOf(any=())),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(bare, Refused) and any("never settle True" in r for r in bare.reasons)
+
+    gate, _judge, entries = _gate_and_judge()
+    nested = validate_plan(
+        plan_with(entries=entries, done_when=AllOf(all=(gate, AnyOf(any=())))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(nested, Refused) and any("never settle True" in r for r in nested.reasons)
+
+
+def test_a_negated_always_true_group_can_never_settle_either() -> None:
+    """MINOR 4, the dual: ``AllOf(all=())`` is always True, so ``Not`` of it is always False.
+
+    Proves the recursion carries the negation through rather than pattern-matching one shape:
+    the unsatisfiable subtree here is an EMPTY ``AllOf``, whose own bare form is refused for a
+    different reason entirely (it completes a run with no state change at all).
+    """
+    out = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=Not(not_=AllOf(all=()))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("never settle True" in r for r in out.reasons)
+
+
+def test_the_satisfiable_neighbour_of_each_unsettleable_shape_is_still_accepted() -> None:
+    """MINOR 4's control: the new rule refuses the empty group, not the shape around it.
+
+    One entry apart from the emptiness, each neighbour is the same tree with a real branch in
+    place of the empty one - so a rule that simply refused every ``AnyOf``, or every nested
+    group, fails here.
+    """
+    done = Compare(ref=FieldRef(entry="n0", field="status"), op="==", value=NodeStatus.DONE.value)
+    one_branch = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=AnyOf(any=(done,))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(one_branch, Accepted)
+
+    gate, judge, entries = _gate_and_judge()
+    nested = validate_plan(
+        plan_with(entries=entries, done_when=AllOf(all=(gate, AnyOf(any=(judge,))))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(nested, Accepted)

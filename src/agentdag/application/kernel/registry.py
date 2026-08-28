@@ -106,10 +106,26 @@ class OpSpec:
             ceiling :func:`~agentdag.application.kernel.plan_validate.validate_plan` checks
             every ``FieldRef`` against.
         can_change_state: Whether a record from this op can be the reason a ROOT plan is
-            done. ``False`` for every ``gate:*`` op - a gate re-runs a check, it does not
-            itself change anything the run did - and ``True`` for everything else. See
+            done. Set from WHAT THE BODY DOES, never from the op's NAME: ``True`` when a
+            record this op produces can distinguish "this work FINISHED" from "this work
+            NEVER STARTED", ``False`` when the op only OBSERVES - its reading is the same
+            before the work and after it, so no value it can report tells the two apart.
+
+            A ``gate:*`` op comes out ``False`` under that test (``make test`` is green
+            before a refactor and green after, so ``rc == 0`` proves nothing about the
+            work), and so does the read-only ``scan``, which carries no ``gate:`` prefix
+            at all: a clean isolation scan reads identically whether anything ran. The
+            prefix is a CONSEQUENCE of the test on those bodies, never the test itself -
+            keying the flag on the name is what let a read-only op register as ``True``.
+            ``reduce:count`` is the other direction: it dispatches nothing itself, yet its
+            count is 0 with nothing done and N once N nodes passed, so the record does
+            distinguish the two and the flag is ``True``.
+
+            Each registration in
+            :func:`~agentdag.composition.kernel.build_op_registry` records the one-line
+            reason for its own value beside the flag. See
             :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s root rule
-            (decision 4).
+            (decision 4) for what the flag is then used for.
         build: Given the entry naming this op and the :class:`PlanContext` to dispatch
             through, produce this call's :data:`Body`. NOT invoked by validation:
             :func:`~agentdag.application.kernel.plan_validate.validate_plan` checks an

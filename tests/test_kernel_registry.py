@@ -157,3 +157,63 @@ def test_only_gates_and_the_read_only_scan_cannot_change_state() -> None:
     reg = build_op_registry()
     cannot = {name for name in reg.names() if not reg.get(name).can_change_state}
     assert cannot == {"gate:make-test", "scan"}
+
+
+KERNEL_SOURCE = Path(__file__).resolve().parent.parent / "src" / "agentdag" / "composition" / "kernel.py"
+
+_STATE_MARKER = "# state:"
+
+
+def _op_name_of(call: ast.Call) -> str | None:
+    """Return the ``name=`` literal of an ``OpSpec(...)`` call."""
+    for keyword in call.keywords:
+        if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            return keyword.value.value
+    return None
+
+
+def _line_above_the_flag(call: ast.Call, lines: list[str]) -> str | None:
+    """Return the source line directly above this call's ``can_change_state=``, stripped."""
+    for keyword in call.keywords:
+        if keyword.arg == "can_change_state":
+            return lines[keyword.lineno - 2].strip()
+    return None
+
+
+def flag_reasons() -> dict[str, str]:
+    """Map each op the composition root registers to the reason recorded beside its flag.
+
+    Parsed from ``composition/kernel.py``'s own source: every ``OpSpec(...)`` must carry a
+    ``# state:`` comment on the line directly above its ``can_change_state=``. An op whose
+    registration has no such line is absent from this mapping, which is what the test asserts
+    on - so the reason is auditable at the registration rather than asserted in a report.
+    """
+    text = KERNEL_SOURCE.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    reasons: dict[str, str] = {}
+    for node in ast.walk(ast.parse(text)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "OpSpec":
+            continue
+        name = _op_name_of(node)
+        above = _line_above_the_flag(node, lines)
+        if name is not None and above is not None and above.startswith(_STATE_MARKER):
+            reasons[name] = above.removeprefix(_STATE_MARKER).strip()
+    return reasons
+
+
+def test_every_registration_records_why_its_can_change_state_flag_is_what_it_is() -> None:
+    """MINOR 5: the flag table has to be AUDITABLE at the registration, not asserted elsewhere.
+
+    A previous pass re-derived ``scan``'s flag alone and reported the whole table as
+    re-derived. A reason written beside each registration is what makes the next reader able
+    to check one op without re-deriving all seven - and what makes an unexamined flag visible
+    as an omission rather than invisible as a default.
+
+    The control that this parse is not vacuously empty is the equality below: it fails just as
+    loudly if the scan finds NO reasons at all as if it finds six of seven.
+    """
+    registered = build_op_registry().names()
+    reasons = flag_reasons()
+    assert set(reasons) == set(registered), f"no '{_STATE_MARKER}' reason beside: {sorted(registered - set(reasons))}"
+    thin = {name: reason for name, reason in reasons.items() if len(reason) < 30}
+    assert not thin, f"the reason beside these flags says nothing: {thin}"
