@@ -20,9 +20,9 @@ from __future__ import annotations
 import shutil
 import subprocess  # nosec B404 - probing the user systemd manager IS this module's job
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..adapters.graph_a.gate_make import MakeTestGate
 from ..adapters.graph_a.git_cli import GitCli
@@ -38,6 +38,7 @@ from ..adapters.kernel.scope_none import NoScope
 from ..adapters.kernel.scope_systemd import SystemdScope
 from ..application.kernel.ports import KernelWiring
 from ..application.kernel.registry import OpRegistry, OpSpec
+from ..domain.condition import referenceable_view
 from ..domain.kernel_errors import KernelError
 from ..domain.models import ApproveOption, ApprovePayload, NodeOutcome, NodeStatus
 
@@ -187,6 +188,36 @@ def manager_state_is_live(stdout: str) -> bool:
 # through the `PlanContext` its RETURNED body reads when finally invoked (a later task).
 
 
+_WORK_CONTRACT = frozenset(
+    {
+        # Every `key_facts` name a `work` dispatch can come back with, read off the four
+        # outcome constructors in adapters/kernel/executor_claude.py - a `work` node goes
+        # through Coordinator.work to the wired executor, so those ARE its body:
+        "turns",  # outcome_from_usage (:493), the ordinary path
+        "first_turn_input_tokens",  # all four (:493, :1182, :1296, :1400)
+        "context_at_handover",  # _Handover's outcome (:1180)
+        "handover_at_tokens",  # (:1181)
+        "grace_used",  # (:1183)
+        "grace_expired",  # (:1184)
+        "cap_hit",  # the token-cap stop (:1296)
+        "deadline_hit",  # the node-deadline stop (:1400)
+    }
+)
+"""What a ``work`` record can carry, as a CEILING on what a condition may name.
+
+The whole union rather than the ordinary path's two names, because that is what
+:attr:`~agentdag.application.kernel.registry.OpSpec.output_contract` is: the set a
+``FieldRef`` is checked against. A ceiling that omitted ``cap_hit`` would refuse a plan
+branching on a real, emitted fact. It is NOT a promise that any one dispatch carries all of
+them - a record carries whichever path produced it.
+
+``status`` is deliberately absent: it is a TOP-LEVEL record field, not a ``key_fact``, and
+it is referenceable on EVERY op through
+:data:`~agentdag.domain.condition.RESERVED_TOP_LEVEL_FIELDS`. ``artifact_ref`` is absent
+because no such name exists anywhere in this codebase - the top-level field is spelled
+``artefact_refs``, and it is not a ``key_fact`` either."""
+
+
 class _WorkArgs(BaseModel):
     """``work``'s own args: nothing beyond the entry's spec and brief carry already."""
 
@@ -234,6 +265,36 @@ class _NotYetWiredArgs(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+_ArgsT = TypeVar("_ArgsT", bound=BaseModel)
+
+
+def _parse_args(model: type[_ArgsT], entry: Entry) -> _ArgsT:
+    """Validate ``entry.args`` against ``model``, raising the kernel's own error type.
+
+    A build re-validates because it needs the PARSED values to close over, and
+    :func:`~agentdag.application.kernel.plan_validate.validate_plan` having already checked
+    the same args does not make this a formality - a body can be built from an entry that
+    never went through a plan. What must not happen is a raw pydantic ``ValidationError``
+    escaping here: every other failure a caller of ``build`` can hit is a
+    :class:`~agentdag.domain.kernel_errors.KernelError`, so an ``except KernelError`` around
+    building a node would let exactly this one through.
+
+    Args:
+        model: The op's own args model.
+        entry: The plan entry naming this op.
+
+    Returns:
+        The parsed args.
+
+    Raises:
+        KernelError: ``entry.args`` do not validate against ``model``.
+    """
+    try:
+        return model.model_validate(dict(entry.args))
+    except ValidationError as exc:
+        raise KernelError(f"entry {entry.spec.node_id!r} args invalid for op {entry.op!r}: {exc}") from exc
+
+
 def _build_work(entry: Entry, ctx: PlanContext) -> Body:
     """Build ``work``'s body: dispatch ``entry`` through :meth:`Coordinator.work`."""
 
@@ -261,7 +322,7 @@ def _build_scan(entry: Entry, ctx: PlanContext) -> Body:
     ``build`` can do - a known gap for whichever later task first wires this into a real
     multi-entry dispatch loop (Task 31 is exactly where this would surface).
     """
-    args = _ScanArgs.model_validate(dict(entry.args))
+    args = _parse_args(_ScanArgs, entry)
 
     async def body() -> ResultRecord:
         before = ctx.co.snapshot()
@@ -271,10 +332,25 @@ def _build_scan(entry: Entry, ctx: PlanContext) -> Body:
 
 
 def _build_reduce_count(entry: Entry, ctx: PlanContext) -> Body:
-    """Build ``reduce:count``'s body: fold the run's records into a count of ``status == passed``."""
+    """Build ``reduce:count``'s body: fold the run's records into a count of the ones that passed.
+
+    "Passed" is :attr:`~agentdag.domain.models.NodeStatus.DONE`: that is what graph A's own
+    branch verdict reads (``application/workflows/graph_a.py``: ``passed = gate.status is
+    NodeStatus.DONE and scan.status is NodeStatus.DONE``). ``"passed"`` is not a member of
+    :class:`~agentdag.domain.models.NodeStatus` at all, and ``status`` is a TOP-LEVEL record
+    field, never a ``key_fact`` - a fold reading ``key_facts["status"]`` counted 0 forever.
+
+    The count goes through :func:`~agentdag.domain.condition.referenceable_view` and compares
+    against the enum's own ``.value``, so it reads ``status`` exactly the way a
+    :class:`~agentdag.domain.condition.Compare` in a plan's ``done_when`` does - one merge
+    rule and one comparison form, not two that can drift apart.
+    """
+    passed = NodeStatus.DONE.value
 
     def fold() -> NodeOutcome:
-        count = sum(1 for record in ctx.co.dispatcher.records.values() if record.key_facts.get("status") == "passed")
+        count = sum(
+            1 for record in ctx.co.dispatcher.records.values() if referenceable_view(record)["status"] == passed
+        )
         return NodeOutcome(
             status=NodeStatus.DONE,
             key_facts={"count": count},
@@ -292,7 +368,7 @@ def _build_reduce_count(entry: Entry, ctx: PlanContext) -> Body:
 
 def _build_approve(entry: Entry, ctx: PlanContext) -> Body:
     """Build ``approve``'s body: dispatch ``entry`` through :meth:`Coordinator.approve`."""
-    args = _ApproveArgs.model_validate(dict(entry.args))
+    args = _parse_args(_ApproveArgs, entry)
     payload = ApprovePayload(
         text=args.text,
         node_id=entry.spec.node_id,
@@ -351,7 +427,7 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="work",
             args_model=_WorkArgs,
-            output_contract=frozenset({"status", "artifact_ref"}),
+            output_contract=_WORK_CONTRACT,
             can_change_state=True,
             build=_build_work,
         )
@@ -360,7 +436,7 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="gate:make-test",
             args_model=_GateMakeTestArgs,
-            output_contract=frozenset({"rc"}),
+            output_contract=frozenset({"rc"}),  # application/kernel/context.py:499
             can_change_state=False,
             build=_build_gate_make_test,
         )
@@ -369,8 +445,12 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="scan",
             args_model=_ScanArgs,
-            output_contract=frozenset({"stray"}),
-            can_change_state=True,
+            # A scan is a READ: it diffs two manifests and reports what strayed. It changes
+            # nothing, so `scan.stray == 0` alone is the same never-started-reads-as-finished
+            # loophole decision 4 exists to close for gates. Set from what the body does, not
+            # from the brief's `gate:` NAME PREFIX rule, which this op's name does not match.
+            output_contract=frozenset({"stray"}),  # application/kernel/context.py:584
+            can_change_state=False,
             build=_build_scan,
         )
     )
@@ -378,7 +458,7 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="reduce:count",
             args_model=_ReduceCountArgs,
-            output_contract=frozenset({"count"}),
+            output_contract=frozenset({"count"}),  # _build_reduce_count's own fold, above
             can_change_state=True,
             build=_build_reduce_count,
         )
@@ -387,7 +467,7 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="approve",
             args_model=_ApproveArgs,
-            output_contract=frozenset({"decision"}),
+            output_contract=frozenset({"decision"}),  # application/kernel/context.py:798
             can_change_state=True,
             build=_build_approve,
         )
@@ -396,6 +476,8 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="plan",
             args_model=_NotYetWiredArgs,
+            # Empty because the body raises and emits nothing - never a guessed field. A
+            # condition can still name a plan entry's `status`, which is reserved.
             output_contract=frozenset(),
             can_change_state=True,
             build=_build_not_yet_wired,
@@ -405,6 +487,9 @@ def build_op_registry() -> OpRegistry:
         OpSpec(
             name="judge",
             args_model=_NotYetWiredArgs,
+            # UNVERIFIED: `judge` has no body yet, so no emitter was read for this. `verdict`
+            # is the brief's binding name and is kept so a plan naming a judge validates; the
+            # task that wires the body owns confirming or correcting it.
             output_contract=frozenset({"verdict"}),
             can_change_state=True,
             build=_build_not_yet_wired,

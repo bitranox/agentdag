@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 from agentdag.application.kernel.plan_validate import Accepted, Refused, validate_plan
 from agentdag.composition.kernel import build_op_registry
-from agentdag.domain.condition import AllOf, Compare, FieldRef
-from agentdag.domain.models import Kind, NodeSpec
+from agentdag.domain.condition import AllOf, AnyOf, Compare, FieldRef, Not
+from agentdag.domain.models import Kind, NodeSpec, NodeStatus
 from agentdag.domain.plan import Entry, Plan
 from agentdag.domain.policy import RunLimits
 
@@ -76,20 +76,32 @@ def entry(
 
 
 def plan_with(
-    *, entries: Sequence[Entry], holds_while: Condition | None = None, done_when: Condition | None = None
+    *,
+    entries: Sequence[Entry],
+    holds_while: Condition | None = None,
+    done_when: Condition | None = None,
+    deps: Sequence[str] = (),
 ) -> Plan:
-    """Build a plan over ``entries``, defaulting ``done_when`` to a valid reference into the first."""
-    default_done = Compare(ref=FieldRef(entry=entries[0].spec.node_id, field="status"), op="==", value="passed")
+    """Build a plan over ``entries``, defaulting ``done_when`` to a valid reference into the first.
+
+    The default compares ``status`` against ``NodeStatus.DONE.value`` - the enum's own value,
+    never a bare literal and never the member itself, whose default string form differs
+    between Python 3.10 and 3.11+. ``"passed"`` is not a ``NodeStatus`` member at all.
+    """
+    default_done = Compare(
+        ref=FieldRef(entry=entries[0].spec.node_id, field="status"), op="==", value=NodeStatus.DONE.value
+    )
     return Plan(
         goal="test",
         entries=tuple(entries),
         holds_while=holds_while,
         done_when=done_when if done_when is not None else default_done,
+        deps=tuple(deps),
     )
 
 
 def test_unregistered_op_is_refused_whole() -> None:
-    plan = plan_with(entries=[entry(op="work"), entry(op="teleport")])
+    plan = plan_with(entries=[entry(op="work", node_id="n0"), entry(op="teleport", node_id="n1")])
     out = validate_plan(plan, registry=REG, graph={}, limits=LIMITS, is_root=False, allocate_id=ids())
     assert isinstance(out, Refused) and any("teleport" in r for r in out.reasons)
 
@@ -107,7 +119,7 @@ def test_args_are_validated_by_the_ops_model() -> None:
 
 
 def test_condition_may_reference_only_declared_contract_fields() -> None:
-    e = entry(op="work")  # contract: {"status", "artifact_ref"}
+    e = entry(op="work")  # contract: what executor_claude's outcome constructors emit
     bad = Compare(ref=FieldRef(entry="n0", field="repo_count"), op="<=", value=20)
     out = validate_plan(
         plan_with(entries=[e], holds_while=bad), registry=REG, graph={}, limits=LIMITS, is_root=False, allocate_id=ids()
@@ -181,3 +193,211 @@ def test_same_plan_not_root_is_accepted() -> None:  # the rule is a ROOT rule
 def test_plan_op_is_registered_and_apply_is_not() -> None:
     assert "plan" in REG.names()
     assert "apply" not in REG.names()
+
+
+def test_duplicate_entry_node_ids_are_refused_naming_the_duplicate() -> None:
+    """IMPORTANT 3: two entries sharing a node id collapse onto ONE allocated id.
+
+    ``{e.spec.node_id: allocate_id() for e in plan.entries}`` mints one id per entry but
+    keys the mapping by the planner's id, so a repeated id keeps only the LAST mint and
+    both entries come out sharing it - two nodes, one identity, and nothing said so.
+    """
+    plan = plan_with(entries=[entry(op="work", node_id="dup"), entry(op="work", node_id="dup")])
+    out = validate_plan(plan, registry=REG, graph={}, limits=LIMITS, is_root=False, allocate_id=ids())
+    assert isinstance(out, Refused)
+    assert any("dup" in r for r in out.reasons)
+
+
+def test_an_accepted_plan_carries_no_pre_allocation_id_anywhere() -> None:
+    """IMPORTANT 4: ``Plan.deps`` is a cross-reference too, and was left un-remapped."""
+    first = entry(op="work", node_id="old-a")
+    second = entry(op="work", node_id="old-b", deps=["old-a"])
+    plan = plan_with(
+        entries=[first, second],
+        holds_while=Compare(ref=FieldRef(entry="old-a", field="turns"), op=">", value=0),
+        done_when=Compare(ref=FieldRef(entry="old-b", field="status"), op="==", value=NodeStatus.DONE.value),
+        deps=["old-a", "old-b"],
+    )
+    out = validate_plan(plan, registry=REG, graph={}, limits=LIMITS, is_root=False, allocate_id=ids())
+    assert isinstance(out, Accepted)
+    rendered = out.plan.model_dump_json()
+    assert "old-a" not in rendered
+    assert "old-b" not in rendered
+    assert set(out.plan.deps) == {e.spec.node_id for e in out.plan.entries}
+
+
+def test_a_condition_may_reference_an_already_admitted_graph_node() -> None:
+    """IMPORTANT 5: ``_remap``'s own docstring describes this case; the check refused it."""
+    admitted = NodeSpec(node_id="g_outer", kind=Kind.GATE, deadline_s=60)
+    ref_outer = Compare(ref=FieldRef(entry="g_outer", field="rc"), op="==", value=0)
+    ok = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], holds_while=ref_outer),
+        registry=REG,
+        graph={"g_outer": admitted},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(ok, Accepted)
+
+    ref_nowhere = Compare(ref=FieldRef(entry="ghost", field="rc"), op="==", value=0)
+    bad = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], holds_while=ref_nowhere),
+        registry=REG,
+        graph={"g_outer": admitted},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(bad, Refused) and any("ghost" in r for r in bad.reasons)
+
+
+def _gate_and_judge() -> tuple[Compare, Compare, list[Entry]]:
+    """The two leaves and the two entries every decision-4 shape below is built from."""
+    gate = Compare(ref=FieldRef(entry="n0", field="rc"), op="==", value=0)
+    judge = Compare(ref=FieldRef(entry="n1", field="verdict"), op="==", value="pass")
+    return gate, judge, [entry(op="gate:make-test", node_id="n0"), entry(op="judge", node_id="n1")]
+
+
+def test_root_done_when_that_a_gate_alone_can_settle_is_refused() -> None:
+    """IMPORTANT 6: a disjunction settles on ANY branch, so a gate branch alone completes the run.
+
+    ``AnyOf(gate.rc == 0, judge.verdict == "pass")`` mentions a state-changing op, which is
+    all the old check asked for - and then goes True the moment the gate goes green, with
+    the judge never dispatched.
+    """
+    gate, judge, entries = _gate_and_judge()
+    out = validate_plan(
+        plan_with(entries=entries, done_when=AnyOf(any=(gate, judge))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+
+
+def test_root_done_when_whose_only_state_change_is_negated_is_refused() -> None:
+    """IMPORTANT 6: a negation is not a lever - ``Not(judge)`` holds while the judge never runs."""
+    gate, judge, entries = _gate_and_judge()
+    out = validate_plan(
+        plan_with(entries=entries, done_when=AllOf(all=(gate, Not(not_=judge)))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+
+
+def test_root_done_when_conjoining_a_gate_with_a_judge_is_accepted() -> None:
+    """IMPORTANT 6: a conjunction needs EVERY conjunct, so one state-changing conjunct suffices."""
+    gate, judge, entries = _gate_and_judge()
+    out = validate_plan(
+        plan_with(entries=entries, done_when=AllOf(all=(gate, judge))),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Accepted)
+
+
+def test_root_done_when_over_an_empty_group_is_decided_deliberately() -> None:
+    """IMPORTANT 6, the absent case: an empty AllOf is vacuously TRUE, so it completes a run
+    with no state change at all and must be refused. An empty AnyOf is vacuously FALSE - it
+    can never say done - so this rule has nothing to object to and lets it through; the
+    plan is then refused for referencing nothing that exists, not by this rule.
+    """
+    out = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=AllOf(all=())),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+
+    empty_any = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=AnyOf(any=())),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(empty_any, Accepted)
+
+
+def test_a_read_only_scan_cannot_complete_a_root_plan_on_its_own() -> None:
+    """MINOR 7: a scan changes nothing, so ``scan.stray == 0`` is the same loophole as a gate."""
+    scan_only = Compare(ref=FieldRef(entry="n0", field="stray"), op="==", value=0)
+    out = validate_plan(
+        plan_with(entries=[entry(op="scan", node_id="n0", args={"watched": "w"})], done_when=scan_only),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+
+
+def test_args_of_the_wrong_type_are_refused_and_the_right_type_accepted() -> None:
+    """MINOR 8: ``scan`` has a TYPED field, so this can tell a type check from extra="forbid".
+
+    ``gate:make-test`` declares no fields at all, so ``{"argv": 5}`` and
+    ``{"argv": ["make", "test"]}`` are refused identically as EXTRA keys - that test passes
+    against a model which forbids everything and type-checks nothing.
+    """
+    bad = validate_plan(
+        plan_with(entries=[entry(op="scan", node_id="n0", args={"watched": 5})]),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(bad, Refused) and any("watched" in r for r in bad.reasons)
+
+    ok = validate_plan(
+        plan_with(entries=[entry(op="scan", node_id="n0", args={"watched": "w_repo"})]),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(ok, Accepted)
+
+
+def test_a_condition_on_a_plan_entrys_status_validates() -> None:
+    """MINOR 9: ``plan``'s contract is empty, so only the reserved ``status`` makes it referenceable."""
+    done = Compare(ref=FieldRef(entry="n0", field="status"), op="==", value=NodeStatus.DONE.value)
+    out = validate_plan(
+        plan_with(entries=[entry(op="plan", node_id="n0")], done_when=done),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Accepted)
+
+
+def test_a_condition_on_a_field_no_body_emits_is_still_refused() -> None:
+    """The reserved set widens the view; it does not open it. ``artifact_ref`` is not a field."""
+    bad = Compare(ref=FieldRef(entry="n0", field="artifact_ref"), op="==", value="x")
+    out = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], holds_while=bad),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("artifact_ref" in r for r in out.reasons)

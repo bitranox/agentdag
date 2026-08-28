@@ -25,11 +25,15 @@ Contents:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from .condition import Condition, evaluate
 from .models import NodeSpec
+
+if TYPE_CHECKING:
+    from .models import ResultRecord
 
 __all__ = ["PLAN_SCHEMA_ID", "Entry", "Plan", "evaluate_holds_while", "plan_json_schema"]
 
@@ -92,12 +96,12 @@ class Plan(BaseModel):
     """entry ids (or outer node ids) this plan as a whole depends on."""
 
 
-def evaluate_holds_while(plan: Plan, records: Mapping[str, Mapping[str, object]]) -> bool | None:
+def evaluate_holds_while(plan: Plan, records: Mapping[str, ResultRecord]) -> bool | None:
     """Decide ``plan.holds_while``, treating an absent guard as vacuously true.
 
     Args:
         plan: The plan whose guard is being checked.
-        records: entry id -> that entry's ``key_facts``, as
+        records: entry id -> that entry's record, as
             :func:`~agentdag.domain.condition.evaluate` takes.
 
     Returns:
@@ -110,7 +114,7 @@ def evaluate_holds_while(plan: Plan, records: Mapping[str, Mapping[str, object]]
         >>> from agentdag.domain.plan import Plan, evaluate_holds_while
         >>> plan = Plan.model_validate({
         ...     "goal": "ship", "entries": [], "deps": [],
-        ...     "done_when": {"ref": {"entry": "n0", "field": "status"}, "op": "==", "value": "passed"},
+        ...     "done_when": {"ref": {"entry": "n0", "field": "status"}, "op": "==", "value": "done"},
         ... })
         >>> evaluate_holds_while(plan, {})
         True

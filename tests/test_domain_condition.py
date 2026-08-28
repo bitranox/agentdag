@@ -1,29 +1,74 @@
-"""RED/GREEN tests for the domain condition tree and its three-valued evaluator."""
+"""RED/GREEN tests for the domain condition tree and its three-valued evaluator.
+
+The evaluator is fed REAL :class:`~agentdag.domain.models.ResultRecord` objects, not
+hand-built ``key_facts`` mappings: what a condition may read is a record's REFERENCEABLE
+VIEW (:func:`~agentdag.domain.condition.referenceable_view`) - its ``key_facts`` merged
+with the reserved top-level fields - and feeding the evaluator anything else would test a
+shape production never produces.
+"""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from agentdag.domain.condition import AllOf, AnyOf, Compare, FieldRef, Not, evaluate, referenced_fields
+from agentdag.domain.condition import (
+    RESERVED_TOP_LEVEL_FIELDS,
+    AllOf,
+    AnyOf,
+    Compare,
+    FieldRef,
+    Not,
+    evaluate,
+    referenceable_view,
+    referenced_fields,
+)
+from agentdag.domain.kernel_errors import KernelError
+from agentdag.domain.models import NodeStatus, ResultRecord
+
+
+def record_with(key_facts: dict[str, object], *, status: NodeStatus = NodeStatus.DONE) -> ResultRecord:
+    """Build a minimal real record carrying exactly ``key_facts`` and ``status``.
+
+    Takes ``key_facts`` as a dict rather than ``**kwargs`` so a fact NAMED like one of this
+    helper's own parameters (``status``) is still expressible - the shadowing case is
+    precisely what one of the tests below needs to construct.
+    """
+    return ResultRecord(
+        node_id="n",
+        attempt=0,
+        status=status,
+        key_facts=dict(key_facts),
+        typed_fields=sorted(key_facts),
+        executor_used="code",
+        model_used="-",
+        effort_used="-",
+        duration_s=0.1,
+        input_hash="sha256:0",
+    )
+
+
+def rec(*, status: NodeStatus = NodeStatus.DONE, **key_facts: object) -> ResultRecord:
+    """Build a minimal real record carrying ``key_facts`` and ``status``."""
+    return record_with(dict(key_facts), status=status)
 
 
 def test_compare_evaluates_against_key_facts() -> None:
     cond = Compare(ref=FieldRef(entry="w_scan", field="repo_count"), op="<=", value=20)
-    assert evaluate(cond, {"w_scan": {"repo_count": 47}}) is False
-    assert evaluate(cond, {"w_scan": {"repo_count": 12}}) is True
+    assert evaluate(cond, {"w_scan": rec(repo_count=47)}) is False
+    assert evaluate(cond, {"w_scan": rec(repo_count=12)}) is True
 
 
 def test_absent_field_is_none_not_false() -> None:
     cond = Compare(ref=FieldRef(entry="w_scan", field="repo_count"), op="<=", value=20)
     assert evaluate(cond, {}) is None  # entry missing
-    assert evaluate(cond, {"w_scan": {}}) is None  # field missing
+    assert evaluate(cond, {"w_scan": rec()}) is None  # field missing
 
 
 def test_all_any_not_compose_and_none_propagates() -> None:
     a = Compare(ref=FieldRef(entry="g", field="rc"), op="==", value=0)
     b = Compare(ref=FieldRef(entry="w", field="count"), op=">", value=0)
-    recs = {"g": {"rc": 0}}  # b's field absent
+    recs = {"g": rec(rc=0)}  # b's field absent
     assert evaluate(AllOf(all=(a, b)), recs) is None  # cannot say True
     assert evaluate(AnyOf(any=(a, b)), recs) is True  # a alone decides
     assert evaluate(Not(not_=a), recs) is False
@@ -33,7 +78,7 @@ def test_all_false_dominates_even_alongside_an_absent_sibling() -> None:
     """The direction opposite the brief's own example: a decided False also outranks None."""
     a = Compare(ref=FieldRef(entry="g", field="rc"), op="==", value=1)  # False: rc is 0
     b = Compare(ref=FieldRef(entry="w", field="count"), op=">", value=0)  # absent
-    recs = {"g": {"rc": 0}}
+    recs = {"g": rec(rc=0)}
     assert evaluate(AllOf(all=(a, b)), recs) is False
 
 
@@ -46,6 +91,44 @@ def test_empty_all_is_vacuously_true_and_empty_any_is_vacuously_false() -> None:
     """Decided deliberately: mirrors Python's own all([]) is True, any([]) is False."""
     assert evaluate(AllOf(all=()), {}) is True
     assert evaluate(AnyOf(any=()), {}) is False
+
+
+def test_status_is_referenceable_although_it_is_not_a_key_fact() -> None:
+    """CRITICAL 1: ``status`` is a top-level record field, never a ``key_fact``.
+
+    Before the referenceable view existed the evaluator saw ``key_facts`` alone, so a
+    condition on ``status`` could never settle - it read as "not decidable yet" forever,
+    against a record that carries the answer.
+    """
+    cond = Compare(ref=FieldRef(entry="w", field="status"), op="==", value=NodeStatus.DONE.value)
+    assert evaluate(cond, {"w": rec()}) is True
+    assert evaluate(cond, {"w": rec(status=NodeStatus.FAILED)}) is False
+    assert evaluate(cond, {}) is None
+
+
+def test_referenceable_view_merges_key_facts_with_the_reserved_top_level_fields() -> None:
+    view = referenceable_view(rec(turns=3))
+    assert view == {"turns": 3, "status": NodeStatus.DONE.value}
+    assert set(RESERVED_TOP_LEVEL_FIELDS) == {"status"}
+
+
+def test_referenceable_view_pins_status_to_the_enum_value_not_the_member() -> None:
+    """A default ``str()``/f-string form of an enum differs between 3.10 and 3.11+.
+
+    ``type(...) is str`` rather than ``isinstance``: :class:`NodeStatus` is a
+    :class:`~enum.StrEnum`, so an ``isinstance`` check passes for the member too and
+    would assert nothing.
+    """
+    view = referenceable_view(rec())
+    assert type(view["status"]) is str
+    assert view["status"] == "done"
+
+
+def test_referenceable_view_raises_when_a_key_fact_shadows_a_reserved_name() -> None:
+    """A shadowing key_fact is a bug, not a precedence puzzle - no silent winner."""
+    with pytest.raises(KernelError) as exc:
+        referenceable_view(record_with({"status": "passed"}))
+    assert "status" in str(exc.value)
 
 
 def test_referenced_fields_lists_every_ref() -> None:

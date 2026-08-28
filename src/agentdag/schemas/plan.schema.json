@@ -197,7 +197,7 @@
     },
     "FieldRef": {
       "additionalProperties": false,
-      "description": "One pointer into another entry's ``key_facts``: which entry, and which key.",
+      "description": "One pointer into another entry's referenceable view: which entry, and which key.",
       "properties": {
         "entry": {
           "title": "Entry",
