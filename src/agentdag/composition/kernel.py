@@ -509,9 +509,14 @@ def build_op_registry() -> OpRegistry:
             # Empty because the body raises and emits nothing - never a guessed field. A
             # condition can still name a plan entry's `status`, which is reserved.
             output_contract=frozenset(),
-            # A sub-plan could in principle be all gates, in which case this True is generous;
-            # the root rule binds that SUB-plan on its own terms when it is validated, which is
-            # where the all-gates case is actually caught.
+            # OPEN, and do not build on this flag until it is settled. A sub-plan could be all
+            # gates, and NOTHING catches that: decision 4's rule runs under `if is_root`
+            # (plan_validate.py:114), so a nested plan is never checked against it. A root
+            # done_when naming a plan entry therefore passes the rule while its subtree may
+            # change no state - the loophole decision 4 exists to close, reached one level down.
+            # Not exploitable yet: a plan entry is not executed until the loop that recurses on
+            # it exists. An earlier version of this comment claimed the sub-plan's own
+            # validation caught it; that was false and is corrected here.
             # state: True - a plan entry stands for the subtree it expands into, which runs the state-changing work
             can_change_state=True,
             build=_build_plan_entry_guard,
