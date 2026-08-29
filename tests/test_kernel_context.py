@@ -48,6 +48,7 @@ from kernel_fakes import (
     LowCeilingPolicy,
     LowDeadlineCeilingPolicy,
     OneRowPolicy,
+    PlanWritingExecutor,
     RecordingExecutor,
     RetryingPolicy,
     fresh_run_dir,
@@ -889,26 +890,6 @@ def test_a_rate_limited_work_node_fails_the_run_when_the_policy_says_so(tmp_path
     assert record.status == NodeStatus.FAILED
     assert record.error is not None
     assert record.error.type == ErrorType.RATE_LIMITED
-
-
-class PlanWritingExecutor:
-    """An executor that writes ``plan.json`` into the node dir, as a planner node does.
-
-    A real double rather than a patch of the read: the seam under test is "a node ran and
-    left a file behind in its own dispatch directory", so the executor is where the file
-    has to come from.
-    """
-
-    def __init__(self, raw: str | None) -> None:
-        self.raw = raw
-        self.requests: list[ExecutorRequest] = []
-
-    async def run(self, request: ExecutorRequest) -> NodeOutcome:
-        """Write the plan (when this double has one) and return a DONE outcome."""
-        self.requests.append(request)
-        if self.raw is not None:
-            (request.node_dir / PLAN_FILENAME).write_text(self.raw, encoding="utf-8")
-        return outcome({"sonnet": 10})
 
 
 @pytest.mark.os_agnostic

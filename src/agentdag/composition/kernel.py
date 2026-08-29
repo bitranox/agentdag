@@ -269,7 +269,7 @@ class _ApproveArgs(BaseModel):
 
 
 class _NotYetWiredArgs(BaseModel):
-    """``plan``'s own args: none - the not-yet-wired body reads none (M6 component 3)."""
+    """``plan``'s own args: the nested sub-goal the planner is dispatched for (design 3.3)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -395,21 +395,33 @@ def _build_approve(entry: Entry, ctx: PlanContext) -> Body:
     return body
 
 
-def _build_not_yet_wired(entry: Entry, ctx: PlanContext) -> Body:
-    """Build ``plan``'s body: the one placeholder left in this registry (M6 component 3).
+def _build_plan_entry_guard(entry: Entry, ctx: PlanContext) -> Body:
+    """Build ``plan``'s body, which is a guard: reaching it means the scheduler has a bug.
 
-    Named so it cannot pass as a working mechanism: :func:`validate_plan` can accept a plan
-    that names ``plan`` today, but actually invoking the body raises.
+    ``plan`` is registered so :func:`validate_plan` accepts a plan whose entry names a nested
+    sub-goal - that recursion is the centre of the design - but it is NOT dispatched through
+    this registry. Design section 3.3's scheduler special-cases it:
+
+        if entry.op == "plan":  dispatch the planner, then execute(sub)   # recursion
+        else:                   dispatch(registry[entry.op], entry)
+
+    So the body exists only to be never called, and it raises to say so. Task 32 first
+    intended to give it a real body calling ``dispatch_planner``; that would have been half a
+    mechanism, planning a sub-plan and discarding it, because nothing here can run the result.
+    The execute loop that CAN is Task 33, and it reaches the planner directly.
 
     ``judge`` shared this builder until Checkpoint B (2026-08-29) unregistered it. The two
-    were not equivalent: ``plan`` is about to get a real body, while ``judge`` had none in
-    prospect, so leaving it registered meant a plan could be ACCEPTED and then die at
-    dispatch, after spend. Absence refuses it before any.
+    were never equivalent: ``plan`` must stay registered for a nested sub-goal to validate at
+    all, while ``judge`` had no body in prospect, so leaving IT registered meant a plan could
+    be accepted and then die at dispatch, after spend.
     """
-    del entry, ctx
+    del ctx
 
     async def body() -> ResultRecord:
-        raise KernelError("not yet wired: M6 component 3")
+        raise KernelError(
+            f"op 'plan' (entry {entry.spec.node_id!r}) was dispatched through the registry; "
+            "the execute loop must special-case a plan entry into its own recursion (design 3.3)"
+        )
 
     return body
 
@@ -497,9 +509,12 @@ def build_op_registry() -> OpRegistry:
             # Empty because the body raises and emits nothing - never a guessed field. A
             # condition can still name a plan entry's `status`, which is reserved.
             output_contract=frozenset(),
-            # state: True (UNVERIFIED: the body raises, kernel.py:408) - a planner EMITS a plan, never observes
+            # A sub-plan could in principle be all gates, in which case this True is generous;
+            # the root rule binds that SUB-plan on its own terms when it is validated, which is
+            # where the all-gates case is actually caught.
+            # state: True - a plan entry stands for the subtree it expands into, which runs the state-changing work
             can_change_state=True,
-            build=_build_not_yet_wired,
+            build=_build_plan_entry_guard,
         )
     )
     # `judge` is deliberately NOT registered, like `apply` (Checkpoint B, user 2026-08-29).

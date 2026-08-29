@@ -55,6 +55,7 @@ from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.plan import PLAN_FILENAME
 from agentdag.domain.policy import FailureAction
 
 if TYPE_CHECKING:
@@ -525,3 +526,23 @@ def wire(
         sandbox=NoSandbox(),
         parallel=2,
     )
+
+
+class PlanWritingExecutor:
+    """An executor that writes ``plan.json`` into the node dir, as a planner node does.
+
+    A real double rather than a patch of the read: the seam under test is "a node ran and
+    left a file behind in its own dispatch directory", so the executor is where the file
+    has to come from.
+    """
+
+    def __init__(self, raw: str | None) -> None:
+        self.raw = raw
+        self.requests: list[ExecutorRequest] = []
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Write the plan (when this double has one) and return a DONE outcome."""
+        self.requests.append(request)
+        if self.raw is not None:
+            (request.node_dir / PLAN_FILENAME).write_text(self.raw, encoding="utf-8")
+        return outcome({"sonnet": 10})
