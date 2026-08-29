@@ -35,9 +35,15 @@ def test_run_limits_parses_the_three_new_bounds() -> None:
 
 
 def test_shipped_policy_carries_the_same_three_bounds() -> None:
-    """The shipped table's run_limits (E1's largest graph is 38 nodes; 40 leaves headroom)."""
+    """The shipped table's run_limits, at the ceilings Checkpoint A set (2026-08-29).
+
+    Both node ceilings are 1000: the earlier 40 was calibrated on what E1's planners
+    produced, so it refused a legitimately WIDE plan for its width alone. This pins the
+    SHIPPED values, so it is meant to go red when the table moves - update it with the
+    table, deliberately.
+    """
     path = Path(str(files("agentdag.policy") / "tier-policy.yaml"))
     limits = load_policy(path).table.run_limits
     assert limits.max_replans == 3
-    assert limits.max_nodes_per_run == 200
-    assert limits.max_nodes_per_plan == 40
+    assert limits.max_nodes_per_run == 1000
+    assert limits.max_nodes_per_plan == 1000

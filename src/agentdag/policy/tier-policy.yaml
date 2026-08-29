@@ -240,12 +240,19 @@ run_limits:
   # gives up. Parsed, not yet enforced by anything - a later task's job.
   max_replans: 3
   # M6 (Task 30): how many nodes a whole run may dispatch, across every plan it accepts.
-  # Parsed, not yet enforced by anything - a later task's job.
-  max_nodes_per_run: 200
+  # Parsed, not yet enforced by anything - a later task's job, so do not cite it as a live
+  # bound meanwhile.
+  # Checkpoint A (2026-08-29) raised this from 200 for the same reason as max_nodes_per_plan
+  # below: a ceiling calibrated on what planners produce refuses legitimate wide work.
+  max_nodes_per_run: 1000
   # M6 (Task 30): how many entries a single accepted plan may carry, enforced by
-  # validate_plan's size rule. E1's largest measured node-graph distribution tops out at
-  # 38 nodes, so 40 leaves headroom without being an effectively unbounded ceiling.
-  max_nodes_per_plan: 40
+  # validate_plan's size rule.
+  # Checkpoint A (2026-08-29) raised this from 40 to 1000. The 40 was calibrated on what E1's
+  # planners PRODUCED (largest measured distribution, 38 entries), which is the wrong
+  # population: it refused graph A at N=20 for being WIDE, and width is a fact about the
+  # fleet, not a planner defect. At 1000 the rule fires only on a pathological plan and keeps
+  # what an admission-time refusal is good at: refusing whole, with a reason, before any spend.
+  max_nodes_per_plan: 1000
 
 # Shared resources (design 3.6): write_set is paths only; a node names what it consumes in
 # requires: [{resource, amount}]. kind: mutex (capacity 1) | capacity (in unit) | rate (per window).
