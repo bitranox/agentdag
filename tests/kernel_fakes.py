@@ -51,6 +51,18 @@ if TYPE_CHECKING:
     from agentdag.application.kernel.ports import ExecutorRequest
     from agentdag.application.kernel.run import RunOutcome
 
+from agentdag.application.kernel.context import Coordinator
+from agentdag.application.kernel.dispatch import Dispatcher
+from agentdag.application.kernel.ports import ResolvedRow
+from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.policy import FailureAction
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from agentdag.application.graph_a_ports import GatePort
+    from agentdag.application.kernel.ports import Executor
+
 __all__ = [
     "CommittingExecutor",
     "RecordingNotifier",
@@ -367,3 +379,149 @@ def launch(
         )
     )
     return outcome, run_dir
+
+
+class OneRowPolicy:
+    """A one-row tier policy: every spec resolves to the sonnet row on the claude executor.
+
+    ``tokens_per_row`` is set far above anything these tests charge or cap - it is the
+    ceiling the run-level budget check (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`)
+    reads, and nothing here is exercising THAT (see :class:`LowCeilingPolicy` for a
+    policy that is). Kept generous rather than removed so a test added later that adds
+    a couple more work dispatches over this same policy does not spuriously trip it.
+    """
+
+    version: str = "sha256:test"
+    max_turns: int = 5
+    max_attempts: int = 1
+    max_continuations: int = 3
+    deny_bash: tuple[str, ...] = ("git push",)
+    on_auth_failure: FailureAction = FailureAction.FAIL_RUN
+    on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
+    tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
+    deadline_ceiling_s: float = 999_999.0
+    """Generous like ``tokens_per_row`` above - :class:`LowDeadlineCeilingPolicy` is the
+    one that exercises the clamp; nothing here should trip it by accident."""
+
+    def resolve(self, spec: NodeSpec) -> ResolvedRow:
+        """Resolve any spec to the one row this policy has."""
+        return ResolvedRow(alias="sonnet", executor="claude", handover_at_tokens=100_000)
+
+
+class RetryingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a run that gives a transiently-failing node three tries."""
+
+    max_attempts: int = 3
+
+
+class LowCeilingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a run ceiling low enough for the budget-cap tests to hit."""
+
+    tokens_per_row: Mapping[str, int] = {"sonnet": 100}
+
+
+class LowDeadlineCeilingPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but a deadline ceiling below ``work_spec``'s own ``deadline_s``.
+
+    ``work_spec()`` declares ``deadline_s=3600``; this ceiling is well under that, so a
+    dispatch under this policy proves :meth:`~agentdag.application.kernel.context.Coordinator.work`
+    clamps the SPEC's requested deadline to ``policy.deadline_ceiling_s`` before it ever
+    reaches :class:`~agentdag.application.kernel.ports.ExecutorRequest`.
+    """
+
+    deadline_ceiling_s: float = 30.0
+
+
+class RecordingExecutor:
+    """An executor that records every request it is handed and returns one fixed outcome."""
+
+    def __init__(self, outcome: NodeOutcome) -> None:
+        self.outcome = outcome
+        self.requests: list[ExecutorRequest] = []
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Record ``request`` and return the fixed outcome."""
+        self.requests.append(request)
+        return self.outcome
+
+
+class FakeScanner:
+    """An isolation scanner that records which root it was asked about."""
+
+    def __init__(self) -> None:
+        self.roots: list[Path] = []
+
+    def snapshot(self, root: Path) -> Mapping[str, str]:
+        """Record ``root`` and return a fixed manifest."""
+        self.roots.append(root)
+        return {"wt/a/f.py": "sha256:0"}
+
+
+def outcome(charged: dict[str, int]) -> NodeOutcome:
+    """Build the DONE outcome the fake executor returns."""
+    return NodeOutcome(
+        status=NodeStatus.DONE,
+        artefact_refs=["wt/a"],
+        key_facts={"commit": "a" * 40},
+        typed_fields=["commit"],
+        charged_tokens=charged,
+        executor_used="claude",
+        model_used="sonnet",
+        effort_used="-",
+    )
+
+
+def work_spec() -> NodeSpec:
+    """Build the work node spec these tests dispatch."""
+    return NodeSpec(
+        node_id="w_migrate@1",
+        kind=Kind.WORK,
+        tier_role=TierRole.STANDARD,
+        isolation=Isolation.WORKTREE,
+        write_set=["wt/a/**"],
+        deadline_s=3600,
+        budget=Budget(tokens={"sonnet": 400_000}),
+    )
+
+
+def fresh_run_dir(tmp_path: Path) -> FsRunDir:
+    """Lay out a fresh run directory with a worktree for the node to run in."""
+    base = tmp_path / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = FsRunDir.create(base, "r1")
+    run_dir.worktree("a").mkdir(parents=True)
+    return run_dir
+
+
+def wire(
+    run_dir: FsRunDir,
+    executor: Executor,
+    scanner: FakeScanner,
+    *,
+    executors: Mapping[str, Executor] | None = None,
+    policy: OneRowPolicy | None = None,
+    gate_port: GatePort | None = None,
+) -> Coordinator:
+    """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
+
+    ``executors`` defaults to ``{"claude": executor}`` (what ``OneRowPolicy`` resolves
+    to); a test that must exercise a misconfigured coordinator passes its own, e.g. an
+    empty mapping to prove the resolved executor is not wired. ``policy`` defaults to
+    ``OneRowPolicy()``; a budget-cap test passes ``LowCeilingPolicy()`` instead.
+    """
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    return Coordinator(
+        run_id="r1",
+        workflow="t",
+        args={},
+        dispatcher=Dispatcher.from_journal(journal=journal, run_dir=run_dir, clock=UtcClock()),
+        run_dir=run_dir,
+        clock=UtcClock(),
+        executors={"claude": executor} if executors is None else executors,
+        gate_port=MakeTestGate() if gate_port is None else gate_port,
+        git=GitCli(),
+        scanner=scanner,
+        policy=OneRowPolicy() if policy is None else policy,
+        sandbox=NoSandbox(),
+        parallel=2,
+    )
