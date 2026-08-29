@@ -93,11 +93,7 @@ REGISTERED_CONTRACTS: dict[str, frozenset[str]] = {
     "reduce:count": frozenset({"count"}),  # composition/kernel.py:356, _build_reduce_count's fold
     "approve": frozenset({"decision"}),  # application/kernel/context.py:798
     "plan": frozenset(),  # the not-yet-wired body raises; it emits nothing
-    "judge": frozenset({"verdict"}),  # NO BODY YET - the brief's binding name, unverified
 }
-
-UNVERIFIED_CONTRACT_OPS = frozenset({"judge"})
-"""Ops whose contract names a field no shipped body emits, because they have no body yet."""
 
 
 def emitted_key_fact_names() -> frozenset[str]:
@@ -140,7 +136,7 @@ def test_every_contract_field_is_one_some_body_actually_emits() -> None:
     assert "rc" in emitted  # a positive control: the scan does find real emissions
 
     reg = build_op_registry()
-    for name in sorted(reg.names() - UNVERIFIED_CONTRACT_OPS):
+    for name in sorted(reg.names()):
         unemitted = sorted(reg.get(name).output_contract - emitted)
         assert not unemitted, f"op {name!r} promises {unemitted}, which no body emits"
 
@@ -217,3 +213,18 @@ def test_every_registration_records_why_its_can_change_state_flag_is_what_it_is(
     assert set(reasons) == set(registered), f"no '{_STATE_MARKER}' reason beside: {sorted(registered - set(reasons))}"
     thin = {name: reason for name, reason in reasons.items() if len(reason) < 30}
     assert not thin, f"the reason beside these flags says nothing: {thin}"
+
+
+def test_judge_is_not_registered_until_component_5() -> None:
+    """Checkpoint B (user, 2026-08-29): `judge` is refused by ABSENCE, like `apply`.
+
+    Once `plan` has a real body, a registered-but-raising `judge` would be the only op that
+    validates by NAME and then raises at dispatch: the plan is accepted, and the run dies
+    mid-flight, after spend. Unregistering moves that refusal to plan-accept time.
+
+    It also retires an unverified flag rather than shipping a guess. `judge` was registered
+    `can_change_state=True` above a comment saying UNVERIFIED - no body existed, so no emitter
+    had been read - and decision 4's rule keys on exactly that flag. Component 5 sets it by
+    reading the emitter it writes.
+    """
+    assert "judge" not in build_op_registry().names()

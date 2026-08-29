@@ -11,8 +11,8 @@ Contents:
       ``tests/test_kernel_scope.py`` can pin its table directly.
     * :func:`build_op_registry` - the M6 op registry (Task 30): every op with a real body
       wired to its :class:`~agentdag.application.kernel.context.Coordinator` primitive,
-      ``plan``/``judge`` registered as the one not-yet-wired placeholder this task carries,
-      and ``apply`` deliberately never registered at all.
+      ``plan`` registered as the one not-yet-wired placeholder, and ``apply`` and ``judge``
+      deliberately never registered at all.
 """
 
 from __future__ import annotations
@@ -269,7 +269,7 @@ class _ApproveArgs(BaseModel):
 
 
 class _NotYetWiredArgs(BaseModel):
-    """``plan``/``judge``'s own args: none - neither body reads them (M6 component 3)."""
+    """``plan``'s own args: none - the not-yet-wired body reads none (M6 component 3)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -396,11 +396,15 @@ def _build_approve(entry: Entry, ctx: PlanContext) -> Body:
 
 
 def _build_not_yet_wired(entry: Entry, ctx: PlanContext) -> Body:
-    """Build ``plan``/``judge``'s body: the one placeholder this task carries (M6 component 3).
+    """Build ``plan``'s body: the one placeholder left in this registry (M6 component 3).
 
     Named so it cannot pass as a working mechanism: :func:`validate_plan` can accept a plan
-    that names ``plan`` or ``judge`` today (Task 31 needs exactly that, to find out what
-    graph A needs from this registry), but actually invoking either body raises.
+    that names ``plan`` today, but actually invoking the body raises.
+
+    ``judge`` shared this builder until Checkpoint B (2026-08-29) unregistered it. The two
+    were not equivalent: ``plan`` is about to get a real body, while ``judge`` had none in
+    prospect, so leaving it registered meant a plan could be ACCEPTED and then die at
+    dispatch, after spend. Absence refuses it before any.
     """
     del entry, ctx
 
@@ -414,12 +418,13 @@ def build_op_registry() -> OpRegistry:
     """Build the op registry the M6 kernel validates plans against (Task 30).
 
     Every op with a real body today is wired straight to the matching
-    :class:`~agentdag.application.kernel.context.Coordinator` primitive; ``plan`` and
-    ``judge`` are registered with a body that raises - the ONE placeholder this task
-    carries (M6 component 3) - so a plan naming them validates by NAME today without
-    pretending either is dispatchable yet. ``apply`` is deliberately never registered:
-    design 2.4 says it is never planner-emitted, so a plan naming it is refused by
-    absence, the same as any other name nothing registered.
+    :class:`~agentdag.application.kernel.context.Coordinator` primitive; ``plan`` is
+    registered with a body that raises - the ONE placeholder left (M6 component 3) - so a
+    plan naming it validates by NAME today without pretending it is dispatchable yet.
+    ``apply`` and ``judge`` are deliberately never registered: design 2.4 says ``apply`` is
+    never planner-emitted, and Checkpoint B (2026-08-29) took ``judge`` out until something
+    can actually run it. A plan naming either is refused by absence, the same as any other
+    name nothing registered.
 
     Building this registry touches no live :class:`~agentdag.application.kernel.context.
     Coordinator` - every ``build`` closure above takes one only when its returned
@@ -429,7 +434,7 @@ def build_op_registry() -> OpRegistry:
 
     Returns:
         The registry, with ``work``, ``gate:make-test``, ``scan``, ``reduce:count``,
-        ``approve``, ``plan`` and ``judge`` registered.
+        ``approve`` and ``plan`` registered.
     """
     registry = OpRegistry()
     registry.register(
@@ -497,17 +502,10 @@ def build_op_registry() -> OpRegistry:
             build=_build_not_yet_wired,
         )
     )
-    registry.register(
-        OpSpec(
-            name="judge",
-            args_model=_NotYetWiredArgs,
-            # UNVERIFIED: `judge` has no body yet, so no emitter was read for this. `verdict`
-            # is the brief's binding name and is kept so a plan naming a judge validates; the
-            # task that wires the body owns confirming or correcting it.
-            output_contract=frozenset({"verdict"}),
-            # state: True (UNVERIFIED: the body raises, kernel.py:408) - a verdict is ABOUT the work, not a re-read
-            can_change_state=True,
-            build=_build_not_yet_wired,
-        )
-    )
+    # `judge` is deliberately NOT registered, like `apply` (Checkpoint B, user 2026-08-29).
+    # A registered-but-raising op validates by NAME and dies at dispatch, so a plan naming it
+    # is accepted and the run fails mid-flight, after spend; absence refuses it at plan-accept
+    # time instead. It also avoids shipping an unverified `can_change_state`: there is no body,
+    # so no emitter has been read, and decision 4's rule keys on precisely that flag. The task
+    # that builds the judge sets the flag by reading the emitter it writes.
     return registry

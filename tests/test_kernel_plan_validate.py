@@ -2,7 +2,7 @@
 
 ``REG`` is the REAL production registry (:func:`~agentdag.composition.kernel.build_op_registry`),
 not a hand-rolled shadow copy: these tests prove :func:`validate_plan`'s rules against what the
-composition root actually registered for Task 30 (``work``, ``gate:make-test``, ``judge``, and
+composition root actually registered for Task 30 (``work``, ``gate:make-test``, and
 that ``plan``/``apply`` are (respectively) registered/never registered), the same way Task 31
 will.
 """
@@ -46,7 +46,6 @@ _OP_KIND: dict[str, Kind] = {
     "reduce:count": Kind.REDUCE,
     "approve": Kind.APPROVE,
     "plan": Kind.PLANNER,
-    "judge": Kind.SYNTH,
 }
 
 
@@ -163,7 +162,14 @@ def test_more_than_max_nodes_per_plan_is_refused() -> None:
     assert isinstance(out, Refused) and any("max_nodes_per_plan" in r for r in out.reasons)
 
 
-def test_root_done_when_over_only_gate_fields_is_refused_unless_judged() -> None:  # decision 4
+def test_root_done_when_over_only_gate_fields_is_refused_unless_a_state_changer_is_named() -> None:
+    """Decision 4. The rule reads an entry's ``can_change_state`` FLAG and names no op.
+
+    This test used a ``judge`` entry purely because it was a convenient True-flagged one, and
+    its old name (``..._unless_judged``) said the rule was about judging. It is not, and that
+    reading cost a wrong entry in the build plan on 2026-08-29. ``work`` carries the same flag
+    and makes the test say what the rule does.
+    """
     gate_only = Compare(ref=FieldRef(entry="n0", field="rc"), op="==", value=0)
     out = validate_plan(
         plan_with(entries=[entry(op="gate:make-test", node_id="n0")], done_when=gate_only),
@@ -175,11 +181,11 @@ def test_root_done_when_over_only_gate_fields_is_refused_unless_judged() -> None
     )
     assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
 
-    with_judge = plan_with(
-        entries=[entry(op="gate:make-test", node_id="n0"), entry(op="judge", node_id="n1")],
-        done_when=AllOf(all=(gate_only, Compare(ref=FieldRef(entry="n1", field="verdict"), op="==", value="pass"))),
+    with_state_changer = plan_with(
+        entries=[entry(op="gate:make-test", node_id="n0"), entry(op="work", node_id="n1")],
+        done_when=AllOf(all=(gate_only, Compare(ref=FieldRef(entry="n1", field="turns"), op=">=", value=1))),
     )
-    accepted = validate_plan(with_judge, registry=REG, graph={}, limits=LIMITS, is_root=True, allocate_id=ids())
+    accepted = validate_plan(with_state_changer, registry=REG, graph={}, limits=LIMITS, is_root=True, allocate_id=ids())
     assert isinstance(accepted, Accepted)
 
 
@@ -252,23 +258,27 @@ def test_a_condition_may_reference_an_already_admitted_graph_node() -> None:
     assert isinstance(bad, Refused) and any("ghost" in r for r in bad.reasons)
 
 
-def _gate_and_judge() -> tuple[Compare, Compare, list[Entry]]:
-    """The two leaves and the two entries every decision-4 shape below is built from."""
+def _gate_and_state_changer() -> tuple[Compare, Compare, list[Entry]]:
+    """The two leaves and the two entries every decision-4 shape below is built from.
+
+    ``n1`` is a ``work`` entry because decision 4 turns on ``can_change_state`` alone; any
+    True-flagged op does, and naming a judge here made the rule look narrower than it is.
+    """
     gate = Compare(ref=FieldRef(entry="n0", field="rc"), op="==", value=0)
-    judge = Compare(ref=FieldRef(entry="n1", field="verdict"), op="==", value="pass")
-    return gate, judge, [entry(op="gate:make-test", node_id="n0"), entry(op="judge", node_id="n1")]
+    changer = Compare(ref=FieldRef(entry="n1", field="turns"), op=">=", value=1)
+    return gate, changer, [entry(op="gate:make-test", node_id="n0"), entry(op="work", node_id="n1")]
 
 
 def test_root_done_when_that_a_gate_alone_can_settle_is_refused() -> None:
     """IMPORTANT 6: a disjunction settles on ANY branch, so a gate branch alone completes the run.
 
-    ``AnyOf(gate.rc == 0, judge.verdict == "pass")`` mentions a state-changing op, which is
+    ``AnyOf(gate.rc == 0, w.turns >= 1)`` mentions a state-changing op, which is
     all the old check asked for - and then goes True the moment the gate goes green, with
-    the judge never dispatched.
+    the work entry never dispatched.
     """
-    gate, judge, entries = _gate_and_judge()
+    gate, changer, entries = _gate_and_state_changer()
     out = validate_plan(
-        plan_with(entries=entries, done_when=AnyOf(any=(gate, judge))),
+        plan_with(entries=entries, done_when=AnyOf(any=(gate, changer))),
         registry=REG,
         graph={},
         limits=LIMITS,
@@ -279,10 +289,10 @@ def test_root_done_when_that_a_gate_alone_can_settle_is_refused() -> None:
 
 
 def test_root_done_when_whose_only_state_change_is_negated_is_refused() -> None:
-    """IMPORTANT 6: a negation is not a lever - ``Not(judge)`` holds while the judge never runs."""
-    gate, judge, entries = _gate_and_judge()
+    """IMPORTANT 6: a negation is not a lever - ``Not(w)`` holds while the work entry never runs."""
+    gate, changer, entries = _gate_and_state_changer()
     out = validate_plan(
-        plan_with(entries=entries, done_when=AllOf(all=(gate, Not(not_=judge)))),
+        plan_with(entries=entries, done_when=AllOf(all=(gate, Not(not_=changer)))),
         registry=REG,
         graph={},
         limits=LIMITS,
@@ -292,11 +302,11 @@ def test_root_done_when_whose_only_state_change_is_negated_is_refused() -> None:
     assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
 
 
-def test_root_done_when_conjoining_a_gate_with_a_judge_is_accepted() -> None:
+def test_root_done_when_conjoining_a_gate_with_a_state_changer_is_accepted() -> None:
     """IMPORTANT 6: a conjunction needs EVERY conjunct, so one state-changing conjunct suffices."""
-    gate, judge, entries = _gate_and_judge()
+    gate, changer, entries = _gate_and_state_changer()
     out = validate_plan(
-        plan_with(entries=entries, done_when=AllOf(all=(gate, judge))),
+        plan_with(entries=entries, done_when=AllOf(all=(gate, changer))),
         registry=REG,
         graph={},
         limits=LIMITS,
@@ -425,7 +435,7 @@ def test_root_done_when_that_can_never_settle_true_is_refused() -> None:
     )
     assert isinstance(bare, Refused) and any("never settle True" in r for r in bare.reasons)
 
-    gate, _judge, entries = _gate_and_judge()
+    gate, _changer, entries = _gate_and_state_changer()
     nested = validate_plan(
         plan_with(entries=entries, done_when=AllOf(all=(gate, AnyOf(any=())))),
         registry=REG,
@@ -473,9 +483,9 @@ def test_the_satisfiable_neighbour_of_each_unsettleable_shape_is_still_accepted(
     )
     assert isinstance(one_branch, Accepted)
 
-    gate, judge, entries = _gate_and_judge()
+    gate, changer, entries = _gate_and_state_changer()
     nested = validate_plan(
-        plan_with(entries=entries, done_when=AllOf(all=(gate, AnyOf(any=(judge,))))),
+        plan_with(entries=entries, done_when=AllOf(all=(gate, AnyOf(any=(changer,))))),
         registry=REG,
         graph={},
         limits=LIMITS,
