@@ -196,6 +196,25 @@ class Coordinator:
         self.tokens_by_row: dict[str, int] = {}
         self.declared_write_sets: dict[str, tuple[str, ...]] = {}
 
+    def parallel_bound(self) -> asyncio.Semaphore:
+        """Return the run-wide semaphore bounding how many dispatches run at once.
+
+        The SAME object :meth:`map` uses, deliberately: ``parallel`` is what this HOST may
+        run at once, so a plan's execute loop
+        (:func:`~agentdag.application.kernel.execute.execute_plan`) and a concurrent map
+        fan-out must share one bound rather than admit ``parallel`` each.
+
+        A public accessor rather than the private attribute, because the loop lives in a
+        sibling module and reading ``_map_semaphore`` from there is what pyright strict's
+        ``reportPrivateUsage`` refuses. Do not hold it across a RECURSION: a caller that
+        keeps a slot while a nested plan's own leaves queue for one deadlocks at
+        ``parallel=1``.
+
+        Returns:
+            The run's shared semaphore.
+        """
+        return self._map_semaphore
+
     async def work(self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str = DEFAULT_PROMPT) -> ResultRecord:
         """Dispatch one work node: an executor, running ``brief`` against ``cwd``.
 

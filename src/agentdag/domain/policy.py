@@ -146,12 +146,13 @@ class Thresholds(BaseModel):
 class RunLimits(BaseModel):
     """The whole-run ceilings design 2.3 ("Run limits")/2.4/3.4 validate and clamp against.
 
-    ``max_replans``, ``max_nodes_per_run`` and ``max_nodes_per_plan`` are M6's own additions
-    (Task 30): the first two bound a whole run across however many plans and re-plans it takes
-    (parsed here; not yet enforced by anything - a later task's job), while
-    ``max_nodes_per_plan`` is enforced today by
+    Three of the four bound a whole run across however many plans and re-plans it takes, and
+    each is enforced somewhere different: ``max_nodes_per_plan`` by
     :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s size rule, which refuses
-    a single plan carrying more entries than this.
+    a single plan carrying more entries than this (Task 30); ``max_nodes_per_run`` and
+    ``max_plan_depth`` by :func:`~agentdag.application.kernel.execute.execute_plan` (Task 33).
+    ``max_replans`` is the one still PARSED AND NOT ENFORCED - the re-dispatch path that would
+    count against it does not exist yet, so do not cite it as a live bound.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -162,11 +163,26 @@ class RunLimits(BaseModel):
     planner_kinds: list[Kind]
     top_role_budget_floor: float
     max_replans: int
-    """How many times a run's own top-level plan may be re-planned before it gives up."""
+    """How many times a run's own top-level plan may be re-planned before it gives up.
+
+    Parsed, not yet enforced: the re-dispatch path that would count against it is not built.
+    """
     max_nodes_per_run: int
-    """How many nodes a whole run may dispatch, across every plan it accepts."""
+    """How many nodes a whole run may dispatch, across every plan it accepts.
+
+    Enforced by :class:`~agentdag.application.kernel.execute.NodeBudget`, which counts across
+    a whole run rather than per plan - a nested sub-plan spends from the same total.
+    """
     max_nodes_per_plan: int
     """How many entries a single accepted :class:`~agentdag.domain.plan.Plan` may carry."""
+    max_plan_depth: int
+    """How deep a plan may nest sub-plans before
+    :func:`~agentdag.application.kernel.execute.execute_plan` refuses to recurse further.
+
+    Its OWN key rather than a second use of ``max_replans`` (Checkpoint B, user 2026-08-29):
+    re-plan tolerance and nesting depth are two quantities, and welding them to one value
+    would make tuning either one silently change the other.
+    """
 
 
 class ResourceRow(BaseModel):
@@ -233,7 +249,8 @@ def resolve_row(table: PolicyTable, *, tier_role: TierRole | None, model: str | 
         ...                    "max_continuations": 1, "max_attempts": 1},
         ...     "run_limits": {"tokens_per_row": {}, "deadline_ceiling_s": 1.0, "per_kind_ceiling": {},
         ...                    "planner_kinds": [], "top_role_budget_floor": 0.0,
-        ...                    "max_replans": 3, "max_nodes_per_run": 200, "max_nodes_per_plan": 40},
+        ...                    "max_replans": 3, "max_nodes_per_run": 200, "max_nodes_per_plan": 40,
+        ...                    "max_plan_depth": 5},
         ...     "resources": [],
         ... }
         >>> table = PolicyTable.model_validate(data)

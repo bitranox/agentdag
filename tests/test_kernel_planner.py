@@ -37,6 +37,7 @@ LIMITS = RunLimits(
     max_replans=3,
     max_nodes_per_run=1000,
     max_nodes_per_plan=1000,
+    max_plan_depth=5,
 )
 
 

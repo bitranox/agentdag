@@ -50,6 +50,7 @@ from kernel_fakes import (
     OneRowPolicy,
     PlanWritingExecutor,
     RecordingExecutor,
+    RedGate,
     RetryingPolicy,
     fresh_run_dir,
     outcome,
@@ -280,19 +281,6 @@ class FlakyGate:
         if self.calls <= self.fails:
             raise self.raising("the gate runner fell over")
         return 0
-
-
-class RedGate:
-    """A gate port that runs to completion and reports a real, non-zero answer."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def run(self, worktree: Path, log: Path) -> int:
-        """Count the call and report a red gate."""
-        del worktree, log
-        self.calls += 1
-        return 1
 
 
 def gate_spec() -> NodeSpec:

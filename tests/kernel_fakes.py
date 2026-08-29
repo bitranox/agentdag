@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CommittingExecutor",
     "RecordingNotifier",
+    "RedGate",
     "StrayExecutor",
     "decide",
     "fleet",
@@ -75,6 +76,27 @@ __all__ = [
     "make_repo",
     "policy_path",
 ]
+
+
+class RedGate:
+    """A gate port that runs to completion and reports a real, non-zero answer.
+
+    A RED gate rather than a broken one: the mechanical step ran and said no, which is an
+    ordinary ``failed`` record with ``rc`` in ``key_facts`` - the thing a plan's
+    ``acceptance`` is written to refute. Shared here because two suites need it (the retry
+    table in ``test_kernel_context.py`` and the condition checks in
+    ``test_kernel_execute.py``), and a second copy would be free to drift from the first.
+    """
+
+    def __init__(self) -> None:
+        """Start with no calls recorded."""
+        self.calls = 0
+
+    def run(self, worktree: Path, log: Path) -> int:
+        """Count the call and report a red gate."""
+        del worktree, log
+        self.calls += 1
+        return 1
 
 
 def git(*args: str, cwd: Path) -> str:

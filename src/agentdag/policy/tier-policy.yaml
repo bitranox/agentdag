@@ -237,11 +237,12 @@ run_limits:
   # downgraded and audited (2.3 rule 4 - the design's "5%")
   top_role_budget_floor: 0.05
   # M6 (Task 30): how many times the run's own top-level plan may be re-planned before it
-  # gives up. Parsed, not yet enforced by anything - a later task's job.
+  # gives up. Parsed, not yet enforced by anything - the re-dispatch path that would count
+  # against it is not built, so do not cite it as a live bound meanwhile.
   max_replans: 3
   # M6 (Task 30): how many nodes a whole run may dispatch, across every plan it accepts.
-  # Parsed, not yet enforced by anything - a later task's job, so do not cite it as a live
-  # bound meanwhile.
+  # ENFORCED since Task 33 by execute.NodeBudget, which counts across the whole run - a
+  # nested sub-plan spends from this same total, never from a fresh per-plan allowance.
   # Checkpoint A (2026-08-29) raised this from 200 for the same reason as max_nodes_per_plan
   # below: a ceiling calibrated on what planners produce refuses legitimate wide work.
   max_nodes_per_run: 1000
@@ -253,6 +254,16 @@ run_limits:
   # fleet, not a planner defect. At 1000 the rule fires only on a pathological plan and keeps
   # what an admission-time refusal is good at: refusing whole, with a reason, before any spend.
   max_nodes_per_plan: 1000
+  # M6 (Task 33): how deep a plan may nest sub-plans. Its own key rather than a second use of
+  # max_replans (Checkpoint B, user 2026-08-29) - re-plan tolerance and nesting depth are two
+  # quantities, and one value for both makes tuning either change the other.
+  # NOT CALIBRATED, and deliberately said so: no run has nested a plan yet, so there is no
+  # distribution to read. It is a runaway stop, chosen on the reasoning that a goal needing
+  # more than five levels of sub-planning has a decomposition problem a deeper limit will not
+  # fix. Unlike max_nodes_per_plan it is not measuring a fleet, so being wrong by 2x costs a
+  # clear error rather than a refused legitimate plan. Revisit against the first real nested
+  # run: if it ever refuses a plan a human would have allowed, it was too low.
+  max_plan_depth: 5
 
 # Shared resources (design 3.6): write_set is paths only; a node names what it consumes in
 # requires: [{resource, amount}]. kind: mutex (capacity 1) | capacity (in unit) | rate (per window).

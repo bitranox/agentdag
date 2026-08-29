@@ -31,6 +31,7 @@ def limits(**over: Any) -> RunLimits:
         "max_replans": 3,
         "max_nodes_per_run": 200,
         "max_nodes_per_plan": 40,
+        "max_plan_depth": 5,
     }
     base.update(over)
     return RunLimits(**base)

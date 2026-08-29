@@ -11,8 +11,8 @@ Contents:
       ``tests/test_kernel_scope.py`` can pin its table directly.
     * :func:`build_op_registry` - the M6 op registry (Task 30): every op with a real body
       wired to its :class:`~agentdag.application.kernel.context.Coordinator` primitive,
-      ``plan`` registered as the one not-yet-wired placeholder, and ``apply`` and ``judge``
-      deliberately never registered at all.
+      ``plan`` registered with a GUARD body the scheduler must never reach (Task 32), and
+      ``apply`` and ``judge`` deliberately never registered at all.
 """
 
 from __future__ import annotations
@@ -268,10 +268,25 @@ class _ApproveArgs(BaseModel):
     decide_by: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$")
 
 
-class _NotYetWiredArgs(BaseModel):
-    """``plan``'s own args: the nested sub-goal the planner is dispatched for (design 3.3)."""
+class _PlanArgs(BaseModel):
+    """``plan``'s own args: the nested sub-goal the planner is dispatched for (design 3.3).
+
+    ``goal`` is REQUIRED, and Task 33 is what made it a field rather than only a promise in
+    this docstring: :func:`~agentdag.application.kernel.execute.execute_plan` recurses on a
+    ``plan`` entry by calling
+    :func:`~agentdag.application.kernel.planner.dispatch_planner`, whose ``goal`` argument
+    has nowhere else to come from - ``Entry.brief`` is the node's own instructions and
+    ``Plan.goal`` belongs to the plan that CONTAINS this entry, not to the sub-plan it asks
+    for. Required rather than defaulted, so a plan entry with no sub-goal is refused at
+    plan-accept time instead of dispatching a planner with nothing to plan.
+
+    The class was named ``_NotYetWiredArgs`` until here, after the placeholder body Task 32
+    retired; it never described the args.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    goal: str
 
 
 _ArgsT = TypeVar("_ArgsT", bound=BaseModel)
@@ -505,7 +520,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="plan",
-            args_model=_NotYetWiredArgs,
+            args_model=_PlanArgs,
             # Empty because the body raises and emits nothing - never a guessed field. A
             # condition can still name a plan entry's `status`, which is reserved.
             output_contract=frozenset(),

@@ -37,6 +37,7 @@ LIMITS = RunLimits(
     # A small ceiling (not the shipped 40) so the size-limit test below stays cheap; every
     # other test here uses at most two entries.
     max_nodes_per_plan=3,
+    max_plan_depth=5,
 )
 
 _OP_KIND: dict[str, Kind] = {
@@ -115,6 +116,23 @@ def test_args_are_validated_by_the_ops_model() -> None:
         allocate_id=ids(),
     )
     assert isinstance(out, Refused)
+
+
+def test_a_plan_entry_without_a_sub_goal_is_refused() -> None:
+    """``plan``'s ``goal`` is required, so the refusal lands at plan-accept time.
+
+    The alternative is a planner dispatched with nothing to plan, discovered only once the
+    execute loop reaches the entry - after the spend. Refusal by args model puts it before.
+    """
+    out = validate_plan(
+        plan_with(entries=[entry(op="plan", node_id="n0")]),
+        registry=REG,
+        graph={},
+        limits=LIMITS,
+        is_root=False,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("goal" in r for r in out.reasons)
 
 
 def test_condition_may_reference_only_declared_contract_fields() -> None:
@@ -389,10 +407,16 @@ def test_args_of_the_wrong_type_are_refused_and_the_right_type_accepted() -> Non
 
 
 def test_a_condition_on_a_plan_entrys_status_validates() -> None:
-    """MINOR 9: ``plan``'s contract is empty, so only the reserved ``status`` makes it referenceable."""
+    """MINOR 9: ``plan``'s contract is empty, so only the reserved ``status`` makes it referenceable.
+
+    ``args`` carries a ``goal`` because Task 33 made it a required field of ``plan``'s own
+    args model: the execute loop's recursion has nowhere else to get the sub-goal from, so a
+    plan entry without one is refused here rather than dispatching a planner with nothing to
+    plan.
+    """
     done = Compare(ref=FieldRef(entry="n0", field="status"), op="==", value=NodeStatus.DONE.value)
     out = validate_plan(
-        plan_with(entries=[entry(op="plan", node_id="n0")], done_when=done),
+        plan_with(entries=[entry(op="plan", node_id="n0", args={"goal": "a sub-goal"})], done_when=done),
         registry=REG,
         graph={},
         limits=LIMITS,
