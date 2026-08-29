@@ -41,6 +41,7 @@ from ...domain.models import (
     ResultRecord,
     SuspendReason,
 )
+from ...domain.plan import PLAN_FILENAME
 from ...domain.policy import FailureAction
 from ...domain.scan import diff_manifests, stray_paths
 from .approve import validate_approve_payload
@@ -257,6 +258,80 @@ class Coordinator:
                 (fixing it changes ``cwd``, hence the call's own identity, so nothing
                 a bare resume could ever re-serve usefully).
         """
+        dispatched, input_obj, body = self._executor_call(spec, brief=brief, cwd=cwd, prompt=prompt)
+        return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
+
+    async def plan_node(self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str = DEFAULT_PROMPT) -> ResultRecord:
+        """Dispatch a planner node and surface the ``plan.json`` it wrote, if it wrote one.
+
+        Identical to :meth:`work` in every respect except one: after the executor returns,
+        this reads the node's own artefact dir for :data:`~agentdag.domain.plan.PLAN_FILENAME`
+        and adds its run-relative path to ``artefact_refs``. That read is the whole reason the
+        primitive exists. ``node_dir`` is created by the dispatcher and never leaves
+        :meth:`_dispatch`'s ``body``, the executor's own ``artefact_refs`` hold the node's CWD
+        rather than anything in that dir, and a node dir is not derivable from a record either
+        (:func:`~agentdag.domain.keys.journal_key` needs ``brief_hash`` and ``prefix``, and a
+        :class:`~agentdag.domain.models.ResultRecord` carries neither). So a caller that needs
+        a file the node left behind has to be inside the body, which is here.
+
+        Same shape as :meth:`gate`, which surfaces ``gate.log`` the same way. A node that
+        wrote no plan gets no such ref, so "planned nothing" stays distinguishable from
+        "planned something I could not find" - the caller turns the first into typed reasons.
+
+        Args:
+            spec: The planner node's spec.
+            brief: The goal and evidence, as the node's brief.
+            cwd: The working directory the planner runs in.
+            prompt: What the executor is told to do with the brief.
+
+        Returns:
+            The planner node's record, carrying the plan's path when there is one.
+        """
+        dispatched, input_obj, body = self._executor_call(spec, brief=brief, cwd=cwd, prompt=prompt)
+        return await self._dispatch(
+            dispatched, brief=brief, input_obj=input_obj, body=self._also_surfacing_the_plan(body)
+        )
+
+    def _also_surfacing_the_plan(self, body: Body) -> Body:
+        """Wrap ``body`` so a ``plan.json`` in the node dir joins the outcome's artefact refs.
+
+        Absent file, absent ref: the outcome is returned untouched. Nothing here parses or
+        repairs what the node wrote - a malformed plan is the node's report to make, and the
+        caller turns it into reasons - so this only ever answers "is it there, and where".
+        """
+
+        async def surfacing(node_dir: Path) -> NodeOutcome:
+            outcome = await body(node_dir)
+            if not (node_dir / PLAN_FILENAME).exists():
+                return outcome
+            rel = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/{PLAN_FILENAME}"
+            return outcome.model_copy(update={"artefact_refs": [*outcome.artefact_refs, rel]})
+
+        return surfacing
+
+    def _executor_call(
+        self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str
+    ) -> tuple[NodeSpec, dict[str, Any], Body]:
+        """Resolve the row and build the dispatched spec, the input object and the body.
+
+        Shared by :meth:`work` and :meth:`plan_node`, which differ only in what they do with
+        the body afterwards. Everything :meth:`work`'s own docstring describes - row
+        resolution before the key, the token cap's two call sites, the deadline clamp, the
+        unwired-executor check inside the body - happens here and is documented there.
+
+        Args:
+            spec: The node spec, with its tier role, write set, deps and limits.
+            brief: The node's brief; its content hash is part of the journal key.
+            cwd: The working directory the executor runs in.
+            prompt: What the executor is told to do with the brief.
+
+        Returns:
+            The spec as dispatched (row and executor written back), the input object, and
+            the body to run when the journal has no record for the key.
+
+        Raises:
+            KernelError: ``cwd`` sits outside the run root.
+        """
         row = self.policy.resolve(spec)
         try:
             cwd_rel = cwd.relative_to(self.run_dir.root)
@@ -312,8 +387,7 @@ class Coordinator:
             )
             return self._suspended_if_the_provider_refused(spec, await executor.run(request))
 
-        dispatched = spec.model_copy(update={"executor": row.executor, "model": row.alias})
-        return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
+        return spec.model_copy(update={"executor": row.executor, "model": row.alias}), input_obj, body
 
     def _suspended_if_the_provider_refused(self, spec: NodeSpec, outcome: NodeOutcome) -> NodeOutcome:
         """Turn a refusal that came from OUTSIDE the run into a suspend, when policy allows it.

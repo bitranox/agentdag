@@ -35,7 +35,15 @@ from .models import NodeSpec
 if TYPE_CHECKING:
     from .models import ResultRecord
 
-__all__ = ["PLAN_SCHEMA_ID", "Entry", "Plan", "evaluate_holds_while", "plan_json_schema"]
+__all__ = ["PLAN_FILENAME", "PLAN_SCHEMA_ID", "Entry", "Plan", "evaluate_holds_while", "plan_json_schema"]
+
+PLAN_FILENAME = "plan.json"
+"""What a planner node's plan is called inside its own artefact dir.
+
+Beside :data:`~agentdag.domain.handover.HANDOVER_FILENAME`, and for the same reason: the
+coordinator reads the file back after the dispatch, so the name is a contract between the
+node's prompt and the reader, not an implementation detail of either.
+"""
 
 
 class Entry(BaseModel):

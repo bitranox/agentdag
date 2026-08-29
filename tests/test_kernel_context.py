@@ -39,6 +39,7 @@ from agentdag.domain.models import (
     SuspendReason,
     TierRole,
 )
+from agentdag.domain.plan import PLAN_FILENAME
 from agentdag.domain.policy import FailureAction
 
 if TYPE_CHECKING:
@@ -1027,3 +1028,54 @@ def test_a_rate_limited_work_node_fails_the_run_when_the_policy_says_so(tmp_path
     assert record.status == NodeStatus.FAILED
     assert record.error is not None
     assert record.error.type == ErrorType.RATE_LIMITED
+
+
+class PlanWritingExecutor:
+    """An executor that writes ``plan.json`` into the node dir, as a planner node does.
+
+    A real double rather than a patch of the read: the seam under test is "a node ran and
+    left a file behind in its own dispatch directory", so the executor is where the file
+    has to come from.
+    """
+
+    def __init__(self, raw: str | None) -> None:
+        self.raw = raw
+        self.requests: list[ExecutorRequest] = []
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Write the plan (when this double has one) and return a DONE outcome."""
+        self.requests.append(request)
+        if self.raw is not None:
+            (request.node_dir / PLAN_FILENAME).write_text(self.raw, encoding="utf-8")
+        return outcome({"sonnet": 10})
+
+
+@pytest.mark.os_agnostic
+def test_plan_node_surfaces_the_nodes_plan_json_as_an_artefact_ref(tmp_path: Path) -> None:
+    """The planner's output has to reach the coordinator, and node_dir never escapes body().
+
+    `work()` returns the executor's outcome, whose artefact_refs hold the node's CWD, and a
+    node dir is not derivable from a record (journal_key needs brief_hash and prefix, and a
+    ResultRecord carries neither). So a planner node needs its own primitive that reads the
+    file back, the way gate() already surfaces gate.log.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = PlanWritingExecutor('{"goal": "g"}')
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    record = asyncio.run(coordinator.plan_node(work_spec(), brief="plan it", cwd=run_dir.worktree("a")))
+
+    rel = next(r for r in record.artefact_refs if r.endswith(PLAN_FILENAME))
+    assert run_dir.read_text(rel) == '{"goal": "g"}'
+
+
+@pytest.mark.os_agnostic
+def test_plan_node_surfaces_no_ref_when_the_node_wrote_no_plan(tmp_path: Path) -> None:
+    """The control. A planner that wrote nothing must be distinguishable from one that did,
+    or the caller cannot tell "no plan" from "a plan I failed to find"."""
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, PlanWritingExecutor(None), FakeScanner())
+
+    record = asyncio.run(coordinator.plan_node(work_spec(), brief="plan it", cwd=run_dir.worktree("a")))
+
+    assert not [r for r in record.artefact_refs if r.endswith(PLAN_FILENAME)]
