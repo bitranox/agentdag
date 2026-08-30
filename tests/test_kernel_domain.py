@@ -228,6 +228,31 @@ def test_the_three_replan_lines_parse_back_to_their_own_types() -> None:
         assert parse_journal_line(text) == line
 
 
+def test_the_three_replan_lines_refuse_what_their_own_schema_refuses() -> None:
+    """``journal-line.schema.json`` requires a non-empty key, node id and reason list.
+
+    A model looser than the schema it is written against produces a line the emitter can
+    write and the schema rejects, and nothing fails until a real run's journal is validated.
+    The neighbouring dump test cannot see it: it builds the lines with good values. Found
+    while wiring the emitter (:func:`~agentdag.application.kernel.execute.execute_plan`),
+    where an empty ``reasons`` is unreachable today only because three call sites happen not
+    to produce one.
+    """
+    key = "v2:sha256:" + "0" * 64
+    at = "2026-08-17T09:12:03+00:00"
+
+    with pytest.raises(ValueError, match="key"):
+        PlanAcceptedLine(key="", node_id="p", entries=1, at=at)
+    with pytest.raises(ValueError, match="node_id"):
+        PlanAcceptedLine(key=key, node_id="", entries=1, at=at)
+    with pytest.raises(ValueError, match="entries"):
+        PlanAcceptedLine(key=key, node_id="p", entries=-1, at=at)
+    with pytest.raises(ValueError, match="reasons"):
+        PlanInvalidatedLine(key=key, node_id="p", reasons=(), at=at)
+    with pytest.raises(ValueError, match="node_id"):
+        SubtreeDoneLine(key=key, node_id="", done=True, at=at)
+
+
 def test_an_invalidated_plan_keeps_every_reason_rather_than_one_summary() -> None:
     """The next planner is briefed with these, so a flattened summary cannot be acted on.
 

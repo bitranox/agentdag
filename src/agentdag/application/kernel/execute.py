@@ -9,24 +9,30 @@ through the design's TWO condition checks: the entry's own ``acceptance``, and t
 through the registry, which is why the registry's ``plan`` body is a guard that raises
 (:func:`~agentdag.composition.kernel.build_op_registry`).
 
+A refuted condition does not end the subtree. The stop notice goes out, the barrier waits the
+nodes already in flight out, and the plan's ``planner`` is re-dispatched with the cause (design
+section 4), bounded by ``max_replans``; what comes back on :class:`Executed` is what the LAST
+plan produced. Three events of that loop reach the journal - a plan accepted, a plan the
+validator refused, and a subtree's own done verdict - each carrying the journal key of the
+planner dispatch it belongs to, so a reader can join it to that node's own ``started`` and
+``result`` lines.
+
 What this module deliberately does NOT do, and where it is owed:
 
-* **It never re-plans.** A refuted condition, and a sub-plan the validator refused, both come
-  back on :class:`Executed` and the subtree starts nothing further; the stop notice and the
-  re-dispatch are Tasks 34 and 35. What this loop DOES do at that moment is wait for the nodes
-  already in flight to reach terminal, because abandoning them would leave real dispatches
-  unawaited - a barrier without the notice that should precede it.
-* **It cannot stop a node already running.** Interrupting one needs the stop notice, which does
-  not exist yet, so "stops the subtree" means "starts nothing further and waits out what is
-  running".
+* **It never cancels.** A node still running when its subtree stops is ASKED to hand over, never
+  killed (design constraint 2), so "stops the subtree" means "notify what is running, start
+  nothing further, and wait it out". A node still in flight when the barrier's bound runs out
+  leaves the subtree :attr:`Executed.stuck` and un-re-planned rather than interrupted.
 * **It does not read ``spec.isolation``.** Where an entry runs is component 8's subject (user,
   2026-08-30); ``Isolation`` remains parsed-never-enforced. Every entry runs in ``ctx.cwd``.
 
 Contents:
     * :class:`RunNodeBudgetExceededError` / :class:`PlanDepthExceededError` - the run bounds' errors.
+    * :class:`ReplanLimitExceededError` - a plan that spent its re-plan allowance and still refutes.
     * :class:`NodeBudget` - how many nodes this RUN has dispatched, shared across every plan.
     * :class:`NodeIds` - the RUN's node-id allocator, shared for the same reason.
     * :class:`SubPlanRefused` - one sub-plan the validator refused, with its reasons verbatim.
+    * :class:`Cause` - what the re-dispatched planner is told fired, with the values it read.
     * :class:`Executed` - one subtree's records, whether it is done, and why it stopped.
     * :func:`execute_plan` - the loop itself.
 """
@@ -39,10 +45,12 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from ...domain.condition import evaluate, referenceable_view, referenced_fields
+from ...domain.journal import PlanAcceptedLine, PlanInvalidatedLine, SubtreeDoneLine
 from ...domain.kernel_errors import KernelError
 from ...domain.models import NodeStatus, ResultRecord
 from ...domain.plan import evaluate_holds_while
-from .planner import Planned, dispatch_planner
+from .planner import NotPlanned, Planned, dispatch_planner
+from .ports import stamp
 from .subtree import StopScope, barrier, deadline_bound
 
 if TYPE_CHECKING:
@@ -396,8 +404,14 @@ async def _execute(
         # exists to prevent, so the subtree is reported rather than re-planned around a node
         # still writing to the worktree.
         if planner is None or refutation is None or run.stuck:
-            return _executed(current, run=run, view=view)
+            executed = _executed(current, run=run, view=view)
+            _journal_subtree_done(planner, done=executed.done, wiring=wiring)
+            return executed
         if spent_replans >= wiring.limits.max_replans:
+            # Exhaustion is a VERDICT, not an error escaping unreported: the parent turns it
+            # into a refusal it can branch on, and without this line the journal would show a
+            # run of accepted plans under one node id and then simply stop.
+            _journal_subtree_done(planner, done=_verdict(current, run=run, view=view), wiring=wiring)
             raise ReplanLimitExceededError(
                 f"plan {current.goal!r} spent max_replans={wiring.limits.max_replans} "
                 f"and its condition still refutes on node {run.refutation.node_id!r}"  # type: ignore[union-attr]
@@ -428,6 +442,53 @@ def _cause_of(refutation: _Refutation, *, view: Mapping[str, ResultRecord]) -> C
     return Cause(condition=refutation.condition, node_id=refutation.node_id, values=values)
 
 
+def _journal_planned(outcome: Planned | NotPlanned, *, node_id: str, wiring: _Wiring) -> None:
+    """Record what one planner dispatch produced: the plan it got accepted, or the refusal.
+
+    Both branches at ONE site, because the shape worth closing is "a planner ran and nothing
+    said what came of it". A refused sub-plan otherwise appears in the journal as a DONE
+    planner record beside a subtree that never ran, with nothing distinguishing a rejected
+    PLAN from a planner that fell over.
+
+    The key is the planner dispatch's OWN journal key, read off the record it produced -
+    ``ResultRecord.input_hash`` is that key, not one of its ingredients
+    (``result-record.schema.json``) - so the line joins to that node's ``started`` and
+    ``result`` lines instead of standing alone. ``node_id`` is the planner node, never an
+    entry of the accepted plan: those get coordinator-allocated ids and lines of their own.
+    """
+    at = stamp(wiring.ctx.co.clock)
+    if isinstance(outcome, Planned):
+        line: PlanAcceptedLine | PlanInvalidatedLine = PlanAcceptedLine(
+            key=outcome.record.input_hash, node_id=node_id, entries=len(outcome.plan.entries), at=at
+        )
+    else:
+        line = PlanInvalidatedLine(key=outcome.record.input_hash, node_id=node_id, reasons=outcome.reasons, at=at)
+    wiring.ctx.co.dispatcher.journal.append(line)
+
+
+def _journal_subtree_done(planner: NodeSpec | None, *, done: bool, wiring: _Wiring) -> None:
+    """Record this subtree's verdict, when a planner dispatch produced the plan it ran.
+
+    Nothing is written for a plan NOBODY PLANNED - a hand-authored plan handed straight to
+    :func:`execute_plan`, or a ``planner`` spec this loop never had cause to dispatch. All
+    three of these lines identify a subtree by its planner node and by the journal key that
+    node was dispatched under, and such a plan has neither; the schema requires both to be
+    non-empty, so the honest answer is no line rather than an id no dispatch ever produced.
+
+    The key is read off the planner's CURRENT record rather than carried down from where the
+    plan was accepted, and that is the point: a re-planned subtree ran the plan its LAST
+    dispatch produced, so that is the dispatch this verdict belongs to.
+    """
+    if planner is None:
+        return
+    record = wiring.ctx.co.dispatcher.records.get(planner.node_id)
+    if record is None:
+        return
+    wiring.ctx.co.dispatcher.journal.append(
+        SubtreeDoneLine(key=record.input_hash, node_id=planner.node_id, done=done, at=stamp(wiring.ctx.co.clock))
+    )
+
+
 async def _replan(
     plan: Plan, *, cause: Cause, planner: NodeSpec, wiring: _Wiring, admitted: Mapping[str, NodeSpec]
 ) -> Plan | None:
@@ -449,6 +510,7 @@ async def _replan(
             is_root=False,
             allocate_id=wiring.ids.allocate,
         )
+    _journal_planned(planned, node_id=planner.node_id, wiring=wiring)
     return planned.plan if isinstance(planned, Planned) else None
 
 
@@ -754,6 +816,7 @@ async def _run_sub_plan(
             is_root=False,
             allocate_id=wiring.ids.allocate,
         )
+    _journal_planned(planned, node_id=entry.spec.node_id, wiring=wiring)
     if not isinstance(planned, Planned):
         refusal = SubPlanRefused(node_id=entry.spec.node_id, reasons=planned.reasons)
         return _Landed(entry=entry, record=planned.record, subtree={}, refused=(refusal,))
@@ -831,6 +894,17 @@ def _first_refutation(landed: Sequence[_Landed], *, plan: Plan, view: Mapping[st
     return None
 
 
+def _verdict(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -> bool:
+    """Whether this subtree is done: its own ``done_when`` settled True, and nothing stopped it.
+
+    One definition read by two callers - the :class:`Executed` a parent branches on, and the
+    :class:`~agentdag.domain.journal.SubtreeDoneLine` a reader branches on later. Spelling it
+    twice is how the journal comes to report a verdict the run never acted on.
+    """
+    stopped = run.refutation is not None or bool(run.refused)
+    return not stopped and evaluate(plan.done_when, view) is True
+
+
 def _executed(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -> Executed:
     """Settle ``done_when`` over what ran and assemble the subtree's result.
 
@@ -841,11 +915,10 @@ def _executed(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -
     early has entries that never ran, so a ``done_when`` settling True over the records that
     DID land is answering a question about a plan nobody finished.
     """
-    stopped = run.refutation is not None or bool(run.refused)
     unrun = tuple(run.unrun) + tuple(e.spec.node_id for e in run.pending.values())
     return Executed(
         records=run.records,
-        done=not stopped and evaluate(plan.done_when, view) is True,
+        done=_verdict(plan, run=run, view=view),
         cause=None if run.refutation is None else _cause_of(run.refutation, view=view),
         refused=tuple(run.refused),
         unrun=unrun,

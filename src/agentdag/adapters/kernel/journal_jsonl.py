@@ -73,9 +73,10 @@ class JsonlJournal:
             exist yet.
 
         Raises:
-            ValueError: a line is not valid JSON or not one of the six known
-                events (a torn write from a crash mid-append) - reported with its
-                1-based line number rather than silently dropped.
+            ValueError: a line is not valid JSON or names no event
+                :data:`~agentdag.domain.journal.JournalLine` knows (a torn write from a
+                crash mid-append) - reported with its 1-based line number rather than
+                silently dropped.
         """
         if not self._journal.exists():
             return []

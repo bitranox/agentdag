@@ -15,16 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import pytest
 from kernel_fakes import FakeScanner, RedGate, fresh_run_dir, outcome, wire
 
+from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
+from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel import subtree as subtree_module
 from agentdag.application.kernel.execute import Cause, NodeBudget, NodeIds, ReplanLimitExceededError, execute_plan
 from agentdag.application.kernel.registry import PlanContext
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.condition import AllOf, AnyOf, Compare, FieldRef
+from agentdag.domain.journal import PlanAcceptedLine, PlanInvalidatedLine, SubtreeDoneLine
 from agentdag.domain.models import Budget, Kind, NodeSpec, TierRole
 from agentdag.domain.plan import Entry, Plan
 from agentdag.domain.policy import RunLimits
@@ -665,3 +668,184 @@ def test_a_refuted_entry_acceptance_reaches_a_sibling_entry_s_whole_subtree(tmp_
     run_plan(tmp_path, parent, executor=executor, planner=None)
 
     assert "do uw" in executor.notified
+
+
+_LINE = TypeVar("_LINE", PlanAcceptedLine, PlanInvalidatedLine, SubtreeDoneLine)
+
+
+def lines_of(tmp_path: Path, kind: type[_LINE]) -> list[_LINE]:
+    """Every journal line of ``kind`` the run under ``tmp_path`` wrote, in file order.
+
+    Read back off the REAL ``journal.jsonl`` rather than a spy on the port, so an arm that
+    asserts a line was emitted is asserting the thing a later replay will actually read -
+    through :func:`~agentdag.domain.journal.parse_journal_line`, which is what would catch a
+    line this loop can write but nothing can read back.
+    """
+    run_dir = FsRunDir.open(tmp_path / "runs", "r1")
+    return [line for line in JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines() if isinstance(line, kind)]
+
+
+def one_plan_entry_parent() -> Plan:
+    """A parent whose single entry plans a subtree of its own."""
+    return plan_with([entry(node_id="p", op="plan", args={"goal": "inner"})])
+
+
+def unregistered_op_plan(goal: str) -> str:
+    """A plan naming an op nothing registered, so the validator refuses it whole."""
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": "x", "kind": "work", "deadline_s": 60.0},
+                    "op": "teleport",
+                    "args": {},
+                    "brief": "beam it up",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                }
+            ],
+            "done_when": {"ref": {"entry": "x", "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+def never_done_plan(goal: str, node_id: str) -> str:
+    """A plan whose entry lands cleanly and whose ``done_when`` still settles False.
+
+    Nothing refutes here - the entry carries no acceptance - so the subtree runs to the end
+    of its entries and reports the plan's OWN verdict, which is the thing
+    :class:`~agentdag.domain.journal.SubtreeDoneLine` carries.
+    """
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": node_id, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {node_id}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                }
+            ],
+            "done_when": {"ref": {"entry": node_id, "field": "status"}, "op": "==", "value": "failed"},
+        }
+    )
+
+
+@pytest.mark.os_agnostic
+def test_an_accepted_sub_plan_is_journaled_under_its_planner_s_own_key(tmp_path: Path) -> None:
+    """Task 35 step 5. An accepted plan is an event of the run, not just a local branch.
+
+    The key is the PLANNER dispatch's own journal key, which is what joins this line to that
+    node's ``started`` and ``result`` lines: a reader asking "which dispatch produced this
+    plan" has no other way back. ``node_id`` is the ``plan`` ENTRY, never an entry of the
+    accepted plan - those get coordinator-allocated ids and appear in lines of their own.
+    """
+    executor = ReplanningExecutor(plans=[work_only_plan("inner", "w")])
+
+    out = run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    accepted = lines_of(tmp_path, PlanAcceptedLine)
+    assert [(line.node_id, line.entries) for line in accepted] == [("p", 1)]
+    assert accepted[0].key == out.records["p"].input_hash
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_sub_plan_is_journaled_with_the_validator_s_reasons(tmp_path: Path) -> None:
+    """Task 35 step 5. Without this line a refusal is indistinguishable from a broken planner.
+
+    A refused sub-plan otherwise shows only as a planner node's DONE record and a subtree
+    that never ran, with nothing in the journal saying the PLAN was rejected. The reasons go
+    in verbatim, every one of them, for the reason the validator returns them all at once.
+    """
+    executor = ReplanningExecutor(plans=[unregistered_op_plan("inner")])
+
+    out = run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    invalidated = lines_of(tmp_path, PlanInvalidatedLine)
+    assert [line.node_id for line in invalidated] == ["p"]
+    assert invalidated[0].reasons == out.refused[0].reasons
+    assert invalidated[0].key == out.records["p"].input_hash
+    assert lines_of(tmp_path, PlanAcceptedLine) == []
+
+
+@pytest.mark.os_agnostic
+def test_a_re_planned_subtree_journals_one_accepted_line_per_plan_it_ran(tmp_path: Path) -> None:
+    """Task 35 step 5, and the whole point of counting these lines.
+
+    Two accepted plans under one node id is a subtree that was re-planned once, and that
+    count is the cheap signal that a re-plan loop is churning. The KEYS must differ: each
+    plan came from its own planner dispatch, and two lines sharing a key would say one
+    dispatch produced both.
+    """
+    executor = ReplanningExecutor(plans=[always_refuting_plan("broken", "g2"), work_only_plan("fixed", "w")])
+
+    run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    accepted = lines_of(tmp_path, PlanAcceptedLine)
+    assert [line.node_id for line in accepted] == ["p", "p"]
+    assert len({line.key for line in accepted}) == 2
+
+
+@pytest.mark.os_agnostic
+def test_a_settled_subtree_journals_its_own_done_verdict(tmp_path: Path) -> None:
+    """Task 35 step 5. One line per subtree that reached a verdict, carrying the plan's own."""
+    executor = ReplanningExecutor(plans=[work_only_plan("inner", "w")])
+
+    out = run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    done_lines = lines_of(tmp_path, SubtreeDoneLine)
+    assert [(line.node_id, line.done) for line in done_lines] == [("p", True)]
+    assert done_lines[0].key == out.records["p"].input_hash
+
+
+@pytest.mark.os_agnostic
+def test_a_subtree_whose_done_when_settles_false_journals_done_false(tmp_path: Path) -> None:
+    """The direction control. Without it an implementation hard-coding ``done=True`` passes.
+
+    Nothing refutes in this subtree - its entry lands DONE and carries no acceptance - so the
+    only thing that can make the line False is the plan's own ``done_when``, which is exactly
+    what the line claims to report.
+    """
+    executor = ReplanningExecutor(plans=[never_done_plan("inner", "w")])
+
+    run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    assert [(line.node_id, line.done) for line in lines_of(tmp_path, SubtreeDoneLine)] == [("p", False)]
+
+
+@pytest.mark.os_agnostic
+def test_replan_exhaustion_journals_the_subtree_as_not_done(tmp_path: Path) -> None:
+    """A subtree that ran out of re-plans reached a verdict too, and it is not done.
+
+    The parent turns the exhaustion into a refusal it can branch on; without this line the
+    journal would show a run of accepted plans under one node id and then simply stop, with
+    nothing saying how that subtree ended.
+    """
+    executor = ReplanningExecutor(plans=[always_refuting_plan("still broken", "g2")])
+
+    run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None, run_limits=limits(max_replans=1))
+
+    assert [(line.node_id, line.done) for line in lines_of(tmp_path, SubtreeDoneLine)] == [("p", False)]
+
+
+@pytest.mark.os_agnostic
+def test_a_plan_nobody_planned_journals_no_plan_lines_at_all(tmp_path: Path) -> None:
+    """The absent case, decided rather than inherited: a hand-authored plan emits nothing.
+
+    All three lines name a planner node and carry the journal key it was dispatched under,
+    and a plan handed straight to :func:`execute_plan` has neither - no dispatch produced it,
+    so there is no key, and its ``planner`` is ``None``, so there is no node to name. The
+    schema requires both to be non-empty, so the honest answer is no line rather than an
+    invented id.
+    """
+    executor = ReplanningExecutor(plans=[])
+
+    run_plan(tmp_path, plan_with([entry(node_id="a")]), executor=executor, planner=None)
+
+    assert lines_of(tmp_path, PlanAcceptedLine) == []
+    assert lines_of(tmp_path, PlanInvalidatedLine) == []
+    assert lines_of(tmp_path, SubtreeDoneLine) == []

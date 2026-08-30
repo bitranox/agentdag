@@ -1,4 +1,4 @@
-"""Journal lines (design 3.1/3.2): the nine events slice 1 and M3 add, one JSON object per line.
+"""Journal lines (design 3.1/3.2): every event the run records, one JSON object per line.
 
 Contents:
     * :class:`StartedLine`, :class:`ResultLine`, :class:`RunStartedLine`,
@@ -9,7 +9,11 @@ Contents:
       later, VERIFIED outcome once the run's scope is confirmed empty.
     * :class:`RetryGrantLine` - M3's ``run retry``: an operator granting one spent node
       another attempt, folded in from ``retries/<node_id>.<hash8>.json``.
-    * :data:`JournalLine` - the discriminated union of the nine.
+    * :class:`PlanAcceptedLine`, :class:`PlanInvalidatedLine`, :class:`SubtreeDoneLine` -
+      M6's planning loop (design 4), emitted by
+      :func:`~agentdag.application.kernel.execute.execute_plan`: what a planner dispatch
+      produced, and how the subtree that ran it ended.
+    * :data:`JournalLine` - the discriminated union of them all.
     * :func:`parse_journal_line` - one JSON object -> the typed line.
     * :func:`dump_journal_line` - the typed line -> one compact, sorted-key JSON line.
 """
@@ -227,13 +231,13 @@ class PlanAcceptedLine(_Line):
     """
 
     event: Literal["plan_accepted"] = "plan_accepted"
-    key: str
-    node_id: str
+    key: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
     """The ``plan`` ENTRY's node id - the planner node that produced it, not an entry of the
     accepted plan. A plan's own entries get their ids allocated by the coordinator and appear
     in their own ``started``/``result`` lines."""
 
-    entries: int
+    entries: int = Field(ge=0)
     """How many entries the accepted plan carries."""
 
 
@@ -247,9 +251,9 @@ class PlanInvalidatedLine(_Line):
     """
 
     event: Literal["plan_invalidated"] = "plan_invalidated"
-    key: str
-    node_id: str
-    reasons: tuple[str, ...]
+    key: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
+    reasons: tuple[str, ...] = Field(min_length=1)
     """The validator's reasons VERBATIM, every one of them, never flattened into a summary.
 
     The next planner is briefed with these, and a planner told about the first of four
@@ -267,8 +271,8 @@ class SubtreeDoneLine(_Line):
     """
 
     event: Literal["subtree_done"] = "subtree_done"
-    key: str
-    node_id: str
+    key: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
     """The ``plan`` entry whose subtree this was, or the ROOT plan's own planner node."""
 
     done: bool
@@ -289,7 +293,7 @@ JournalLine = Annotated[
     | SubtreeDoneLine,
     Field(discriminator="event"),
 ]
-"""The discriminated union of every journal line slice 1 and M3 emit, keyed on ``event``."""
+"""The discriminated union of every journal line this kernel emits, keyed on ``event``."""
 
 _ADAPTER: TypeAdapter[JournalLine] = TypeAdapter(JournalLine)
 
