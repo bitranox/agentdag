@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ...domain.kernel_errors import WorkflowNotFound
-from . import graph_a
+from . import graph_a, plan_goal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -58,6 +58,12 @@ WORKFLOWS: dict[str, WorkflowDef] = {
         program=graph_a.program,
         module=graph_a,
     ),
+    "plan-goal": WorkflowDef(
+        name="plan-goal",
+        args_model=plan_goal.PlanGoalArgs,
+        program=plan_goal.program,
+        module=plan_goal,
+    ),
 }
 """Every built-in workflow, by name."""
 
@@ -80,7 +86,7 @@ def get_workflow(name: str) -> WorkflowDef:
         'graph-a'
         >>> get_workflow("nope")
         Traceback (most recent call last):
-        agentdag.domain.kernel_errors.WorkflowNotFound: no workflow named 'nope'; known: ['graph-a']
+        agentdag.domain.kernel_errors.WorkflowNotFound: no workflow named 'nope'; known: ['graph-a', 'plan-goal']
     """
     try:
         return WORKFLOWS[name]

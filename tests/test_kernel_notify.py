@@ -41,6 +41,7 @@ from agentdag.application.kernel.crash import CrashOutcome, record_crash
 from agentdag.application.kernel.notify import RunEvent
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import WorkflowDef
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.keys import hash8
 from agentdag.domain.models import RunState, RunStatus, SuspendReason
 
@@ -356,6 +357,7 @@ def _launch_failing_workflow(tmp_path: Path, *, notifier: RecordingNotifier) -> 
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
+            registry=build_op_registry(),
             sandbox=NoSandbox(),
             parallel=1,
             by="tester",

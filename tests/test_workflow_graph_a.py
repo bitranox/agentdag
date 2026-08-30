@@ -32,6 +32,7 @@ from agentdag.application.kernel.replay import build_replay_index
 from agentdag.application.kernel.run import RunOutcome, run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.graph_a import GraphAArgs, perform_push
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.graph_a import PushIntent, dedup_key
 from agentdag.domain.journal import ResultLine, RunSummaryLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError, SpecRejected
@@ -96,6 +97,7 @@ def launch_over(
             git=GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
+            registry=build_op_registry(),
             sandbox=NoSandbox(),
             parallel=parallel,
             by="tester",
@@ -176,6 +178,7 @@ def coordinator_over(run_dir: FsRunDir, tmp_path: Path, *, git: GitCli | None = 
         git=git if git is not None else GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
+        registry=build_op_registry(),
         sandbox=NoSandbox(),
         parallel=1,
     )
@@ -578,6 +581,7 @@ def test_two_fleet_members_that_would_share_one_worktree_are_refused_before_any_
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),
+                registry=build_op_registry(),
                 sandbox=NoSandbox(),
                 parallel=1,
                 by="tester",

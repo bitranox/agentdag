@@ -54,9 +54,10 @@ if TYPE_CHECKING:
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
 from agentdag.domain.plan import PLAN_FILENAME
-from agentdag.domain.policy import FailureAction
+from agentdag.domain.policy import FailureAction, RunLimits
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -393,6 +394,7 @@ def launch(
             git=git_port if git_port is not None else GitCli(),
             scanner=IsolationScanner(),
             policy=load_policy(policy_path()),
+            registry=build_op_registry(),
             sandbox=NoSandbox(),
             parallel=parallel,
             by="tester",
@@ -421,10 +423,20 @@ class OneRowPolicy:
     deny_bash: tuple[str, ...] = ("git push",)
     on_auth_failure: FailureAction = FailureAction.FAIL_RUN
     on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
-    tokens_per_row: Mapping[str, int] = {"sonnet": 1_000_000_000}
-    deadline_ceiling_s: float = 999_999.0
-    """Generous like ``tokens_per_row`` above - :class:`LowDeadlineCeilingPolicy` is the
-    one that exercises the clamp; nothing here should trip it by accident."""
+    run_limits: RunLimits = RunLimits(
+        tokens_per_row={"sonnet": 1_000_000_000},
+        deadline_ceiling_s=999_999.0,
+        per_kind_ceiling={},
+        planner_kinds=[],
+        top_role_budget_floor=0.0,
+        max_replans=3,
+        max_nodes_per_run=1000,
+        max_nodes_per_plan=1000,
+        max_plan_depth=5,
+    )
+    """Generous everywhere - :class:`LowCeilingPolicy` and :class:`LowDeadlineCeilingPolicy`
+    are the ones that exercise the run-level cap and the deadline clamp; nothing here should
+    trip either by accident."""
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
@@ -440,7 +452,7 @@ class RetryingPolicy(OneRowPolicy):
 class LowCeilingPolicy(OneRowPolicy):
     """:class:`OneRowPolicy`, but a run ceiling low enough for the budget-cap tests to hit."""
 
-    tokens_per_row: Mapping[str, int] = {"sonnet": 100}
+    run_limits: RunLimits = OneRowPolicy.run_limits.model_copy(update={"tokens_per_row": {"sonnet": 100}})
 
 
 class LowDeadlineCeilingPolicy(OneRowPolicy):
@@ -452,7 +464,7 @@ class LowDeadlineCeilingPolicy(OneRowPolicy):
     reaches :class:`~agentdag.application.kernel.ports.ExecutorRequest`.
     """
 
-    deadline_ceiling_s: float = 30.0
+    run_limits: RunLimits = OneRowPolicy.run_limits.model_copy(update={"deadline_ceiling_s": 30.0})
 
 
 class RecordingExecutor:
@@ -545,6 +557,7 @@ def wire(
         git=GitCli(),
         scanner=scanner,
         policy=OneRowPolicy() if policy is None else policy,
+        registry=build_op_registry(),
         sandbox=NoSandbox(),
         parallel=2,
     )

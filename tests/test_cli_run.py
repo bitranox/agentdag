@@ -40,6 +40,7 @@ from agentdag.application.kernel.approve import DEADLINE_REASON, SYSTEM_IDENTITY
 from agentdag.application.kernel.cancel import scope_unit
 from agentdag.application.kernel.ports import KernelWiring, LaunchResult, ScopeHandle
 from agentdag.composition import AppServices, build_production
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.keys import hash8
 from agentdag.domain.models import ErrorType, NodeError, NodeStatus, ResultRecord, RetryGrant
@@ -154,6 +155,7 @@ def services_with(
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path()),
+        registry=build_op_registry(),
         scope=scope if scope is not None else NoScope(),
         sandbox=NoSandbox(),
         notifier=notifier if notifier is not None else NoNotifier(),
