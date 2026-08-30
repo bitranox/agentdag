@@ -171,10 +171,11 @@ def run_plan(
     executor: ReplanningExecutor,
     planner: NodeSpec | None,
     run_limits: RunLimits | None = None,
+    gate_port: RedGate | None = None,
 ) -> Executed:
     """Execute ``plan`` against a real coordinator, re-planning through ``planner``."""
     run_dir = fresh_run_dir(tmp_path)
-    coordinator = wire(run_dir, executor, FakeScanner(), gate_port=RedGate())  # type: ignore[arg-type]
+    coordinator = wire(run_dir, executor, FakeScanner(), gate_port=gate_port or RedGate())  # type: ignore[arg-type]
     ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
     return asyncio.run(
         execute_plan(
@@ -366,22 +367,54 @@ class SlowThenGateExecutor(ReplanningExecutor):
     instantly there is nothing for the barrier to wait for and the arm would pass vacuously.
     """
 
-    def __init__(self, *, slow: str, seconds: float, plans: Sequence[str] | None = None) -> None:
-        """Record enter/exit per dispatch, delaying ``slow`` by ``seconds``."""
+    def __init__(
+        self, *, slow: str, seconds: float, plans: Sequence[str] | None = None, released: asyncio.Event | None = None
+    ) -> None:
+        """Record enter/exit per dispatch, delaying ``slow`` by ``seconds``.
+
+        ``released``, when given, is waited on BEFORE the delay starts, so the delay is
+        measured from a point in the run rather than from the dispatch. An arm that needs the
+        slow node still in flight at some later moment must not express that as "longer than
+        whatever happens in between": see
+        :func:`test_a_barrier_timeout_fails_the_subtree_rather_than_re_planning`.
+        """
         super().__init__(plans=plans)
         self.events: list[str] = []
         self._slow = slow
         self._seconds = seconds
+        self._released = released
 
     async def run(self, request: ExecutorRequest) -> NodeOutcome:
         """Log entry and exit around the dispatch, sleeping for the slow node."""
         node_id = request.node_dir.parent.name
         self.events.append(f"enter {node_id}")
         if node_id == self._slow:
+            if self._released is not None:
+                await self._released.wait()
             await asyncio.sleep(self._seconds)
         result = await super().run(request)
         self.events.append(f"exit {node_id}")
         return result
+
+
+class ReleasingRedGate(RedGate):
+    """A RED gate that releases the slow node as it answers.
+
+    The seam that makes the barrier-timeout arm deterministic. The gate is a PORT, not an
+    executor dispatch, so nothing the executor does can observe it landing; without this the
+    arm can only say "sleep longer than the gate takes", which is a comparison between two
+    durations and loses on a slow runner.
+    """
+
+    def __init__(self, released: asyncio.Event) -> None:
+        """Answer red, and release ``released`` as the answer is given."""
+        super().__init__()
+        self._released = released
+
+    def run(self, worktree: Path, log: Path) -> int:
+        """Release the slow node, then report a red gate."""
+        self._released.set()
+        return super().run(worktree, log)
 
 
 @pytest.mark.os_agnostic
@@ -423,9 +456,20 @@ def test_a_barrier_timeout_fails_the_subtree_rather_than_re_planning(
     ``BARRIER_SLACK_S`` is patched down because it is 30 seconds of deliberate slack on a
     bound that is already correct - the arm is about what happens when the bound RUNS OUT,
     not about how much room the real one leaves.
+
+    ``slow`` starts its delay when the GATE answers, not when it is dispatched, and that is
+    what makes the arm deterministic rather than a race. Timing it from the dispatch means
+    asserting the delay outlasts the gate's own dispatch, which is a comparison between two
+    durations: measured 2026-08-31, a Windows runner spent longer dispatching the gate than
+    the 0.3 s the delay allowed, so ``slow`` had already landed, nothing was in flight, the
+    barrier was never reached and the arm failed claiming nothing was stuck. Released from
+    the gate, the only thing the delay has to outlast is in-process bookkeeping.
     """
     monkeypatch.setattr(subtree_module, "BARRIER_SLACK_S", 0.01)
-    executor = SlowThenGateExecutor(slow="slow", seconds=0.3, plans=[work_only_plan("fix it", "repair")])
+    released = asyncio.Event()
+    executor = SlowThenGateExecutor(
+        slow="slow", seconds=0.2, plans=[work_only_plan("fix it", "repair")], released=released
+    )
     plan = plan_with(
         [
             entry(node_id="slow", deadline_s=0.01),
@@ -433,7 +477,13 @@ def test_a_barrier_timeout_fails_the_subtree_rather_than_re_planning(
         ]
     )
 
-    out = run_plan(tmp_path, plan, executor=executor, planner=spec_of("replanner", op="plan"))
+    out = run_plan(
+        tmp_path,
+        plan,
+        executor=executor,
+        planner=spec_of("replanner", op="plan"),
+        gate_port=ReleasingRedGate(released),
+    )
 
     assert out.stuck == frozenset({"slow"})
     assert executor.planner_dispatches == 0  # the original only; no re-plan over a running node
