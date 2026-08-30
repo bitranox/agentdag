@@ -791,6 +791,28 @@ def test_a_re_planned_subtree_journals_one_accepted_line_per_plan_it_ran(tmp_pat
 
 
 @pytest.mark.os_agnostic
+def test_a_re_planned_subtree_s_verdict_is_keyed_to_the_plan_that_actually_ran(tmp_path: Path) -> None:
+    """The claim ``_journal_subtree_done`` makes in prose, asserted: the LAST dispatch, not the first.
+
+    A subtree that re-planned ran the plan its SECOND planner dispatch produced; the first
+    plan was abandoned mid-flight. Keying the verdict to that abandoned dispatch would tie
+    "this subtree finished" to a plan whose entries never completed, and every arm here
+    passed with the key frozen at the first plan - which is what the rejected alternative
+    (carrying the key down from where the plan was accepted) would have shipped.
+    """
+    executor = ReplanningExecutor(plans=[always_refuting_plan("broken", "g2"), work_only_plan("fixed", "w")])
+
+    run_plan(tmp_path, one_plan_entry_parent(), executor=executor, planner=None)
+
+    accepted = lines_of(tmp_path, PlanAcceptedLine)
+    done_lines = lines_of(tmp_path, SubtreeDoneLine)
+    assert len(accepted) == 2  # the arm is void if nothing was re-planned
+    assert [(line.node_id, line.done) for line in done_lines] == [("p", True)]
+    assert done_lines[0].key == accepted[1].key
+    assert done_lines[0].key != accepted[0].key
+
+
+@pytest.mark.os_agnostic
 def test_a_settled_subtree_journals_its_own_done_verdict(tmp_path: Path) -> None:
     """Task 35 step 5. One line per subtree that reached a verdict, carrying the plan's own."""
     executor = ReplanningExecutor(plans=[work_only_plan("inner", "w")])
