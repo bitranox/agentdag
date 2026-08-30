@@ -3,9 +3,9 @@
 Three of the four are enforced, each somewhere different, and each covered where it binds:
 ``max_nodes_per_plan`` by ``validate_plan``'s size rule (``test_kernel_plan_validate.py``),
 ``max_nodes_per_run`` and ``max_plan_depth`` by the execute loop (``test_kernel_execute.py``).
-``max_replans`` is the one still parsed and NOT enforced - the re-dispatch path that would
-count against it is not built - so what this file proves for it is only that it round-trips
-through the domain model and the shipped table.
+``max_replans`` is enforced by the execute loop's re-plan allowance (Task 35), covered in
+``test_kernel_replan.py``; what this file proves for it is that it round-trips through the
+domain model and the shipped table.
 """
 
 from __future__ import annotations

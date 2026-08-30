@@ -151,8 +151,8 @@ class RunLimits(BaseModel):
     :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s size rule, which refuses
     a single plan carrying more entries than this (Task 30); ``max_nodes_per_run`` and
     ``max_plan_depth`` by :func:`~agentdag.application.kernel.execute.execute_plan` (Task 33).
-    ``max_replans`` is the one still PARSED AND NOT ENFORCED - the re-dispatch path that would
-    count against it does not exist yet, so do not cite it as a live bound.
+    ``max_replans`` is enforced by the same loop (Task 35): a plan whose condition refutes is
+    re-planned until this many re-dispatches have been spent, and then the subtree stops.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -163,9 +163,13 @@ class RunLimits(BaseModel):
     planner_kinds: list[Kind]
     top_role_budget_floor: float
     max_replans: int
-    """How many times a run's own top-level plan may be re-planned before it gives up.
+    """How many times ONE plan may be re-planned before its subtree gives up.
 
-    Parsed, not yet enforced: the re-dispatch path that would count against it is not built.
+    Per PLAN, not per run: a sub-plan gets its own allowance, because a nested subtree that
+    could not be planned is a different question from a run that keeps re-planning at the top.
+    Enforced by :func:`~agentdag.application.kernel.execute.execute_plan`, which raises
+    ``ReplanLimitExceededError`` on exhaustion; a sub-plan's exhaustion is reported to its
+    parent rather than raised through it.
     """
     max_nodes_per_run: int
     """How many nodes a whole run may dispatch, across every plan it accepts.
