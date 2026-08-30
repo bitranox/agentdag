@@ -637,3 +637,31 @@ def test_a_parent_premise_notifies_the_subtrees_below_it(tmp_path: Path) -> None
     run_plan(tmp_path, parent, executor=executor, planner=None)
 
     assert executor.notified >= {"do lw", "do rw"}
+
+
+@pytest.mark.os_agnostic
+def test_a_refuted_entry_acceptance_reaches_a_sibling_entry_s_whole_subtree(tmp_path: Path) -> None:
+    """DECIDED with the user 2026-08-30: "subtree" in design section 4 means the PLAN.
+
+    A gate entry's own acceptance refutes while a sibling ``plan`` entry's subtree is still
+    working, and the notice reaches down into it. That is deliberate and is the conservative
+    direction: stopping never cancels, so a node notified unnecessarily still finishes, and
+    the cost is a hand-over nobody needed rather than work lost. The alternative - only a
+    plan's ``holds_while`` propagating into nested subtrees - would let a re-plan start while
+    a nested subtree was still writing, which is close to the race the barrier exists for.
+
+    The neighbouring sibling arm is NOT in tension with this: there the refutation happens
+    inside a CHILD scope and so cannot climb, which is what "a sibling is affected only
+    through a premise its PARENT declared" actually constrains.
+    """
+    executor = SubtreeNoticeExecutor(plans=[work_only_plan("under", "uw", "do uw")])
+    parent = plan_with(
+        [
+            entry(node_id="g", op="gate:make-test", acceptance=rc_is_zero()),
+            entry(node_id="below", op="plan", args={"goal": "nested work"}),
+        ]
+    )
+
+    run_plan(tmp_path, parent, executor=executor, planner=None)
+
+    assert "do uw" in executor.notified
