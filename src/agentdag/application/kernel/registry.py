@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
     from ...domain.plan import Entry
     from .context import Coordinator
+    from .subtree import StopScope
 
 __all__ = ["Body", "OpRegistry", "OpSpec", "PlanContext", "UnregisteredOpError"]
 
@@ -66,6 +67,17 @@ class PlanContext:
 
     co: Coordinator
     cwd: Path
+
+    stopping: StopScope | None = None
+    """The scope of the PLAN whose entries these bodies belong to, or None outside one.
+
+    Per PLAN, not per run: the execute loop builds a context carrying the scope of the pass
+    it is running, so a body closed over this one asks about ITS subtree. A run-wide scope
+    would let one plan's refutation notify a sibling's nodes, which is the "re-plan wrong
+    rather than late" direction the design rejects.
+
+    An op body turns it into the per-node predicate ``Coordinator.work`` takes, so the
+    executor is handed a plain callable and never learns this type exists."""
 
 
 Body = Callable[[], Awaitable[ResultRecord | Decision]]

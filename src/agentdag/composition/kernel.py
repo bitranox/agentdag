@@ -20,6 +20,7 @@ from __future__ import annotations
 import shutil
 import subprocess  # nosec B404 - probing the user systemd manager IS this module's job
 import sys
+from functools import partial
 from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -43,7 +44,7 @@ from ..domain.kernel_errors import KernelError
 from ..domain.models import ApproveOption, ApprovePayload, NodeOutcome, NodeStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from ..adapters.kernel.executor_claude import CredentialSource
@@ -320,12 +321,29 @@ def _parse_args(model: type[_ArgsT], entry: Entry) -> _ArgsT:
 
 
 def _build_work(entry: Entry, ctx: PlanContext) -> Body:
-    """Build ``work``'s body: dispatch ``entry`` through :meth:`Coordinator.work`."""
+    """Build ``work``'s body: dispatch ``entry`` through :meth:`Coordinator.work`.
+
+    The stop predicate is bound to THIS entry's node id here, so the executor is handed a
+    plain zero-argument callable and never learns what a ``StopScope`` is. ``None`` when the
+    context carries no scope, which is a dispatch belonging to no plan.
+    """
 
     async def body() -> ResultRecord:
-        return await ctx.co.work(entry.spec, brief=entry.brief, cwd=ctx.cwd)
+        return await ctx.co.work(entry.spec, brief=entry.brief, cwd=ctx.cwd, is_stopping=_stop_predicate(entry, ctx))
 
     return body
+
+
+def _stop_predicate(entry: Entry, ctx: PlanContext) -> Callable[[], bool] | None:
+    """Bind this entry's node id into the scope's predicate, or None outside a plan.
+
+    A ``partial`` rather than a lambda: the executor's parameter is a plain
+    ``Callable[[], bool]``, and a bound method with its argument already applied says what
+    this is - the scope's own answer about one node - where a lambda would only say that
+    something returns a bool.
+    """
+    scope = ctx.stopping
+    return None if scope is None else partial(scope.is_stopping, entry.spec.node_id)
 
 
 def _build_gate_make_test(entry: Entry, ctx: PlanContext) -> Body:

@@ -761,6 +761,105 @@
         "at"
       ],
       "additionalProperties": false
+    },
+    "plan_accepted_line": {
+      "type": "object",
+      "description": "A planner's plan passed the validator and its subtree is about to run it (design 4). Emitted for the root plan, for every sub-plan, and for a RE-PLAN as much as a first plan, so the count of these lines for one node_id is how many times that subtree was planned. node_id is the plan ENTRY (the planner node), never an entry of the accepted plan - those get their ids allocated by the coordinator and appear in their own started/result lines.",
+      "properties": {
+        "event": {
+          "const": "plan_accepted"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "node_id",
+        "entries",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "plan_invalidated_line": {
+      "type": "object",
+      "description": "A planner ran and the validator refused what it wrote (design 4). Without this line a refused sub-plan shows only as a planner record and a subtree that never ran, with nothing saying the PLAN was rejected rather than the planner having failed. reasons carries the validator's own reasons verbatim, every one of them: the next planner is briefed with them, and one told about the first of four mistakes fixes one and is refused again.",
+      "properties": {
+        "event": {
+          "const": "plan_invalidated"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "node_id",
+        "reasons",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "subtree_done_line": {
+      "type": "object",
+      "description": "One plan's subtree reached terminal, and whether its done_when settled TRUE. done is the plan's own verdict, not 'every node succeeded': a subtree whose entries all landed but whose done_when stayed undecided is NOT done, because a completion condition that cannot be settled has not been met.",
+      "properties": {
+        "event": {
+          "const": "subtree_done"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "at": {
+          "$ref": "#/$defs/scheduler_timestamp"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "node_id",
+        "done",
+        "at"
+      ],
+      "additionalProperties": false
     }
   },
   "oneOf": [
@@ -811,6 +910,15 @@
     },
     {
       "$ref": "#/$defs/resource_probe_line"
+    },
+    {
+      "$ref": "#/$defs/plan_accepted_line"
+    },
+    {
+      "$ref": "#/$defs/plan_invalidated_line"
+    },
+    {
+      "$ref": "#/$defs/subtree_done_line"
     }
   ],
   "examples": [
@@ -1000,6 +1108,29 @@
       "by": "rnowotny1966@gmail.com",
       "token_id": "tok_9f2c",
       "at": "2026-08-17T10:09:31+00:00"
+    },
+    {
+      "event": "plan_accepted",
+      "key": "v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "node_id": "build_it",
+      "entries": 3,
+      "at": "2026-08-17T10:11:02+00:00"
+    },
+    {
+      "event": "plan_invalidated",
+      "key": "v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "node_id": "build_it",
+      "reasons": [
+        "entry 'x' names unregistered op 'teleport'"
+      ],
+      "at": "2026-08-17T10:11:44+00:00"
+    },
+    {
+      "event": "subtree_done",
+      "key": "v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "node_id": "build_it",
+      "done": true,
+      "at": "2026-08-17T10:19:07+00:00"
     }
   ]
 }

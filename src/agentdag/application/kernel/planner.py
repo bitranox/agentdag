@@ -100,6 +100,7 @@ async def dispatch_planner(
     graph: Mapping[str, NodeSpec],
     is_root: bool,
     allocate_id: Callable[[], str],
+    is_stopping: Callable[[], bool] | None = None,
 ) -> Planned | NotPlanned:
     """Dispatch one planner node and turn what it wrote into a validated :class:`Plan`.
 
@@ -114,12 +115,16 @@ async def dispatch_planner(
         is_root: Whether this is the run's own top-level plan (decision 4's rule is a ROOT
             rule, so it is the validator's business, not this function's).
         allocate_id: Hands out the node ids the accepted plan's entries carry.
+        is_stopping: Whether this planner's own subtree has asked it to hand over, forwarded
+            to the executor's turn seam. ``None`` outside a subtree that can stop.
 
     Returns:
         :class:`Planned` when the plan validated, else :class:`NotPlanned` with reasons.
     """
     prompt = PLANNER_PROMPT.format(schema=_schema_text(), ops=_ops_text(registry))
-    record = await ctx.co.plan_node(spec, brief=_brief(goal, evidence), cwd=ctx.cwd, prompt=prompt)
+    record = await ctx.co.plan_node(
+        spec, brief=_brief(goal, evidence), cwd=ctx.cwd, prompt=prompt, is_stopping=is_stopping
+    )
     rel = next((ref for ref in record.artefact_refs if ref.endswith(PLAN_FILENAME)), None)
     if rel is None:
         return NotPlanned(reasons=(f"the planner node wrote no {PLAN_FILENAME}",), record=record)

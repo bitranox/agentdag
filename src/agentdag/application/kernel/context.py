@@ -215,7 +215,15 @@ class Coordinator:
         """
         return self._map_semaphore
 
-    async def work(self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str = DEFAULT_PROMPT) -> ResultRecord:
+    async def work(
+        self,
+        spec: NodeSpec,
+        *,
+        brief: str,
+        cwd: Path,
+        prompt: str = DEFAULT_PROMPT,
+        is_stopping: Callable[[], bool] | None = None,
+    ) -> ResultRecord:
         """Dispatch one work node: an executor, running ``brief`` against ``cwd``.
 
         The policy resolves the spec to a model row before the key is computed, and the
@@ -265,6 +273,10 @@ class Coordinator:
                 path relative to the run root, so a run directory that moves is still
                 the same call.
             prompt: What the executor is told to do with the brief.
+            is_stopping: Whether this node's SUBTREE has asked it to hand over, read at the
+                executor's turn seam (``ExecutorRequest.is_stopping``). ``None`` for a
+                dispatch belonging to no subtree. A predicate rather than a bool because the
+                subtree decides while the node is already running.
 
         Returns:
             The node's result record, with this node's charged tokens already added to
@@ -277,10 +289,20 @@ class Coordinator:
                 (fixing it changes ``cwd``, hence the call's own identity, so nothing
                 a bare resume could ever re-serve usefully).
         """
-        dispatched, input_obj, body = self._executor_call(spec, brief=brief, cwd=cwd, prompt=prompt)
+        dispatched, input_obj, body = self._executor_call(
+            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping
+        )
         return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
 
-    async def plan_node(self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str = DEFAULT_PROMPT) -> ResultRecord:
+    async def plan_node(
+        self,
+        spec: NodeSpec,
+        *,
+        brief: str,
+        cwd: Path,
+        prompt: str = DEFAULT_PROMPT,
+        is_stopping: Callable[[], bool] | None = None,
+    ) -> ResultRecord:
         """Dispatch a planner node and surface the ``plan.json`` it wrote, if it wrote one.
 
         Identical to :meth:`work` in every respect except one: after the executor returns,
@@ -302,11 +324,15 @@ class Coordinator:
             brief: The goal and evidence, as the node's brief.
             cwd: The working directory the planner runs in.
             prompt: What the executor is told to do with the brief.
+            is_stopping: As :meth:`work`. A planner node is as stoppable as any other: its
+                subtree can be abandoned while it is still writing a plan nobody will run.
 
         Returns:
             The planner node's record, carrying the plan's path when there is one.
         """
-        dispatched, input_obj, body = self._executor_call(spec, brief=brief, cwd=cwd, prompt=prompt)
+        dispatched, input_obj, body = self._executor_call(
+            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping
+        )
         return await self._dispatch(
             dispatched, brief=brief, input_obj=input_obj, body=self._also_surfacing_the_plan(body)
         )
@@ -329,7 +355,7 @@ class Coordinator:
         return surfacing
 
     def _executor_call(
-        self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str
+        self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str, is_stopping: Callable[[], bool] | None = None
     ) -> tuple[NodeSpec, dict[str, Any], Body]:
         """Resolve the row and build the dispatched spec, the input object and the body.
 
@@ -403,6 +429,7 @@ class Coordinator:
                 token_cap=node_cap,
                 deadline_s=node_deadline_s,
                 handover_at_tokens=row.handover_at_tokens,
+                is_stopping=is_stopping,
             )
             return self._suspended_if_the_provider_refused(spec, await executor.run(request))
 

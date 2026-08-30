@@ -245,6 +245,9 @@ def run_plan(
             depth=depth,
             spent=spent or NodeBudget(),
             ids=ids or NodeIds(),
+            # Hand-built plans: no planner node produced them, so there is none to
+            # re-dispatch. Task 35's re-plan arms live in test_kernel_replan.py.
+            planner=None,
         )
     )
 
@@ -299,8 +302,8 @@ def test_a_refuted_acceptance_stops_the_subtree_and_names_what_fired(tmp_path: P
     plan = plan_with([entry(node_id="g", op="gate:make-test", acceptance=acceptance)])
     out = run_plan(tmp_path, plan, gate_port=RedGate())
     assert out.done is False
-    assert out.fired == acceptance
-    assert out.fired_on == "g"
+    assert out.cause is not None and out.cause.condition == acceptance
+    assert out.cause is not None and out.cause.node_id == "g"
 
 
 @pytest.mark.os_agnostic
@@ -316,7 +319,7 @@ def test_a_refuted_acceptance_stops_entries_that_had_not_started(tmp_path: Path)
         [entry(node_id="g", op="gate:make-test", acceptance=acceptance), entry(node_id="later", deps=["g"])]
     )
     out = run_plan(tmp_path, plan, executor=executor, gate_port=RedGate())
-    assert out.fired_on == "g"
+    assert out.cause is not None and out.cause.node_id == "g"
     assert executor.entered == []
     assert "later" not in out.records
 
@@ -330,8 +333,8 @@ def test_a_refuted_holds_while_stops_the_subtree_even_when_the_entry_passed(tmp_
     """
     plan = plan_with([entry(node_id="n0")], holds_while=ALWAYS_FALSE)
     out = run_plan(tmp_path, plan)
-    assert out.fired == ALWAYS_FALSE
-    assert out.fired_on == "n0"
+    assert out.cause is not None and out.cause.condition == ALWAYS_FALSE
+    assert out.cause is not None and out.cause.node_id == "n0"
     assert out.records["n0"].status is NodeStatus.DONE
 
 
@@ -343,8 +346,7 @@ def test_a_node_merely_finishing_is_not_a_trigger(tmp_path: Path) -> None:
     None - otherwise every completion re-plans.
     """
     out = run_plan(tmp_path, plan_with([entry(node_id="n0")]))
-    assert out.fired is None
-    assert out.fired_on is None
+    assert out.cause is None
     assert out.done is True
 
 
@@ -357,7 +359,7 @@ def test_an_undecided_condition_is_not_a_refutation(tmp_path: Path) -> None:
     """
     absent = Compare(ref=FieldRef(entry="nobody", field="rc"), op="==", value=0)
     out = run_plan(tmp_path, plan_with([entry(node_id="n0", acceptance=absent)]))
-    assert out.fired is None
+    assert out.cause is None
 
 
 @pytest.mark.os_agnostic
@@ -599,7 +601,16 @@ def test_a_ready_entry_starts_while_a_slower_peer_is_still_running(tmp_path: Pat
         coordinator = wire(run_dir, executor, FakeScanner())
         ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
         task = asyncio.ensure_future(
-            execute_plan(plan, ctx=ctx, registry=REG, limits=limits(), depth=0, spent=NodeBudget(), ids=NodeIds())
+            execute_plan(
+                plan,
+                ctx=ctx,
+                registry=REG,
+                limits=limits(),
+                depth=0,
+                spent=NodeBudget(),
+                ids=NodeIds(),
+                planner=None,
+            )
         )
         await _spin_until(lambda: "b" in executor.started, "b was never dispatched")
         executor.gate("b").set()  # release ONLY b; a stays in flight
@@ -650,7 +661,7 @@ def test_a_refused_sub_plan_carries_its_reasons_out_and_is_not_done(tmp_path: Pa
         executor=RefusingPlannerExecutor(),
     )
     assert out.done is False
-    assert out.fired is None
+    assert out.cause is None
     assert len(out.refused) == 1
     assert out.refused[0].node_id == "p"
     assert any("teleport" in reason for reason in out.refused[0].reasons)
