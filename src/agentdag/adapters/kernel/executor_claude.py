@@ -278,13 +278,25 @@ def _base_env(node_dir: Path) -> tuple[dict[str, str], Path]:
     """Build the allowlisted env every :class:`CredentialSource` starts from.
 
     Returns:
-        The env (allowlist plus ``HOME``/``CLAUDE_CONFIG_DIR``) and the config dir path,
-        so a caller can write its own credential material into it.
+        The env (allowlist plus ``HOME``/``CLAUDE_CONFIG_DIR``/``REMEMBER_PROMPT_STAMP``)
+        and the config dir path, so a caller can write its own credential material into it.
     """
     home, config_dir = _home_and_config_dir(node_dir)
     env = _allowlisted_env()
     env["HOME"] = str(home)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    # An EXPLICIT positive value, not a name to allowlist through from the coordinator's
+    # own environment (which does not set this) and not a config-file setting (the
+    # operator's `remember` plugin hook reads this ENV VAR directly, before its config
+    # resolution runs). Must be non-empty too: the hook's own
+    # `${REMEMBER_PROMPT_STAMP:-full}` substitutes its default on unset OR EMPTY, and
+    # _blank_everything_else() below would otherwise blank this name to "" like every
+    # other inherited variable this dispatch does not carry - indistinguishable, to the
+    # hook, from never having been set. The default `full` stamp carries a wall clock and
+    # a live context percentage, both of which change on every dispatch and defeat
+    # prompt-cache reuse for everything the stamp precedes; `stable` is byte-stable but
+    # keeps the one signal that matters, a threshold-gated context warning.
+    env["REMEMBER_PROMPT_STAMP"] = "stable"
     return env, config_dir
 
 
