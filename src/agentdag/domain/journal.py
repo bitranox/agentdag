@@ -40,8 +40,7 @@ __all__ = [
 
 _AT = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$")
 """ISO-8601 UTC timestamp with an explicit ``+00:00`` offset, produced by the scheduler
-(design 3.3, O19) - never a trailing ``Z``, which datetime.fromisoformat rejects before
-Python 3.11 and which hides a local-time producer."""
+(design 3.3, O19) - never a trailing ``Z``, which hides a local-time producer."""
 
 
 class _Line(BaseModel):

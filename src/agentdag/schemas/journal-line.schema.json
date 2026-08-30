@@ -7,7 +7,7 @@
     "scheduler_timestamp": {
       "type": "string",
       "format": "date-time",
-      "description": "ISO-8601 UTC timestamp with an explicit +00:00 offset, produced by the scheduler and never by coordinator code calling the clock (3.3). A trailing 'Z' is not used: it is rejected by datetime.fromisoformat before Python 3.11 and hides a local-time producer.",
+      "description": "ISO-8601 UTC timestamp with an explicit +00:00 offset, produced by the scheduler and never by coordinator code calling the clock (3.3). A trailing 'Z' is not used: it hides a local-time producer.",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\+00:00$"
     },
     "started_line": {
