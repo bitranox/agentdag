@@ -28,12 +28,15 @@ __all__ = [
     "CancelLine",
     "CancelRequestedLine",
     "JournalLine",
+    "PlanAcceptedLine",
+    "PlanInvalidatedLine",
     "ResultLine",
     "ResumeLine",
     "RetryGrantLine",
     "RunStartedLine",
     "RunSummaryLine",
     "StartedLine",
+    "SubtreeDoneLine",
     "dump_journal_line",
     "parse_journal_line",
 ]
@@ -214,6 +217,63 @@ class RunSummaryLine(_Line):
     retry, a crash-window redispatch) is the ordinary shape and is NOT reported."""
 
 
+class PlanAcceptedLine(_Line):
+    """A planner's plan passed the validator and this subtree is about to run it (design 4).
+
+    Emitted for the ROOT plan and for every sub-plan, and for a RE-PLAN as much as a first
+    plan, so the journal shows how many times a subtree was planned and with how many
+    entries each time. That count is the cheap signal that a re-plan loop is churning: three
+    accepted plans for one node id is a subtree that has been re-planned twice.
+    """
+
+    event: Literal["plan_accepted"] = "plan_accepted"
+    key: str
+    node_id: str
+    """The ``plan`` ENTRY's node id - the planner node that produced it, not an entry of the
+    accepted plan. A plan's own entries get their ids allocated by the coordinator and appear
+    in their own ``started``/``result`` lines."""
+
+    entries: int
+    """How many entries the accepted plan carries."""
+
+
+class PlanInvalidatedLine(_Line):
+    """A planner ran and the validator refused what it wrote (design 4).
+
+    The counterpart of :class:`PlanAcceptedLine`, and the one that makes a refusal readable
+    after the fact: without it a refused sub-plan shows only as a planner node's record and a
+    subtree that never ran, with nothing saying the plan was rejected rather than the planner
+    having failed.
+    """
+
+    event: Literal["plan_invalidated"] = "plan_invalidated"
+    key: str
+    node_id: str
+    reasons: tuple[str, ...]
+    """The validator's reasons VERBATIM, every one of them, never flattened into a summary.
+
+    The next planner is briefed with these, and a planner told about the first of four
+    mistakes fixes one and is refused again - the same rule
+    :class:`~agentdag.application.kernel.planner.NotPlanned` follows for the same reason."""
+
+
+class SubtreeDoneLine(_Line):
+    """One plan's subtree reached terminal, and whether its ``done_when`` settled TRUE.
+
+    ``done`` is the plan's OWN verdict, not "every node succeeded": a subtree whose entries
+    all landed but whose ``done_when`` stayed undecided is NOT done, because a completion
+    condition that cannot be settled has not been met (the same three-valued rule
+    :func:`~agentdag.domain.condition.evaluate` applies everywhere else).
+    """
+
+    event: Literal["subtree_done"] = "subtree_done"
+    key: str
+    node_id: str
+    """The ``plan`` entry whose subtree this was, or the ROOT plan's own planner node."""
+
+    done: bool
+
+
 JournalLine = Annotated[
     StartedLine
     | ResultLine
@@ -223,7 +283,10 @@ JournalLine = Annotated[
     | CancelRequestedLine
     | CancelLine
     | RetryGrantLine
-    | RunSummaryLine,
+    | RunSummaryLine
+    | PlanAcceptedLine
+    | PlanInvalidatedLine
+    | SubtreeDoneLine,
     Field(discriminator="event"),
 ]
 """The discriminated union of every journal line slice 1 and M3 emit, keyed on ``event``."""

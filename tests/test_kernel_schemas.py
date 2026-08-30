@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+from typing import get_args
 
 import pytest
 from schema_helpers import load, validator
 
-from agentdag.domain.journal import dump_journal_line, parse_journal_line
+from agentdag.domain.journal import (
+    JournalLine,
+    PlanAcceptedLine,
+    PlanInvalidatedLine,
+    SubtreeDoneLine,
+    dump_journal_line,
+    parse_journal_line,
+)
 from agentdag.domain.models import ApprovePayload, ErrorType, NodeSpec, ResultRecord
 
 
@@ -92,3 +100,40 @@ def test_the_result_record_schemas_error_enum_is_exactly_the_domain_error_vocabu
     """
     schema = load("result-record")
     assert set(schema["properties"]["error"]["properties"]["type"]["enum"]) == {member.value for member in ErrorType}
+
+
+def test_the_three_replan_lines_default_dump_validates_against_the_schema() -> None:
+    """Task 35 step 5. Dumped with NO arguments, which is the path production takes.
+
+    The neighbouring round-trip test proves each line parses back to its own type, which a
+    line whose wire shape the SCHEMA rejects would also pass. This is the other half, and it
+    is the half this repo has already been caught by: a field whose default dump the schema
+    refused, while one test passed ``by_alias=True`` and the other never reached the branch.
+    """
+    v = validator("journal-line")
+    key = "v2:sha256:" + "0" * 64
+    at = "2026-08-17T09:12:03+00:00"
+    lines = (
+        PlanAcceptedLine(key=key, node_id="p", entries=3, at=at),
+        PlanInvalidatedLine(key=key, node_id="p", reasons=("g.rc == 1",), at=at),
+        SubtreeDoneLine(key=key, node_id="p", done=True, at=at),
+    )
+
+    for line in lines:
+        v.validate(json.loads(line.model_dump_json()))
+
+
+def test_the_journal_line_schema_covers_every_line_type_the_union_admits() -> None:
+    """A model added to the union without a schema def would only fail on a REAL run.
+
+    ``test_kernel_run.py`` validates a real run's journal against this schema, so the gap
+    surfaces there - but only once something actually emits the new line, which can be many
+    commits after the model lands. This closes it at the type level instead.
+    """
+    # get_args(JournalLine) is (the union, the discriminator FieldInfo); get_args of that
+    # union is the member models. Each member's `event` is a Literal with that string as its
+    # default, which is the value the discriminator and the schema's `const` both key on.
+    events = {model.model_fields["event"].default for model in get_args(get_args(JournalLine)[0])}
+    consts = {d["properties"]["event"]["const"] for d in load("journal-line")["$defs"].values() if "properties" in d}
+
+    assert events <= consts, f"union events with no schema def: {sorted(events - consts)}"

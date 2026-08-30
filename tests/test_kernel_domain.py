@@ -6,7 +6,16 @@ import json
 
 import pytest
 
-from agentdag.domain.journal import ApproveDecisionLine, ResultLine, StartedLine, dump_journal_line, parse_journal_line
+from agentdag.domain.journal import (
+    ApproveDecisionLine,
+    PlanAcceptedLine,
+    PlanInvalidatedLine,
+    ResultLine,
+    StartedLine,
+    SubtreeDoneLine,
+    dump_journal_line,
+    parse_journal_line,
+)
 from agentdag.domain.kernel_errors import Suspended
 from agentdag.domain.keys import canonical_json, content_hash, hash8, journal_key, prefix_hash, record_hash
 from agentdag.domain.models import (
@@ -196,3 +205,44 @@ def test_approve_decision_line_requires_a_payload_hash() -> None:
         ApproveDecisionLine.model_validate(
             {"node_id": "a", "decision": "hold", "reason": "", "by": "me", "token_id": "local", "at": at}
         )
+
+
+def test_the_three_replan_lines_parse_back_to_their_own_types() -> None:
+    """Task 35 step 5. Each new line must survive its own DEFAULT dump.
+
+    Dumped with NO arguments, because that is what production does: this repo has already
+    shipped a field whose default dump its own schema rejected, caught only because one test
+    passed ``by_alias=True`` and the other's data never reached the branch.
+    """
+    key = "v2:sha256:" + "0" * 64
+    at = "2026-08-17T09:12:03+00:00"
+    lines = (
+        PlanAcceptedLine(key=key, node_id="p", entries=3, at=at),
+        PlanInvalidatedLine(key=key, node_id="p", reasons=("g.rc == 1",), at=at),
+        SubtreeDoneLine(key=key, node_id="p", done=True, at=at),
+    )
+
+    for line in lines:
+        text = line.model_dump_json()
+        assert "\n" not in text
+        assert parse_journal_line(text) == line
+
+
+def test_an_invalidated_plan_keeps_every_reason_rather_than_one_summary() -> None:
+    """The next planner is briefed with these, so a flattened summary cannot be acted on.
+
+    The same rule ``NotPlanned.reasons`` and ``SubPlanRefused.reasons`` already follow: a
+    planner told about the first of four mistakes fixes one and is refused again.
+    """
+    line = PlanInvalidatedLine(
+        key="v2:sha256:" + "0" * 64,
+        node_id="p",
+        reasons=("entry 'x' names unregistered op 'teleport'", "done_when references an unknown node"),
+        at="2026-08-17T09:12:03+00:00",
+    )
+
+    parsed = parse_journal_line(line.model_dump_json())
+
+    assert isinstance(parsed, PlanInvalidatedLine)
+    assert len(parsed.reasons) == 2
+    assert "teleport" in parsed.reasons[0]
