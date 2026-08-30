@@ -45,11 +45,11 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from ...domain.condition import evaluate, referenceable_view, referenced_fields
-from ...domain.journal import PlanAcceptedLine, PlanInvalidatedLine, SubtreeDoneLine
+from ...domain.journal import SubtreeDoneLine
 from ...domain.kernel_errors import KernelError
 from ...domain.models import NodeStatus, ResultRecord
 from ...domain.plan import evaluate_holds_while
-from .planner import NotPlanned, Planned, dispatch_planner
+from .planner import Planned, dispatch_planner
 from .ports import stamp
 from .subtree import StopScope, barrier, deadline_bound
 
@@ -442,30 +442,6 @@ def _cause_of(refutation: _Refutation, *, view: Mapping[str, ResultRecord]) -> C
     return Cause(condition=refutation.condition, node_id=refutation.node_id, values=values)
 
 
-def _journal_planned(outcome: Planned | NotPlanned, *, node_id: str, wiring: _Wiring) -> None:
-    """Record what one planner dispatch produced: the plan it got accepted, or the refusal.
-
-    Both branches at ONE site, because the shape worth closing is "a planner ran and nothing
-    said what came of it". A refused sub-plan otherwise appears in the journal as a DONE
-    planner record beside a subtree that never ran, with nothing distinguishing a rejected
-    PLAN from a planner that fell over.
-
-    The key is the planner dispatch's OWN journal key, read off the record it produced -
-    ``ResultRecord.input_hash`` is that key, not one of its ingredients
-    (``result-record.schema.json``) - so the line joins to that node's ``started`` and
-    ``result`` lines instead of standing alone. ``node_id`` is the planner node, never an
-    entry of the accepted plan: those get coordinator-allocated ids and lines of their own.
-    """
-    at = stamp(wiring.ctx.co.clock)
-    if isinstance(outcome, Planned):
-        line: PlanAcceptedLine | PlanInvalidatedLine = PlanAcceptedLine(
-            key=outcome.record.input_hash, node_id=node_id, entries=len(outcome.plan.entries), at=at
-        )
-    else:
-        line = PlanInvalidatedLine(key=outcome.record.input_hash, node_id=node_id, reasons=outcome.reasons, at=at)
-    wiring.ctx.co.dispatcher.journal.append(line)
-
-
 def _journal_subtree_done(planner: NodeSpec | None, *, done: bool, wiring: _Wiring) -> None:
     """Record this subtree's verdict, when a planner dispatch produced the plan it ran.
 
@@ -510,7 +486,6 @@ async def _replan(
             is_root=False,
             allocate_id=wiring.ids.allocate,
         )
-    _journal_planned(planned, node_id=planner.node_id, wiring=wiring)
     return planned.plan if isinstance(planned, Planned) else None
 
 
@@ -816,7 +791,6 @@ async def _run_sub_plan(
             is_root=False,
             allocate_id=wiring.ids.allocate,
         )
-    _journal_planned(planned, node_id=entry.spec.node_id, wiring=wiring)
     if not isinstance(planned, Planned):
         refusal = SubPlanRefused(node_id=entry.spec.node_id, reasons=planned.reasons)
         return _Landed(entry=entry, record=planned.record, subtree={}, refused=(refusal,))

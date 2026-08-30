@@ -28,10 +28,14 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.approve import (
     DEADLINE_REASON,
+    MAX_BODY_LINE_OCTETS,
+    MAX_OPERATOR_TEXT_CHARS,
     SYSTEM_IDENTITY,
     TIMER_TOKEN_ID,
     DeadlineOutcome,
     apply_due_default,
+    render_for_operator,
+    validate_approve_payload,
 )
 from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
@@ -1015,3 +1019,41 @@ def test_scan_does_not_report_the_coordinators_own_inbox_writes_as_a_nodes_stray
 
     assert result.key_facts["stray"] == []
     assert result.status == NodeStatus.DONE
+
+
+@pytest.mark.os_agnostic
+def test_render_for_operator_makes_model_authored_text_askable() -> None:
+    """The rules above REFUSE, and that is right when a workflow author wrote the text.
+
+    An exhaustion payload quotes a validator's reasons, which quote what a MODEL wrote, so a
+    refusal there would take the run down instead of asking the question it exists to ask.
+    Rendering the offending characters as their code points keeps both properties at once:
+    what the decider sees is what is hashed, and the payload can be put in front of them.
+    """
+    hostile = "planner said\x1b[2K stop\u202e reversed\n" + "x" * (MAX_BODY_LINE_OCTETS + 40)
+
+    rendered = render_for_operator(hostile)
+
+    validate_approve_payload(payload(text=rendered))  # raises if any rule still refuses
+    assert "\x1b" not in rendered
+    assert "U+001B" in rendered
+    assert "U+202E" in rendered
+
+
+@pytest.mark.os_agnostic
+def test_render_for_operator_leaves_text_a_person_could_already_read_alone() -> None:
+    """The control. Without it a renderer free to mangle everything passes the arm above,
+    and every payload's text would stop being the text its author wrote."""
+    plain = "the root planner was refused twice:\n  - entry 'x' names unregistered op 'teleport'"
+
+    assert render_for_operator(plain) == plain
+
+
+@pytest.mark.os_agnostic
+def test_render_for_operator_clamps_text_longer_than_a_person_will_read() -> None:
+    """A refused plan carries one reason per entry, so a large plan's reasons outrun the
+    bound on their own - with no hostile input anywhere in sight."""
+    rendered = render_for_operator("reason\n" * MAX_OPERATOR_TEXT_CHARS)
+
+    validate_approve_payload(payload(text=rendered))
+    assert len(rendered) <= MAX_OPERATOR_TEXT_CHARS

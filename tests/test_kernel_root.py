@@ -1,0 +1,382 @@
+"""Task 35 step 4b: the ROOT plan has no parent, so it re-plans and then asks a person.
+
+A nested plan the validator refuses becomes a FAILED record its parent branches on. The root
+has nobody to report to, so it takes the ladder the rest of this project already uses for
+"retry, then ask": re-dispatch the root planner with the validator's reasons, bounded by
+``max_replans``, and on exhaustion SUSPEND into ``approve`` rather than failing - a suspended
+run stays resumable and keeps every record it earned.
+
+Every arm drives :func:`~agentdag.application.kernel.root.run_root` against a REAL coordinator
+over a real run directory, with a fake only at the executor port, the same shape
+``test_kernel_replan.py`` uses. The planner WRITES a plan.json exactly as production's does, so
+the parse and the validator - the two things most likely to reject what a real planner writes -
+are in the loop rather than stubbed past.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import TYPE_CHECKING
+
+import pytest
+from kernel_fakes import FakeScanner, fresh_run_dir, outcome, wire
+
+from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
+from agentdag.application.kernel.execute import NodeBudget, NodeIds
+from agentdag.application.kernel.registry import PlanContext
+from agentdag.application.kernel.root import run_root
+from agentdag.composition.kernel import build_op_registry
+from agentdag.domain.journal import PlanAcceptedLine, PlanInvalidatedLine, RunStartedLine
+from agentdag.domain.kernel_errors import Suspended
+from agentdag.domain.keys import hash8
+from agentdag.domain.models import ApprovePayload, Budget, Decision, Kind, NodeSpec, TierRole
+from agentdag.domain.policy import RunLimits
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from agentdag.adapters.kernel.run_store_fs import FsRunDir
+    from agentdag.application.kernel.execute import Executed
+    from agentdag.application.kernel.ports import ExecutorRequest
+    from agentdag.domain.models import NodeOutcome
+
+REG = build_op_registry()
+
+PLANNER_ID = "p_root"
+APPROVE_ID = "a_root_planning"
+
+
+def limits(*, max_replans: int = 3) -> RunLimits:
+    """Run limits generous everywhere but the one bound an arm names."""
+    return RunLimits(
+        tokens_per_row={"sonnet": 1_000_000_000},
+        deadline_ceiling_s=999_999.0,
+        per_kind_ceiling={},
+        planner_kinds=[],
+        top_role_budget_floor=0.0,
+        max_replans=max_replans,
+        max_nodes_per_run=1000,
+        max_nodes_per_plan=1000,
+        max_plan_depth=5,
+    )
+
+
+def planner_spec() -> NodeSpec:
+    """The root planner the workflow program passes in; ``run_root`` mints nothing."""
+    return NodeSpec(
+        node_id=PLANNER_ID,
+        kind=Kind.PLANNER,
+        tier_role=TierRole.TOP,
+        deadline_s=600,
+        budget=Budget(tokens={"sonnet": 400_000}),
+    )
+
+
+def approve_spec() -> NodeSpec:
+    """The human gate the ladder ends at; its deadline IS the decision window."""
+    return NodeSpec(node_id=APPROVE_ID, kind=Kind.APPROVE, executor="code", deadline_s=3600)
+
+
+def valid_plan(goal: str = "g", node_id: str = "repair") -> str:
+    """One plan a root may run: a single ``work`` entry, whose completion is ``done_when``."""
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": node_id, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {node_id}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                }
+            ],
+            "done_when": {"ref": {"entry": node_id, "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+def unregistered_op_plan(goal: str = "g", op: str = "teleport") -> str:
+    """A plan the validator refuses by ABSENCE: nothing registers ``op``."""
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": "x", "kind": "work", "deadline_s": 60.0},
+                    "op": op,
+                    "args": {},
+                    "brief": "beam it over",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                }
+            ],
+            "done_when": {"ref": {"entry": "x", "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+class RootPlanningExecutor:
+    """Writes one plan per planner dispatch, from a list, and records every brief.
+
+    The last entry repeats, so ``plans=[invalid]`` is a planner that never gets it right.
+    """
+
+    def __init__(self, *, plans: Sequence[str]) -> None:
+        """Start with nothing dispatched; ``plans`` is what each planner dispatch writes."""
+        self.briefs: list[str] = []
+        self.planner_dispatches = 0
+        self._plans = list(plans)
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Write this planner's plan, or just record an ordinary node's dispatch."""
+        if "You are a planner" in request.prompt:
+            self.briefs.append(request.brief)
+            nth = self.planner_dispatches
+            self.planner_dispatches += 1
+            raw = self._plans[nth] if nth < len(self._plans) else self._plans[-1]
+            (request.node_dir / "plan.json").write_text(raw, encoding="utf-8")
+        return outcome({"sonnet": 10})
+
+
+def root_run_dir(tmp_path: Path) -> FsRunDir:
+    """A fresh run directory carrying the ``run_started`` line every real run opens with.
+
+    Not decoration: the exhaustion approve's deadline is measured from that line, so that a
+    relaunch asks the SAME question rather than a new one a second later, and a run directory
+    without it is one ``run_coordinator`` could never produce.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    JsonlJournal(run_dir.journal_path, run_dir.audit_path).append(
+        RunStartedLine(
+            at="2026-08-30T09:00:00+00:00",
+            run_id="r1",
+            workflow="t",
+            args={},
+            by="tester",
+            token_id="local",
+            policy_version="v1",
+        )
+    )
+    return run_dir
+
+
+def drive(
+    run_dir: FsRunDir,
+    executor: RootPlanningExecutor,
+    *,
+    goal: str = "g",
+    run_limits: RunLimits | None = None,
+) -> Executed:
+    """Run the root ladder over ``run_dir``, as a relaunch would over an existing one."""
+    coordinator = wire(run_dir, executor, FakeScanner())  # type: ignore[arg-type]
+    coordinator.fold_decisions()
+    ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
+    return asyncio.run(
+        run_root(
+            goal=goal,
+            planner=planner_spec(),
+            approve=approve_spec(),
+            ctx=ctx,
+            registry=REG,
+            limits=run_limits or limits(),
+            graph={},
+            spent=NodeBudget(),
+            ids=NodeIds(),
+        )
+    )
+
+
+def payload_on_offer(run_dir: FsRunDir, payload_hash: str) -> ApprovePayload:
+    """Read back the payload the suspend just published, where the decider reads it."""
+    path = run_dir.node_dir(APPROVE_ID, hash8(payload_hash)) / "payload.json"
+    return ApprovePayload.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def answer(run_dir: FsRunDir, payload_hash: str, verdict: str) -> None:
+    """Record a human's decision against the exact payload the run suspended on."""
+    run_dir.write_decision(
+        Decision(node_id=APPROVE_ID, decision=verdict, by="tester", token_id="local", payload_hash=payload_hash)
+    )
+
+
+@pytest.mark.os_agnostic
+def test_a_root_plan_the_validator_refuses_is_re_planned_with_the_reasons(tmp_path: Path) -> None:
+    """Step 4b. The root has no parent to report a refusal to, so it re-plans itself.
+
+    Asserted on the REASONS reaching the second brief, not merely on a second dispatch: a
+    planner re-asked for the same goal with no word of what was wrong writes the same plan
+    again, and the bound then buys nothing but spend.
+    """
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan(), valid_plan()])
+
+    out = drive(root_run_dir(tmp_path), executor)
+
+    assert executor.planner_dispatches == 2
+    assert "teleport" in executor.briefs[1]
+    assert out.done is True
+
+
+@pytest.mark.os_agnostic
+def test_a_valid_root_plan_never_reaches_the_approve(tmp_path: Path) -> None:
+    """The control. Without it an implementation that suspends unconditionally passes every
+    arm below, and every run would stop for a human on its first plan."""
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[valid_plan()])
+
+    out = drive(run_dir, executor)
+
+    assert executor.planner_dispatches == 1
+    assert out.done is True
+    assert not list(run_dir.root.glob(f"nodes/{APPROVE_ID}/*/payload.json"))
+
+
+@pytest.mark.os_agnostic
+def test_root_planning_exhaustion_suspends_rather_than_failing(tmp_path: Path) -> None:
+    """Step 4b. Exhaustion asks a person; it does not take the run down.
+
+    ``max_replans=1`` buys one re-dispatch, so exactly two planner dispatches precede the
+    suspend. The suspend carries the payload hash, because a decision is recorded per (node
+    id, payload hash) and nothing else says WHICH question was asked.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1))
+
+    assert info.value.node_id == APPROVE_ID
+    assert info.value.payload_hash is not None
+    assert executor.planner_dispatches == 2
+
+
+@pytest.mark.os_agnostic
+def test_the_exhaustion_payload_offers_abandon_by_default_and_names_the_reasons(tmp_path: Path) -> None:
+    """The decider is asked a question they can answer: what went wrong, and the two ways out.
+
+    ``abandon`` is the DEFAULT because a default is what the deadline owner applies
+    unattended, so it may never be the option that spends (design 2.4).
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1))
+
+    payload = payload_on_offer(run_dir, str(info.value.payload_hash))
+    assert payload.default == "abandon"
+    assert {option.id for option in payload.options} == {"abandon", "replan"}
+    assert next(o for o in payload.options if o.id == "abandon").effect == "none"
+    assert "teleport" in payload.text
+
+
+@pytest.mark.os_agnostic
+def test_the_exhaustion_payload_points_at_the_planner_dispatch_that_failed(tmp_path: Path) -> None:
+    """``artefact_refs`` names the FAILING dispatch's node directory, and that path exists.
+
+    Two jobs at once: the decider gets a pointer to what the planner actually wrote, and the
+    payload carries a field that differs per round, which is what keeps a repeated ask from
+    hashing the same (see the arm below).
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1))
+
+    payload = payload_on_offer(run_dir, str(info.value.payload_hash))
+    assert len(payload.artefact_refs) == 1
+    assert payload.artefact_refs[0].startswith(f"nodes/{PLANNER_ID}/")
+    assert (run_dir.root / payload.artefact_refs[0] / "plan.json").exists()
+
+
+@pytest.mark.os_agnostic
+def test_repeated_exhaustions_never_share_a_payload_hash(tmp_path: Path) -> None:
+    """The arm the whole ladder rests on, and nothing else would catch its loss.
+
+    A decision is FINAL per (node id, payload hash). If a granted round exhausted under a
+    payload that hashed the SAME, the recorded grant would be re-served instead of asked
+    again, and the run would re-plan unattended forever - the exact shape the retry option
+    was added to avoid. So every exhaustion must ask a question of its own, however many
+    rounds a person grants.
+
+    THREE rounds, not two, and the third is the one that does the work. A second round comes
+    out distinct even with the distinguishing mechanism removed, because the approve node's
+    OWN record joins the planner's evidence the first time a decision is served and changes
+    the next brief once, for free. Only from the third does the ladder need the mechanism it
+    is supposed to rely on - measured 2026-08-30, where a two-round arm passed against an
+    implementation that loops.
+    """
+    run_dir = root_run_dir(tmp_path)
+    seen: list[str] = []
+
+    for _ in range(3):
+        with pytest.raises(Suspended) as info:
+            drive(run_dir, RootPlanningExecutor(plans=[unregistered_op_plan()]), run_limits=limits(max_replans=1))
+        seen.append(str(info.value.payload_hash))
+        answer(run_dir, seen[-1], "replan")
+
+    assert len(set(seen)) == 3, "an exhaustion re-asked a question whose answer is already recorded"
+
+
+@pytest.mark.os_agnostic
+def test_an_abandoned_root_reports_the_refusal_instead_of_a_done_subtree(tmp_path: Path) -> None:
+    """``abandon`` is not a failure and not a success: it is a subtree nobody could plan.
+
+    The reasons travel on ``refused`` verbatim, which is where a caller already looks for a
+    plan the validator would not take.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1))
+    answer(run_dir, str(info.value.payload_hash), "abandon")
+
+    out = drive(run_dir, RootPlanningExecutor(plans=[unregistered_op_plan()]), run_limits=limits(max_replans=1))
+
+    assert out.done is False
+    assert [r.node_id for r in out.refused] == [PLANNER_ID]
+    assert any("teleport" in reason for reason in out.refused[0].reasons)
+
+
+@pytest.mark.os_agnostic
+def test_a_granted_round_that_finally_plans_runs_the_plan_it_produced(tmp_path: Path) -> None:
+    """The control for the grant. Without it, ``replan`` could suspend again forever and the
+    arm above would still pass - a retry that can never succeed is not a retry."""
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, RootPlanningExecutor(plans=[unregistered_op_plan()]), run_limits=limits(max_replans=1))
+    answer(run_dir, str(info.value.payload_hash), "replan")
+
+    out = drive(
+        run_dir,
+        RootPlanningExecutor(plans=[valid_plan()]),
+        run_limits=limits(max_replans=1),
+    )
+
+    assert out.done is True
+    assert out.refused == ()
+
+
+@pytest.mark.os_agnostic
+def test_the_root_planner_s_dispatches_are_journaled_like_any_other(tmp_path: Path) -> None:
+    """A plan nobody planned emits no plan lines; the root IS planned, so it emits them.
+
+    One invalidated line per refused plan and one accepted line for the plan that ran, each
+    keyed to the planner dispatch that produced it.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[unregistered_op_plan(), valid_plan()])
+
+    drive(run_dir, executor)
+
+    lines = [json.loads(raw) for raw in run_dir.journal_path.read_text(encoding="utf-8").splitlines()]
+    invalidated = [line for line in lines if line["event"] == PlanInvalidatedLine.model_fields["event"].default]
+    accepted = [line for line in lines if line["event"] == PlanAcceptedLine.model_fields["event"].default]
+    assert [line["node_id"] for line in invalidated] == [PLANNER_ID]
+    assert any("teleport" in reason for reason in invalidated[0]["reasons"])
+    assert [line["node_id"] for line in accepted] == [PLANNER_ID]

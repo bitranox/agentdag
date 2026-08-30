@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from ...domain.journal import PlanAcceptedLine, PlanInvalidatedLine
 from ...domain.plan import PLAN_FILENAME, Plan, plan_json_schema
 from .plan_validate import Accepted, validate_plan
+from .ports import stamp
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -121,6 +123,40 @@ async def dispatch_planner(
     Returns:
         :class:`Planned` when the plan validated, else :class:`NotPlanned` with reasons.
     """
+    outcome = await _plan_or_reasons(
+        spec=spec,
+        goal=goal,
+        evidence=evidence,
+        ctx=ctx,
+        registry=registry,
+        limits=limits,
+        graph=graph,
+        is_root=is_root,
+        allocate_id=allocate_id,
+        is_stopping=is_stopping,
+    )
+    _journal(outcome, node_id=spec.node_id, ctx=ctx)
+    return outcome
+
+
+async def _plan_or_reasons(
+    *,
+    spec: NodeSpec,
+    goal: str,
+    evidence: Mapping[str, ResultRecord],
+    ctx: PlanContext,
+    registry: OpRegistry,
+    limits: RunLimits,
+    graph: Mapping[str, NodeSpec],
+    is_root: bool,
+    allocate_id: Callable[[], str],
+    is_stopping: Callable[[], bool] | None,
+) -> Planned | NotPlanned:
+    """Dispatch the node and turn what it wrote into a plan or into reasons.
+
+    Split from :func:`dispatch_planner` only so the journal line has ONE place to be written
+    from: three early returns cannot each remember to write it.
+    """
     prompt = PLANNER_PROMPT.format(schema=_schema_text(), ops=_ops_text(registry))
     record = await ctx.co.plan_node(
         spec, brief=_brief(goal, evidence), cwd=ctx.cwd, prompt=prompt, is_stopping=is_stopping
@@ -138,6 +174,32 @@ async def dispatch_planner(
     if isinstance(outcome, Accepted):
         return Planned(plan=outcome.plan, record=record)
     return NotPlanned(reasons=outcome.reasons, record=record)
+
+
+def _journal(outcome: Planned | NotPlanned, *, node_id: str, ctx: PlanContext) -> None:
+    """Record what this planner dispatch produced: the plan it got accepted, or the refusal.
+
+    Written HERE rather than by the caller, and both branches at ONE site, because the shape
+    worth closing is "a planner ran and nothing said what came of it": a refused plan
+    otherwise appears in the journal as a DONE planner record beside a subtree that never
+    ran, with nothing distinguishing a rejected PLAN from a planner that fell over. Three
+    call sites each remembering to write it is three chances to forget, and forgetting is
+    silent - the run still works, the journal just stops explaining itself.
+
+    The key is the planner dispatch's OWN journal key, read off the record it produced -
+    ``ResultRecord.input_hash`` is that key, not one of its ingredients
+    (``result-record.schema.json``) - so the line joins to that node's ``started`` and
+    ``result`` lines instead of standing alone. ``node_id`` is the planner node, never an
+    entry of the accepted plan: those get coordinator-allocated ids and lines of their own.
+    """
+    at = stamp(ctx.co.clock)
+    if isinstance(outcome, Planned):
+        line: PlanAcceptedLine | PlanInvalidatedLine = PlanAcceptedLine(
+            key=outcome.record.input_hash, node_id=node_id, entries=len(outcome.plan.entries), at=at
+        )
+    else:
+        line = PlanInvalidatedLine(key=outcome.record.input_hash, node_id=node_id, reasons=outcome.reasons, at=at)
+    ctx.co.dispatcher.journal.append(line)
 
 
 def _schema_text() -> str:
