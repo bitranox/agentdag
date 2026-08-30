@@ -17,27 +17,39 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import FakeScanner, fresh_run_dir, outcome, wire
+from kernel_fakes import FakeScanner, fresh_run_dir, outcome, policy_path, wire
 
+from agentdag.adapters.graph_a.gate_make import MakeTestGate
+from agentdag.adapters.graph_a.git_cli import GitCli
+from agentdag.adapters.kernel.clock_utc import UtcClock
+from agentdag.adapters.kernel.isolation_scan import IsolationScanner
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
+from agentdag.adapters.kernel.lock_file import FileRunLock, current_holder
+from agentdag.adapters.kernel.notify_none import NoNotifier
+from agentdag.adapters.kernel.policy_yaml import load_policy
+from agentdag.adapters.kernel.run_store_fs import FsRunDir
+from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.execute import NodeBudget, NodeIds
 from agentdag.application.kernel.registry import PlanContext
 from agentdag.application.kernel.root import run_root
+from agentdag.application.kernel.run import run_coordinator
+from agentdag.application.workflows import get_workflow
+from agentdag.application.workflows.plan_goal import PlanGoalArgs
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import PlanAcceptedLine, PlanInvalidatedLine, RunStartedLine
 from agentdag.domain.kernel_errors import Suspended
 from agentdag.domain.keys import hash8
-from agentdag.domain.models import ApprovePayload, Budget, Decision, Kind, NodeSpec, TierRole
+from agentdag.domain.models import ApprovePayload, Budget, Decision, Kind, NodeSpec, RunStatus, TierRole
 from agentdag.domain.policy import RunLimits
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from agentdag.adapters.kernel.run_store_fs import FsRunDir
     from agentdag.application.kernel.execute import Executed
     from agentdag.application.kernel.ports import ExecutorRequest
     from agentdag.domain.models import NodeOutcome
@@ -380,3 +392,83 @@ def test_the_root_planner_s_dispatches_are_journaled_like_any_other(tmp_path: Pa
     assert [line["node_id"] for line in invalidated] == [PLANNER_ID]
     assert any("teleport" in reason for reason in invalidated[0]["reasons"])
     assert [line["node_id"] for line in accepted] == [PLANNER_ID]
+
+
+class PlanThenWorkExecutor:
+    """Writes a plan for a planner node and reports DONE for everything else.
+
+    The end-to-end arm's whole point is that nothing is stubbed between the workflow
+    program and the plan that runs, so this sits at the same executor port production's
+    Claude executor sits at.
+    """
+
+    def __init__(self, raw: str) -> None:
+        """Start with nothing dispatched; ``raw`` is what every planner dispatch writes."""
+        self.dispatched: list[str] = []
+        self.raw = raw
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Write the plan when this is a planner dispatch, and record what ran."""
+        self.dispatched.append(request.node_dir.parent.name)
+        if "You are a planner" in request.prompt:
+            (request.node_dir / "plan.json").write_text(self.raw, encoding="utf-8")
+        return outcome({"sonnet": 10})
+
+
+@pytest.mark.os_agnostic
+def test_a_workflow_program_can_reach_run_root_through_the_coordinator(tmp_path: Path) -> None:
+    """The wiring, end to end: ``agentdag run start plan-goal --arg goal=...`` reaches the ladder.
+
+    Driven through :func:`~agentdag.application.kernel.run.run_coordinator` rather than by
+    calling ``run_root`` directly, because what is under test is precisely what a program is
+    HANDED: it gets ``(co, args)`` and nothing else, so the op registry and the run limits
+    have to arrive on the coordinator or the ladder has no production caller at all.
+    """
+    base = tmp_path / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = FsRunDir.create(base, "r1")
+    executor = PlanThenWorkExecutor(valid_plan(goal="tidy the docs", node_id="repair"))
+
+    outcome_of_run = asyncio.run(
+        run_coordinator(
+            run_dir=run_dir,
+            journal=JsonlJournal(run_dir.journal_path, run_dir.audit_path),
+            clock=UtcClock(),
+            lock=FileRunLock(),
+            holder=current_holder(),
+            workflow=get_workflow("plan-goal"),
+            args=PlanGoalArgs(goal="tidy the docs"),
+            executors={"claude": executor},
+            gate_port=MakeTestGate(command=(sys.executable, "-c", "raise SystemExit(0)")),
+            git=GitCli(),
+            scanner=IsolationScanner(),
+            policy=load_policy(policy_path()),
+            sandbox=NoSandbox(),
+            registry=REG,
+            parallel=2,
+            by="tester",
+            token_id="local",
+            resume_reason=None,
+            notifier=NoNotifier(),
+        )
+    )
+
+    assert outcome_of_run.status is RunStatus.DONE
+    assert any(node_id.startswith("n-") for node_id in executor.dispatched), "the planned entry never ran"
+
+
+@pytest.mark.os_agnostic
+def test_the_policy_port_carries_the_whole_run_limits(tmp_path: Path) -> None:
+    """A workflow program reaches its run limits through ``co.policy``, so the PORT must carry
+    them - all of them, not the two fields the dispatch path happened to need.
+
+    ``max_replans`` is the one this ladder binds on and the one a partial port could not
+    supply; asserted against the shipped ``tier-policy.yaml`` rather than a fixture, because
+    what is being checked is that the loaded table reaches the port intact.
+    """
+    del tmp_path
+    policy = load_policy(policy_path())
+
+    assert policy.run_limits.max_replans >= 0
+    assert policy.run_limits.max_nodes_per_run > 0
+    assert policy.run_limits.deadline_ceiling_s > 0

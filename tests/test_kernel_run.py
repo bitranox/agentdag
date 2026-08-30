@@ -30,6 +30,7 @@ from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.kernel.summary import run_summary_line
 from agentdag.application.workflows import WORKFLOWS, get_workflow
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import ResultLine, RunSummaryLine, dump_journal_line, parse_journal_line
 from agentdag.domain.kernel_errors import LockHeld, RunRefused, WorkflowNotFound
 from agentdag.domain.models import NodeStatus, ResultRecord, RetryGrant, RunStatus, Tokens
@@ -153,7 +154,8 @@ def test_an_unknown_resume_reason_is_refused(tmp_path: Path) -> None:
 @pytest.mark.os_agnostic
 def test_get_workflow_refuses_a_name_it_does_not_have() -> None:
     assert get_workflow("graph-a").module.__name__.endswith("graph_a")
-    assert set(WORKFLOWS) == {"graph-a"}
+    assert get_workflow("plan-goal").module.__name__.endswith("plan_goal")
+    assert set(WORKFLOWS) == {"graph-a", "plan-goal"}
 
     with pytest.raises(WorkflowNotFound):
         get_workflow("graph-z")
@@ -308,6 +310,7 @@ def test_run_coordinator_refuses_arguments_that_are_not_the_workflow_s_own(tmp_p
                 git=GitCli(),
                 scanner=IsolationScanner(),
                 policy=load_policy(policy_path()),
+                registry=build_op_registry(),
                 sandbox=NoSandbox(),
                 parallel=1,
                 by="tester",

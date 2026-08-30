@@ -998,6 +998,7 @@ def _run_foreground(
                 git=wiring.git,
                 scanner=wiring.scanner,
                 policy=wiring.policy,
+                registry=wiring.registry,
                 sandbox=wiring.sandbox,
                 parallel=wiring.parallel,
                 by=getpass.getuser(),

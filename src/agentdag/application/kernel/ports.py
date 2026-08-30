@@ -50,9 +50,10 @@ if TYPE_CHECKING:
 
     from ...domain.journal import JournalLine
     from ...domain.models import CredentialVerdict, Decision, LockHolder, NodeOutcome, NodeSpec, RetryGrant, RunState
-    from ...domain.policy import FailureAction
+    from ...domain.policy import FailureAction, RunLimits
     from ..graph_a_ports import GatePort, GitPort
     from .notify import Notifier
+    from .registry import OpRegistry
 
 __all__ = [
     "Clock",
@@ -479,15 +480,25 @@ class Policy(Protocol):
     provider's CLI reports them identically - only the credential probe separates them, and
     an operator must be able to set what happens for each."""
 
-    tokens_per_row: Mapping[str, int]
-    deadline_ceiling_s: float
-    """The largest ``deadline_s`` any node may declare (``RunLimits.deadline_ceiling_s``,
-    design 2.3's run-limit clamp, rule 4). :meth:`Coordinator.work
-    <agentdag.application.kernel.context.Coordinator.work>` clamps every dispatched
-    node's ``spec.deadline_s`` to this ceiling before it reaches
-    :class:`ExecutorRequest`; the clamp is silent (no journal line), matching the same
-    "out of scope, M2" note on the other three run-limit clamps this codebase's own
-    ``domain.policy`` module already carries."""
+    run_limits: RunLimits
+    """The whole run-limit block the tier policy declares, verbatim.
+
+    The WHOLE object rather than the fields the dispatch path happens to read. Two of the
+    nine used to be copied out here (``tokens_per_row`` and ``deadline_ceiling_s``) and the
+    rest were unreachable, so a workflow program - which is handed the coordinator and
+    nothing else - could not obtain the ``max_replans`` its own planning ladder binds on
+    (:func:`~agentdag.application.kernel.root.run_root`), nor any node or depth bound. A
+    port that carries part of a value it already holds is a port that has to be widened
+    again for every new reader.
+
+    Two of them bind on the dispatch path, and are read straight off here.
+    ``run_limits.deadline_ceiling_s`` is the largest ``deadline_s`` any node may declare
+    (design 2.3's run-limit clamp, rule 4): :meth:`Coordinator.work
+    <agentdag.application.kernel.context.Coordinator.work>` clamps every dispatched node's
+    ``spec.deadline_s`` to it before it reaches :class:`ExecutorRequest`, silently (no
+    journal line), matching the same "out of scope, M2" note the other run-limit clamps in
+    this codebase's own ``domain.policy`` module carry. ``run_limits.tokens_per_row`` is the
+    ceiling the run-level budget check reads."""
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve ``spec``'s tier role (and any explicit model) to the row and executor to use."""
@@ -672,6 +683,14 @@ class KernelWiring:
     git: GitPort
     scanner: IsolationScanner
     policy: Policy
+    registry: OpRegistry
+    """Every op a plan may name, built by the composition root.
+
+    On the wiring rather than assembled where it is used, because
+    :func:`~agentdag.composition.kernel.build_op_registry` is the only thing that builds
+    one and the layer contract forbids ``application`` importing ``composition``. It
+    reaches a workflow program through the coordinator, which is all a program is handed."""
+
     scope: Scope
     sandbox: Sandbox
     notifier: Notifier

@@ -61,8 +61,8 @@ if TYPE_CHECKING:
     from ..workflows import WorkflowDef
     from .notify import Notifier
     from .ports import Clock, Executor, IsolationScanner, Journal, Policy, RunDir, RunLock
+    from .registry import OpRegistry
     from .sandbox import Sandbox
-
 __all__ = ["RunOutcome", "run_coordinator"]
 
 _ResumeReason = Literal["decision", "crash", "restart", "manual", "retry"]
@@ -102,6 +102,7 @@ async def run_coordinator(
     git: GitPort,
     scanner: IsolationScanner,
     policy: Policy,
+    registry: OpRegistry,
     sandbox: Sandbox,
     parallel: int,
     by: str,
@@ -127,6 +128,9 @@ async def run_coordinator(
         git: Every git operation the workflow performs.
         scanner: Takes the isolation-root manifest a ``scan`` node compares.
         policy: The tier policy; its version is recorded on the run.
+        registry: The ops a plan may name, for a workflow program that plans. Injected
+            rather than built here for the reason every other port is: only the
+            composition root builds one.
         sandbox: What isolation boundary every node this launch dispatches runs under
             (Task 19); its declaration is stamped onto every dispatched node's record.
         parallel: How many map branches may run at once.
@@ -180,6 +184,7 @@ async def run_coordinator(
             git=git,
             scanner=scanner,
             policy=policy,
+            registry=registry,
             sandbox=sandbox,
             parallel=parallel,
         )

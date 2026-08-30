@@ -14,7 +14,6 @@ import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -41,6 +40,7 @@ from agentdag.application.kernel.context import Coordinator, HasDedupKey
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.summary import append_run_summary
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.graph_a import PushIntent
 from agentdag.domain.journal import ApproveDecisionLine, RunSummaryLine
 from agentdag.domain.kernel_errors import LockHeld, RunRefused, SpecRejected, Suspended
@@ -61,10 +61,7 @@ from agentdag.domain.models import (
     RunState,
     RunStatus,
 )
-from agentdag.domain.policy import FailureAction
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from agentdag.domain.policy import FailureAction, RunLimits
 
 
 class OneRowPolicy:
@@ -77,8 +74,17 @@ class OneRowPolicy:
     deny_bash: tuple[str, ...] = ("git push",)
     on_auth_failure: FailureAction = FailureAction.FAIL_RUN
     on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
-    tokens_per_row: Mapping[str, int] = {"sonnet": 10}
-    deadline_ceiling_s: float = 999_999.0
+    run_limits: RunLimits = RunLimits(
+        tokens_per_row={"sonnet": 10},
+        deadline_ceiling_s=999_999.0,
+        per_kind_ceiling={},
+        planner_kinds=[],
+        top_role_budget_floor=0.0,
+        max_replans=3,
+        max_nodes_per_run=1000,
+        max_nodes_per_plan=1000,
+        max_plan_depth=5,
+    )
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
@@ -117,6 +123,7 @@ def coordinator(tmp_path: Path, *, gate_rc: int = 0, rd: FsRunDir | None = None)
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
+        registry=build_op_registry(),
         sandbox=NoSandbox(),
         parallel=2,
     )

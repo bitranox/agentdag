@@ -24,11 +24,11 @@ from ...application.kernel.ports import ResolvedRow
 from ...domain.policy import PolicyTable, resolve_row
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
     from ...domain.models import NodeSpec
-    from ...domain.policy import Thresholds, TierRow
+    from ...domain.policy import RunLimits, Thresholds, TierRow
 
 __all__ = ["LoadedPolicy", "load_policy"]
 
@@ -83,8 +83,7 @@ class LoadedPolicy:
         self.deny_bash = deny_bash
         self.on_auth_failure = table.escalation.on_auth_failure
         self.on_rate_limit = table.escalation.on_rate_limit
-        self.tokens_per_row: Mapping[str, int] = table.run_limits.tokens_per_row
-        self.deadline_ceiling_s: float = table.run_limits.deadline_ceiling_s
+        self.run_limits: RunLimits = table.run_limits
         self.rows: dict[str, TierRow] = {row.alias: row for row in table.models}
         self.thresholds: Thresholds = table.thresholds
 

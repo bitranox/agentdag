@@ -26,12 +26,13 @@ from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.dispatch import Dispatcher
 from agentdag.application.kernel.ports import ResolvedRow
 from agentdag.application.kernel.sandbox import SandboxRequest
+from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.models import Kind, NodeOutcome, NodeSpec, NodeStatus, SandboxGuarantees
-from agentdag.domain.policy import FailureAction
+from agentdag.domain.policy import FailureAction, RunLimits
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator
     from pathlib import Path
 
     from agentdag.application.kernel.sandbox import Sandbox
@@ -53,8 +54,17 @@ class _OneRowPolicy:
     deny_bash: tuple[str, ...] = ()
     on_auth_failure: FailureAction = FailureAction.FAIL_RUN
     on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
-    tokens_per_row: Mapping[str, int] = {"sonnet": 10}
-    deadline_ceiling_s: float = 999_999.0
+    run_limits: RunLimits = RunLimits(
+        tokens_per_row={"sonnet": 10},
+        deadline_ceiling_s=999_999.0,
+        per_kind_ceiling={},
+        planner_kinds=[],
+        top_role_budget_floor=0.0,
+        max_replans=3,
+        max_nodes_per_run=1000,
+        max_nodes_per_plan=1000,
+        max_plan_depth=5,
+    )
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
@@ -111,6 +121,7 @@ def _coordinator(
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=_OneRowPolicy(),
+        registry=build_op_registry(),
         sandbox=sandbox if sandbox is not None else NoSandbox(),
         parallel=1,
     )

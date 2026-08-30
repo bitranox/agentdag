@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from ..graph_a_ports import GatePort, GitPort
     from .dispatch import Body, Dispatcher
     from .ports import Clock, Executor, IsolationScanner, Policy, RunDir
+    from .registry import OpRegistry
     from .sandbox import Sandbox
 
 __all__ = ["BranchRef", "Coordinator", "HasDedupKey"]
@@ -171,10 +172,19 @@ class Coordinator:
         git: GitPort,
         scanner: IsolationScanner,
         policy: Policy,
+        registry: OpRegistry,
         sandbox: Sandbox,
         parallel: int,
     ) -> None:
-        """Bind one run's wiring; ``tokens_by_row`` starts empty."""
+        """Bind one run's wiring; ``tokens_by_row`` starts empty.
+
+        ``registry`` is here because a workflow program is handed the coordinator and
+        nothing else, and a program that plans (:func:`~agentdag.application.kernel.root.run_root`)
+        needs the ops a plan may name. Only
+        :func:`~agentdag.composition.kernel.build_op_registry` builds one, and the layer
+        contract forbids ``application`` importing ``composition``, so it arrives by
+        injection or not at all.
+        """
         self.run_id = run_id
         self.workflow = workflow
         self.args = args
@@ -186,6 +196,7 @@ class Coordinator:
         self.git = git
         self.scanner = scanner
         self.policy = policy
+        self.registry = registry
         self.sandbox = sandbox
         self.parallel = parallel
         # Run-wide, not per-map: `parallel` is what this HOST may run at once (worktrees,
@@ -239,12 +250,12 @@ class Coordinator:
         turn's own usage passes it; and its ``body`` closure calls
         :meth:`_run_cap_refusal` first, which refuses the dispatch OUTRIGHT (a FAILED,
         ``BUDGET_EXCEEDED`` record, the executor never called) when this node's own cap
-        would push the run's row total past ``policy.tokens_per_row``. Both checks are a
+        would push the run's row total past ``policy.run_limits.tokens_per_row``. Both checks are a
         no-op for a node whose spec declares no cap for the resolved row.
 
         The node deadline (design 7, M3; a DIFFERENT quantity from the token cap - wall-clock
         seconds elapsed, never a token count) is threaded the same way:
-        ``min(spec.deadline_s, policy.deadline_ceiling_s)`` reaches ``ExecutorRequest.deadline_s``,
+        ``min(spec.deadline_s, policy.run_limits.deadline_ceiling_s)`` reaches ``ExecutorRequest.deadline_s``,
         clamped HERE rather than left to the executor, so the executor never has to know
         about the run-limit ceiling at all - it only ever compares elapsed time against the
         one already-clamped figure it was handed. The clamp is silent (no journal line): the
@@ -391,7 +402,7 @@ class Coordinator:
             "effort": spec.effort,
         }
         node_cap = spec.budget.tokens.get(row.alias)
-        node_deadline_s = min(spec.deadline_s, self.policy.deadline_ceiling_s)
+        node_deadline_s = min(spec.deadline_s, self.policy.run_limits.deadline_ceiling_s)
 
         async def body(node_dir: Path) -> NodeOutcome:
             if row.executor not in self.executors:
@@ -542,14 +553,14 @@ class Coordinator:
 
         Returns:
             A ``BUDGET_EXCEEDED`` :class:`~agentdag.domain.models.NodeError` when
-            ``tokens_by_row[row] + node_cap`` would exceed ``policy.tokens_per_row[row]``,
-            else ``None`` - also ``None`` when ``policy.tokens_per_row`` declares no
+            ``tokens_by_row[row] + node_cap`` would exceed ``policy.run_limits.tokens_per_row[row]``,
+            else ``None`` - also ``None`` when ``policy.run_limits.tokens_per_row`` declares no
             ceiling for ``row`` at all (an operator who did not cap a row is not capping
             it here either).
         """
         if node_cap is None:
             return None
-        ceiling = self.policy.tokens_per_row.get(row)
+        ceiling = self.policy.run_limits.tokens_per_row.get(row)
         if ceiling is None:
             return None
         charged = self.tokens_by_row.get(row, 0)

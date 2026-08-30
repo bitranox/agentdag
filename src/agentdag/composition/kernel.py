@@ -112,6 +112,7 @@ def wire_kernel(
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),
+        registry=build_op_registry(),
         scope=_choose_scope(),
         sandbox=NoSandbox(),
         notifier=notifier,

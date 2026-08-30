@@ -30,7 +30,7 @@ from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import Budget, Isolation, Kind, NodeOutcome, NodeSpec, NodeStatus, ResultRecord
 from agentdag.domain.plan import Entry
-from agentdag.domain.policy import FailureAction
+from agentdag.domain.policy import FailureAction, RunLimits
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -49,8 +49,17 @@ class OneRowPolicy:
     deny_bash: tuple[str, ...] = ()
     on_auth_failure: FailureAction = FailureAction.FAIL_RUN
     on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
-    tokens_per_row: Mapping[str, int] = {}
-    deadline_ceiling_s: float = 999_999.0
+    run_limits: RunLimits = RunLimits(
+        tokens_per_row={},
+        deadline_ceiling_s=999_999.0,
+        per_kind_ceiling={},
+        planner_kinds=[],
+        top_role_budget_floor=0.0,
+        max_replans=3,
+        max_nodes_per_run=1000,
+        max_nodes_per_plan=1000,
+        max_plan_depth=5,
+    )
 
     def resolve(self, spec: NodeSpec) -> ResolvedRow:
         """Resolve any spec to the one row this policy has."""
@@ -76,6 +85,7 @@ def coordinator(tmp_path: Path) -> Coordinator:
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
+        registry=build_op_registry(),
         sandbox=NoSandbox(),
         parallel=1,
     )
@@ -154,6 +164,7 @@ def reopened(tmp_path: Path) -> Coordinator:
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=OneRowPolicy(),
+        registry=build_op_registry(),
         sandbox=NoSandbox(),
         parallel=1,
     )

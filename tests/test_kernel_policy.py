@@ -49,10 +49,10 @@ def test_shipped_policy_loads_and_is_versioned_by_content() -> None:
     """The shipped table loads, is content-versioned, and carries the run limits and thresholds."""
     p = load_policy(shipped())
     assert p.version.startswith("sha256:")
-    assert p.tokens_per_row["sonnet"] == 8_000_000
+    assert p.run_limits.tokens_per_row["sonnet"] == 8_000_000
     assert p.rows["sonnet"].handover_at_tokens == 100_000
     assert p.thresholds.max_continuations == 3
-    assert p.deadline_ceiling_s == 5400  # RunLimits.deadline_ceiling_s (design 2.3 rule 4, M3)
+    assert p.run_limits.deadline_ceiling_s == 5400  # RunLimits.deadline_ceiling_s (design 2.3 rule 4, M3)
 
 
 @pytest.mark.os_agnostic
