@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, HookMatcher, ResultMessage
 
 # append_transcript and input_total are tested seams this fix round's review asked to
 # be unit-tested directly (owner-only file mode; the three-field sum) rather than only
@@ -1378,3 +1378,184 @@ def test_the_stop_notice_hook_is_wired_into_the_dispatch_and_armed_by_the_crossi
     assert len(notices) == 1
     assert str(request.node_dir / HANDOVER_FILENAME) in notices[0]
     assert "run coordinator" in notices[0].lower()
+
+
+def _notice_hook(options: object) -> HookCallback:
+    """The stop-notice hook the executor installed, found by its MATCHER not by index.
+
+    Indexing the matcher list would couple this to the order the three PreToolUse hooks
+    happen to be registered in; the notice is the only one matched against ``Read``,
+    which is what actually identifies it.
+    """
+    opts = cast("ClaudeAgentOptions", options)
+    # Cast to the concrete mapping the executor builds: the SDK types `hooks` as an
+    # optional dict whose values pyright reads as partially unknown, so without this every
+    # use below is an unknown-type error. Narrowed here once, not silenced at each site.
+    hooks = cast("dict[str, list[HookMatcher]]", opts.hooks)
+    matchers: list[HookMatcher] = hooks["PreToolUse"]
+    found = [m for m in matchers if "Read" in (m.matcher or "")]
+    assert len(found) == 1, f"expected exactly one stop-notice matcher, got {len(found)}"
+    return cast("HookCallback", found[0].hooks[0])
+
+
+def _stopped_executor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ClaudeExecutor:
+    """An executor wired to the fake client, for the subtree-stop arms below."""
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    return executor
+
+
+@pytest.mark.os_agnostic
+def test_a_subtree_stop_arms_the_handover_with_no_context_ceiling_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 34 step 2. The node declares NO ceiling, so no context pressure can exist.
+
+    ``handover_at_tokens=None`` makes ``_past_context_ceiling`` answer False whatever the
+    usage, so the only thing that can arm this dispatch is the subtree predicate. Without
+    the second reason ORed in, the run ends as an ordinary success and no handover record
+    is produced at all.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 100)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=lambda: True)))
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.key_facts["stopped_by_subtree"] is True
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # the stream ended inside the grace
+
+
+@pytest.mark.os_agnostic
+def test_the_stop_notice_reaches_the_model_once_a_subtree_stop_armed_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The notice is what the whole mechanism is FOR, so assert on the hook's own output.
+
+    The outcome alone would prove the executor armed something; this proves the thing it
+    armed is the object the installed hook reads, by calling that hook and reading the
+    text it puts in front of the model.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 100)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+    asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=lambda: True)))
+
+    hook = _notice_hook(FakeStreamClient.instances[0].options)
+    out = asyncio.run(_await_hook(hook, "Read", {}))
+
+    assert HANDOVER_FILENAME in out["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.os_agnostic
+def test_the_context_ceiling_still_arms_with_no_subtree_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control that says the OR did not REPLACE decision 14's trigger with the new one.
+
+    No predicate is given at all (``is_stopping`` defaults to None, as every call site
+    predating this field leaves it), and the record must still say the ceiling was what
+    stopped it - a subtree-stop flag that read True here would mean the two reasons had
+    been conflated rather than ORed.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 200)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100_000, handover_at_tokens=150)))
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.key_facts["stopped_by_subtree"] is False
+    assert outcome.key_facts["context_at_handover"] == 200
+
+
+@pytest.mark.os_agnostic
+def test_a_subtree_stopped_node_gets_the_same_grace_before_the_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 34 step 4. Asserted as a COUNT of requests, not as "it was interrupted".
+
+    A zero-grace immediate interrupt would still satisfy "the node was stopped", and would
+    then show up only as handovers going missing under load - which is what the grace probe
+    measured (58 dispatches; a one-request grace lost the record 8 times out of 8). The
+    subtree path must spend the SAME measured grace as the ceiling path, not its own.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message(f"m{n}", 100) for n in range(1, HANDOVER_GRACE_TURNS + 4)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=len(turns)))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=lambda: True)))
+
+    client = FakeStreamClient.instances[0]
+    requests_after_the_notice = client.turns_yielded - 1  # turn 1 armed it and is not part of the grace
+    assert requests_after_the_notice == HANDOVER_GRACE_TURNS
+    assert client.interrupt_calls == 1
+    assert outcome.key_facts["grace_expired"] is True
+    assert outcome.key_facts["grace_used"] == HANDOVER_GRACE_TURNS
+
+
+@pytest.mark.os_agnostic
+def test_the_subtree_predicate_is_read_at_every_turn_not_captured_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop requested MID-dispatch must arm the node that is already running.
+
+    That is the whole reason this is a predicate and not a bool: the subtree decides to
+    stop while its nodes are in flight, so a dispatch that read the value once before its
+    first turn would be armed either never or always. Arming on turn 3 puts the interrupt
+    exactly ``HANDOVER_GRACE_TURNS`` requests later, which is what pins WHEN it armed.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    seen = {"turns": 0}
+
+    def stopping_from_the_third_turn() -> bool:
+        seen["turns"] += 1
+        return seen["turns"] >= 3
+
+    turns = [_turn_of_message(f"m{n}", 100) for n in range(1, HANDOVER_GRACE_TURNS + 5)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=len(turns)))
+
+    asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=stopping_from_the_third_turn)))
+
+    client = FakeStreamClient.instances[0]
+    assert client.turns_yielded == 3 + HANDOVER_GRACE_TURNS
+    assert client.interrupt_calls == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_subtree_stop_wins_when_both_reasons_fire_on_the_same_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precedence is decided here rather than left to whichever operand came first.
+
+    A node whose subtree is stopping is having its plan REPLACED, while one that merely
+    crossed its ceiling is being continued - so when one turn triggers both, the record has
+    to say the subtree stopped it, or a re-plan reads it as an ordinary continuation.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message("m1", 200)]  # 200 is over the 150 ceiling AND the subtree is stopping
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=1))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=150, is_stopping=lambda: True)))
+
+    assert outcome.key_facts["stopped_by_subtree"] is True
+
+
+@pytest.mark.os_agnostic
+def test_stopped_by_subtree_is_typed_so_a_re_plan_may_branch_on_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Design 3.3 lets the coordinator branch ONLY on a key named in ``typed_fields``.
+
+    Task 35 re-plans a stopped subtree, and telling a subtree-stopped node from one that
+    crossed its own ceiling is exactly the branch it has to make - so an untyped key here
+    would be unreadable to the thing it exists for, the same gap ``grace_expired`` closed.
+    """
+    executor = _stopped_executor(tmp_path, monkeypatch)
+    turns = [_turn_of_message("m1", 100), _turn_of_message("m2", 100)]
+    FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=lambda: True)))
+
+    assert "stopped_by_subtree" in outcome.typed_fields

@@ -385,6 +385,20 @@ class ExecutorRequest:
     from the same worktree with ``continuation + 1``. Bound the chain with
     ``Policy.max_continuations``, never by making this a hard stop."""
 
+    is_stopping: Callable[[], bool] | None = None
+    """Whether this node's SUBTREE has been asked to stop, or ``None`` for a call site that
+    names no subtree (every fixture predating this field, and any dispatch outside a plan).
+
+    A PREDICATE, never a bool: the subtree decides to stop while its nodes are already in
+    flight, so a dispatch that read the value once before its first turn would be armed
+    either never or always. It is read at the same turn seam the context ceiling is, and
+    the two are ORed into ONE arming decision - crossing a ceiling and having your subtree
+    stopped are different reasons to hand over, but the handover itself, and the measured
+    grace it gets (``HANDOVER_GRACE_TURNS``), are the same mechanism.
+
+    Bound by the caller to one node: the kernel's ``StopScope`` answers per node id, and
+    binding it here keeps the executor from knowing that type exists at all."""
+
     deadline_s: float | None = None
     """This node's own wall-clock deadline (``NodeSpec.deadline_s``, already clamped to
     ``Policy.deadline_ceiling_s`` by :meth:`~agentdag.application.kernel.context.Coordinator.work`),

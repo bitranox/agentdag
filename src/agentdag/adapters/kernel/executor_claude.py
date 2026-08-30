@@ -533,7 +533,14 @@ class _Handover:
     """API requests seen since arming; the node is interrupted once this reaches the grace."""
 
     context_at: int = 0
-    """The turn context that crossed the ceiling, recorded for the record's key_facts."""
+    """The context of the turn that armed the handover, recorded for the record's key_facts.
+
+    For a ceiling handover that IS the turn that crossed it. For a subtree stop it is simply
+    where the node's context stood when it was told to stop - still worth recording as a
+    drift signal, but it crossed nothing."""
+
+    by_subtree: bool = False
+    """Whether the SUBTREE stopping armed this handover, rather than the context ceiling."""
 
     armed_request: str | None = None
     """The request that crossed the ceiling. Its own later blocks must not spend the grace."""
@@ -558,7 +565,14 @@ class _Handover:
         """
         return self.grace_used >= HANDOVER_GRACE_TURNS
 
-    def observe(self, usage: Mapping[str, Any], ceiling: int | None, *, request_id: str | None) -> bool:
+    def observe(
+        self,
+        usage: Mapping[str, Any],
+        ceiling: int | None,
+        *,
+        request_id: str | None,
+        stop_requested: bool = False,
+    ) -> bool:
         """Fold one turn in, and say whether the dispatch should now be interrupted.
 
         Arming does NOT interrupt: the node is being asked to WRITE its handover, so
@@ -581,14 +595,25 @@ class _Handover:
             usage: This turn's own usage.
             ceiling: The row's ``handover_at_tokens``, or None when it declares none.
             request_id: This event's ``message_id``, or None when it carries none.
+            stop_requested: Whether this node's SUBTREE has asked it to stop
+                (``ExecutorRequest.is_stopping``). ORed with the ceiling into ONE arming
+                decision, so both reasons spend the same measured grace and produce the
+                same record shape; once armed, neither reason can arm it again, so this is
+                read only on the arming turn. Defaults False, which is what a dispatch
+                belonging to no subtree passes.
 
         Returns:
             Whether to interrupt now.
         """
         if not self.armed:
-            if not _past_context_ceiling(usage, ceiling):
+            if not (stop_requested or _past_context_ceiling(usage, ceiling)):
                 return False
             self.armed = True
+            # Subtree first when a turn triggers both: a node whose subtree is stopping is
+            # having its plan REPLACED, while one that merely crossed its ceiling is being
+            # continued, so recording the ceiling here would let a re-plan read an
+            # abandoned node as an ordinary continuation.
+            self.by_subtree = stop_requested
             self.context_at = input_total(usage)
             self.armed_request = request_id
             return False
@@ -598,6 +623,40 @@ class _Handover:
         self.last_counted = key
         self.grace_used += 1
         return self.grace_used >= HANDOVER_GRACE_TURNS
+
+
+def _subtree_stopping(request: ExecutorRequest) -> bool:
+    """Whether this node's subtree has asked it to stop, for a request that names one.
+
+    A function rather than an inline ``request.is_stopping is not None and ...`` so the
+    turn seam's arming condition stays one line per reason, and so "no subtree" and "a
+    subtree that is not stopping" are answered in ONE place as the same False.
+
+    Args:
+        request: The dispatch's request; ``is_stopping`` is None for a call site outside
+            any plan, which is not the same thing as a subtree that has not stopped, but
+            arms nothing either way.
+
+    Returns:
+        Whether the node should be asked to hand over on subtree grounds.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> from agentdag.application.kernel.ports import ExecutorRequest
+        >>> def _req(pred):
+        ...     return ExecutorRequest(
+        ...         node_dir=Path("n"), cwd=Path("c"), brief="b", prompt="p", model="sonnet",
+        ...         effort=None, max_turns=1, isolation_root=Path("r"), write_set=(),
+        ...         deny_bash=(), is_stopping=pred,
+        ...     )
+        >>> _subtree_stopping(_req(None))
+        False
+        >>> _subtree_stopping(_req(lambda: False))
+        False
+        >>> _subtree_stopping(_req(lambda: True))
+        True
+    """
+    return request.is_stopping is not None and request.is_stopping()
 
 
 def _past_context_ceiling(usage: Mapping[str, Any], ceiling: int | None) -> bool:
@@ -998,7 +1057,12 @@ class ClaudeExecutor:
                     if (
                         not cap_hit
                         and not deadline_hit
-                        and handover.observe(usage, request.handover_at_tokens, request_id=message.message_id)
+                        and handover.observe(
+                            usage,
+                            request.handover_at_tokens,
+                            request_id=message.message_id,
+                            stop_requested=_subtree_stopping(request),
+                        )
                     ):
                         await client.interrupt()
                 if isinstance(message, ResultMessage):
@@ -1022,6 +1086,7 @@ class ClaudeExecutor:
                 handover.context_at,
                 grace_used=handover.grace_used,
                 grace_expired=handover.expired,
+                stopped_by_subtree=handover.by_subtree,
             )
         if terminal is not None:
             return self._outcome_for(request, terminal, first_turn_input, cwd_rel)
@@ -1135,6 +1200,7 @@ class ClaudeExecutor:
         *,
         grace_used: int,
         grace_expired: bool,
+        stopped_by_subtree: bool,
     ) -> NodeOutcome:
         """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
 
@@ -1182,12 +1248,13 @@ class ClaudeExecutor:
                 "first_turn_input_tokens": first_turn_input,
                 "grace_used": grace_used,
                 "grace_expired": grace_expired,
+                "stopped_by_subtree": stopped_by_subtree,
             },
             # `grace_expired` is TYPED, by direct analogy with `cap_hit` and `deadline_hit`:
             # it is this outcome's decisive fact, and design 3.3 lets the coordinator branch
             # ONLY on a key named here. `grace_used` stays free text - a measurement, like
             # `first_turn_input_tokens`, not something a branch should read.
-            typed_fields=["context_at_handover", "grace_expired"],
+            typed_fields=["context_at_handover", "grace_expired", "stopped_by_subtree"],
             tokens=tokens,
             charged_tokens={request.model: in_tokens + out_tokens},
             executor_used="claude",

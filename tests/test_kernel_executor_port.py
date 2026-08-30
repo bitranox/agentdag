@@ -21,6 +21,7 @@ Reading the request field by field, asking what a SECOND vendor would pass for e
 | `deny_bash`                  | command patterns to refuse - see below                          |
 | `token_cap`, `deadline_s`    | counts and seconds, checked at its own turn seam                |
 | `handover_at_tokens`         | a context-window size in tokens - see below                     |
+| `is_stopping`                | a plain zero-argument predicate - see below                     |
 
 Two fields carry an assumption rather than a neutral value. ``deny_bash`` presumes the
 agent has a shell tool to deny. That is a bound on the KIND of executor (a tool-using
@@ -36,6 +37,20 @@ port already tolerates an adapter that cannot honour it: ``None`` means nothing 
 which is the same "no bound declared, nothing enforced" rule ``token_cap`` and
 ``deadline_s`` follow. An adapter that cannot read per-turn context leaves it unchecked and
 loses the handover, not correctness.
+
+``is_stopping`` (Task 34) is the most vendor-neutral VALUE of the three - a zero-argument
+Python callable returning a bool, carrying no vendor concept at all, which any adapter can
+call. What it presumes is the same capability ``handover_at_tokens`` does, and for the same
+reason: a channel to intervene in a dispatch that is already running, first to put a notice
+in front of the model and then to stop it. A vendor that can only start a dispatch and await
+its result cannot honour it, and the port tolerates that identically - the adapter ignores
+the predicate, the node runs to its own end, and what is lost is the prompt hand-over, not
+correctness. The barrier still reports such a node rather than claiming it finished.
+
+It is a CALLABLE on a record whose other fields are all data, which is worth naming: the
+alternative was a second parameter on ``Executor.run``, and that changes the Protocol every
+adapter implements in order to carry something most calls leave None. Nothing serialises
+this record, so the callable costs nothing here.
 
 The field-set assertion is deliberate friction: a field added to the port fails this test,
 which is exactly when the reading above has to be redone.
@@ -144,4 +159,5 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "token_cap",
         "deadline_s",
         "handover_at_tokens",
+        "is_stopping",
     }
