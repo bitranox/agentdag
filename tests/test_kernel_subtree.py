@@ -20,8 +20,8 @@ from agentdag.domain.models import NodeStatus
 def test_request_stop_covers_every_in_flight_node_and_nothing_else() -> None:
     """Only nodes still in flight are notified; one that already landed is not."""
     scope = StopScope()
-    scope.enter("a")
-    scope.enter("b")
+    scope.enter("a", _T0)
+    scope.enter("b", _T0)
     scope.leave("b", NodeStatus.DONE)
 
     assert scope.request_stop() == frozenset({"a"})
@@ -38,7 +38,7 @@ def test_a_node_entering_after_the_stop_is_already_stopping() -> None:
     """
     scope = StopScope()
     scope.request_stop()
-    scope.enter("late")
+    scope.enter("late", _T0)
 
     assert scope.is_stopping("late")
 
@@ -50,7 +50,7 @@ def test_a_node_that_never_entered_is_not_stopping() -> None:
     node that belongs to a different parent. Absence is a real answer, not a default.
     """
     scope = StopScope()
-    scope.enter("mine")
+    scope.enter("mine", _T0)
     scope.request_stop()
 
     assert not scope.is_stopping("someone-elses")
@@ -59,8 +59,8 @@ def test_a_node_that_never_entered_is_not_stopping() -> None:
 def test_in_flight_tracks_entry_and_exit() -> None:
     """``in_flight`` is what the barrier waits on, so it must shrink as nodes land."""
     scope = StopScope()
-    scope.enter("a")
-    scope.enter("b")
+    scope.enter("a", _T0)
+    scope.enter("b", _T0)
     assert scope.in_flight() == frozenset({"a", "b"})
 
     scope.leave("a", NodeStatus.FAILED)
@@ -75,7 +75,7 @@ def test_leaving_after_a_stop_clears_the_node_from_in_flight() -> None:
     stopped node still has to be able to finish.
     """
     scope = StopScope()
-    scope.enter("a")
+    scope.enter("a", _T0)
     scope.request_stop()
     assert scope.in_flight() == frozenset({"a"})
 
@@ -94,7 +94,7 @@ class _Spec:
 def test_the_barrier_returns_empty_once_every_node_is_terminal() -> None:
     """Empty is the success case: every node went terminal inside the bound."""
     scope = StopScope()
-    scope.enter("a")
+    scope.enter("a", _T0)
     scope.request_stop()
 
     async def drive() -> frozenset[str]:
@@ -115,7 +115,7 @@ def test_the_barrier_reports_who_was_still_running_on_timeout() -> None:
     re-plan run against a worktree a node is still writing to, which is the exact race
     the barrier exists to prevent. Report the timeout; never treat it as done."""
     scope = StopScope()
-    scope.enter("stuck")
+    scope.enter("stuck", _T0)
     scope.request_stop()
 
     assert asyncio.run(barrier(scope, deadline_bound_s=0.05)) == frozenset({"stuck"})
@@ -126,7 +126,7 @@ def test_the_barrier_does_not_cancel_the_node_it_gave_up_on() -> None:
     still be running - if the barrier cancelled it, its handover would be lost, which is
     the whole reason the notice precedes the drain."""
     scope = StopScope()
-    scope.enter("stuck")
+    scope.enter("stuck", _T0)
     scope.request_stop()
 
     async def drive() -> tuple[frozenset[str], bool, bool]:
@@ -153,8 +153,8 @@ def test_the_bound_is_derived_from_the_in_flight_deadlines_not_a_constant() -> N
     of 3600s nodes must not get the same bound, or it is a constant wearing a
     derivation's name. Asserted on the DIFFERENCE, so the slack cancels and the arm
     cannot pass by both values happening to be the slack."""
-    short = deadline_bound(_scope_of("s"), {"s": _Spec(60.0)}, started_at={"s": _T0}, now=_T0)
-    long_ = deadline_bound(_scope_of("l"), {"l": _Spec(3600.0)}, started_at={"l": _T0}, now=_T0)
+    short = deadline_bound(_scope_of("s"), {"s": _Spec(60.0)}, now=_T0)
+    long_ = deadline_bound(_scope_of("l"), {"l": _Spec(3600.0)}, now=_T0)
 
     assert long_ - short == pytest.approx(3540.0, abs=1.0)
 
@@ -168,7 +168,7 @@ def test_the_bound_takes_the_remaining_deadline_not_the_whole_one() -> None:
     stuck node is reported ~3630s later instead of ~31s.
     """
     scope = _scope_of("nearly_done")
-    bound = deadline_bound(scope, {"nearly_done": _Spec(3600.0)}, started_at={"nearly_done": _T0}, now=_at(3599.0))
+    bound = deadline_bound(scope, {"nearly_done": _Spec(3600.0)}, now=_at(3599.0))
 
     assert bound == pytest.approx(1.0 + BARRIER_SLACK_S)
 
@@ -181,12 +181,11 @@ def test_the_largest_remaining_governs_not_the_largest_declared() -> None:
     Both nodes are in flight, so a rule that read either one alone cannot pass this.
     """
     scope = StopScope()
-    scope.enter("nearly_done")
-    scope.enter("just_started")
+    scope.enter("nearly_done", _T0)
+    scope.enter("just_started", _at(890.0))
     graph = {"nearly_done": _Spec(900.0), "just_started": _Spec(100.0)}
-    started = {"nearly_done": _T0, "just_started": _at(890.0)}
 
-    bound = deadline_bound(scope, graph, started_at=started, now=_at(890.0))
+    bound = deadline_bound(scope, graph, now=_at(890.0))
 
     assert bound == pytest.approx(100.0 + BARRIER_SLACK_S)
 
@@ -201,7 +200,7 @@ def test_a_node_already_past_its_deadline_contributes_only_the_slack() -> None:
     floor is pinned by that helper's own doctest instead. Verified by mutation.
     """
     scope = _scope_of("overdue")
-    bound = deadline_bound(scope, {"overdue": _Spec(60.0)}, started_at={"overdue": _T0}, now=_at(600.0))
+    bound = deadline_bound(scope, {"overdue": _Spec(60.0)}, now=_at(600.0))
 
     assert bound == pytest.approx(BARRIER_SLACK_S)
 
@@ -214,24 +213,42 @@ def test_a_clock_that_stepped_back_never_inflates_the_bound() -> None:
     Without this an apparently-negative elapsed would hand back MORE than the node was ever
     given, which is the over-estimate direction but unbounded.
     """
-    scope = _scope_of("stepped")
-    bound = deadline_bound(scope, {"stepped": _Spec(60.0)}, started_at={"stepped": _at(120.0)}, now=_T0)
+    scope = _scope_of("stepped", at=_at(120.0))
+    bound = deadline_bound(scope, {"stepped": _Spec(60.0)}, now=_T0)
 
     assert bound == pytest.approx(60.0 + BARRIER_SLACK_S)
 
 
-def test_a_node_with_no_recorded_start_falls_back_to_its_whole_deadline() -> None:
-    """Deliberate, and deliberately DIFFERENT from the undeclared-deadline case below.
+def test_the_scope_carries_each_node_s_start_and_drops_it_on_leave() -> None:
+    """The start cannot be forgotten because entering IS stamping.
 
-    With no start time there is still a number to bound on - the node's whole deadline - and
-    only its refinement is missing, so the bound over-estimates rather than raising. The
-    undeclared-deadline case raises because there is no number at all. Over-estimating
-    delays a report; under-estimating fails a subtree whose nodes were about to land.
+    ``deadline_bound`` reads its start times from here rather than from a mapping the
+    caller assembles alongside, so there is no in-flight node without a start to decide an
+    absent case for. The stamp must also leave with the node, or a landed node would keep
+    bounding a wait it is no longer part of.
     """
-    scope = _scope_of("unstamped")
-    bound = deadline_bound(scope, {"unstamped": _Spec(120.0)}, started_at={}, now=_at(90.0))
+    scope = StopScope()
+    scope.enter("a", _T0)
+    scope.enter("b", _at(30.0))
+    assert scope.in_flight_since() == {"a": _T0, "b": _at(30.0)}
 
-    assert bound == pytest.approx(120.0 + BARRIER_SLACK_S)
+    scope.leave("a", NodeStatus.DONE)
+    assert scope.in_flight_since() == {"b": _at(30.0)}
+
+
+def test_the_snapshot_of_starts_does_not_change_under_the_caller() -> None:
+    """`in_flight_since` hands back a snapshot, not the live mapping.
+
+    A caller iterating it while a node lands would otherwise see the mapping mutate
+    mid-iteration - the same reason the execute loop snapshots the graph before dispatch.
+    """
+    scope = StopScope()
+    scope.enter("a", _T0)
+    snapshot = scope.in_flight_since()
+
+    scope.leave("a", NodeStatus.DONE)
+
+    assert snapshot == {"a": _T0}
 
 
 def test_a_node_with_no_deadline_falls_back_to_the_policy_ceiling_and_counts_down() -> None:
@@ -246,9 +263,7 @@ def test_a_node_with_no_deadline_falls_back_to_the_policy_ceiling_and_counts_dow
     the clock so a fallback that skipped the subtraction could not pass."""
     scope = _scope_of("undeclared")
 
-    bound = deadline_bound(
-        scope, {"undeclared": _Spec(None)}, started_at={"undeclared": _T0}, now=_at(200.0), ceiling_s=1200.0
-    )
+    bound = deadline_bound(scope, {"undeclared": _Spec(None)}, now=_at(200.0), ceiling_s=1200.0)
 
     assert bound == pytest.approx(1000.0 + BARRIER_SLACK_S)
 
@@ -260,18 +275,18 @@ def test_an_undeclared_deadline_with_no_ceiling_is_reported_not_invented() -> No
     scope = _scope_of("undeclared")
 
     with pytest.raises(ValueError, match="no deadline"):
-        deadline_bound(scope, {"undeclared": _Spec(None)}, started_at={"undeclared": _T0}, now=_T0)
+        deadline_bound(scope, {"undeclared": _Spec(None)}, now=_T0)
 
 
 def test_the_bound_of_an_empty_scope_is_the_slack_alone() -> None:
     """Nothing in flight means nothing to wait for. Decided deliberately rather than
     inherited: the empty case is not vacuously the same as the populated one."""
-    assert deadline_bound(StopScope(), {}, started_at={}, now=_T0) == pytest.approx(BARRIER_SLACK_S)
+    assert deadline_bound(StopScope(), {}, now=_T0) == pytest.approx(BARRIER_SLACK_S)
 
 
-def _scope_of(node_id: str) -> StopScope:
+def _scope_of(node_id: str, at: datetime | None = None) -> StopScope:
     scope = StopScope()
-    scope.enter(node_id)
+    scope.enter(node_id, _T0 if at is None else at)
     return scope
 
 
