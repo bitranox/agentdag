@@ -57,6 +57,14 @@ GRANT = "replan"
 Terminal exhaustion was the obvious shape and the wrong one: a person who reads the reasons
 can often see that one more attempt is worth it, and a run that has to be started from
 scratch to find out throws away every record it earned.
+
+Its ``effect`` is ``none``, not ``external``, and that is the schema's call rather than a
+judgement: ``approve-payload.schema.json`` defines ``external`` as an effect that LEAVES the
+process ("a push, a publish, a mail"), and re-planning does not - it spends, inside the run.
+Labelling it ``external`` would also pull this gate into O21's requirement for a human
+identity distinct from the run's starter, a rule about publishing, for an option that only
+plans again. Nothing can select it unattended regardless: :data:`ABANDON` is this payload's
+hard-coded default and a default is the only option a deadline applies.
 """
 
 
@@ -232,7 +240,7 @@ def _exhausted(approve: NodeSpec, *, planner: NodeSpec, reasons: tuple[str, ...]
         artefact_refs=[_failed_dispatch_ref(planner, ctx=ctx)],
         options=[
             ApproveOption(id=ABANDON, label="abandon: report what could not be planned", effect="none"),
-            ApproveOption(id=GRANT, label="grant the planner another round of attempts", effect="external"),
+            ApproveOption(id=GRANT, label="grant the planner another round of attempts", effect="none"),
         ],
         default=ABANDON,
         decide_by=_decide_by(ctx, window_s=approve.deadline_s),

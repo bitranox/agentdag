@@ -282,6 +282,10 @@ def test_the_exhaustion_payload_offers_abandon_by_default_and_names_the_reasons(
     assert payload.default == "abandon"
     assert {option.id for option in payload.options} == {"abandon", "replan"}
     assert next(o for o in payload.options if o.id == "abandon").effect == "none"
+    # Both are "none": the schema defines "external" as an effect that LEAVES the process
+    # ("a push, a publish, a mail"), and re-planning spends inside the run. Pinned because
+    # mislabelling it would also pull this gate into O21's distinct-human-identity rule.
+    assert next(o for o in payload.options if o.id == "replan").effect == "none"
     assert "teleport" in payload.text
 
 
