@@ -65,10 +65,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEADLINE_REASON",
+    "MAX_BODY_LINE_OCTETS",
+    "MAX_OPERATOR_TEXT_CHARS",
     "SYSTEM_IDENTITY",
     "TIMER_TOKEN_ID",
     "DeadlineOutcome",
     "apply_due_default",
+    "render_for_operator",
     "suspend_payload_rel",
     "validate_approve_payload",
 ]
@@ -185,6 +188,73 @@ def validate_approve_payload(payload: ApprovePayload) -> None:
     reasons = _default_reasons(payload) + _text_reasons(payload.text)
     if reasons:
         raise SpecRejected("; ".join(reasons))
+
+
+def render_for_operator(text: str) -> str:
+    """Render text a MODEL had a hand in so :func:`validate_approve_payload` accepts it.
+
+    The rules above REFUSE rather than normalise, and for author-written text that is
+    correct: rewriting it would re-key the approve node and detach a decision recorded
+    against the old hash. But an exhaustion payload's text quotes a validator's reasons,
+    which quote what a planner MODEL wrote, so refusing there would take the run down
+    instead of asking the question the payload exists to ask. Rendering is done ONCE, before
+    the payload is built, so the text that is hashed is the text the decider sees - the
+    property the refusal defends is kept, not traded away.
+
+    Text that is already readable comes back unchanged, byte for byte. That is what stops
+    this from becoming a licence to reshape every payload: a caller reaching for it on text
+    it wrote gets exactly what it passed in.
+
+    Args:
+        text: The text to render, possibly carrying model-authored fragments.
+
+    Returns:
+        Text carrying no control or unrendered character, no line over
+        :data:`MAX_BODY_LINE_OCTETS` octets, and no more than
+        :data:`MAX_OPERATOR_TEXT_CHARS` characters.
+
+    Example:
+        >>> render_for_operator("plan refused")
+        'plan refused'
+        >>> render_for_operator("stop\x1b[2K")
+        'stopU+001B[2K'
+    """
+    return _clamp("\n".join(_fold(_escape(line)) for line in text.split("\n")))
+
+
+def _escape(line: str) -> str:
+    """Replace every character that renders as something other than itself with its code point."""
+    return "".join(f"U+{ord(ch):04X}" if _is_control(ch) or ch in _UNRENDERED else ch for ch in line)
+
+
+def _fold(line: str) -> str:
+    """Break one line at :data:`MAX_BODY_LINE_OCTETS` octets, since a mail body may carry no more.
+
+    Cut on the ENCODED length rather than the character count: the bound is octets, and a
+    line of astral characters is four times its length in them.
+    """
+    if len(line.encode()) <= MAX_BODY_LINE_OCTETS:
+        return line
+    out: list[str] = []
+    current = ""
+    for ch in line:
+        if len((current + ch).encode()) > MAX_BODY_LINE_OCTETS:
+            out.append(current)
+            current = ""
+        current += ch
+    out.append(current)
+    return "\n".join(out)
+
+
+def _clamp(text: str) -> str:
+    """Cut the whole text to what a person is asked to read, saying so where it was cut."""
+    if len(text) <= MAX_OPERATOR_TEXT_CHARS:
+        return text
+    return text[: MAX_OPERATOR_TEXT_CHARS - len(_TRUNCATED)] + _TRUNCATED
+
+
+_TRUNCATED = "\n[truncated]"
+"""What marks a clamped text, so a decider knows they are not looking at all of it."""
 
 
 def _default_reasons(payload: ApprovePayload) -> list[str]:
