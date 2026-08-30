@@ -1,31 +1,33 @@
 """The recursive execute loop: run one plan's entries to terminal, recursing on sub-plans.
 
-M6 component 3, and design section 3.3's scheduler in code. One plan's entries are dispatched
-in waves - everything whose ``deps`` are satisfied goes at once, bounded by the run-wide
-semaphore - and each landed record is put through the design's TWO condition checks: the
-entry's own ``acceptance``, and the plan-wide ``holds_while``. A ``plan`` entry is
-SPECIAL-CASED into a recursion rather than dispatched through the registry, which is why the
-registry's ``plan`` body is a guard that raises
+M6 component 3, and design section 3.3's scheduler in code. Entries are dispatched as soon as
+their ``deps`` are satisfied, bounded by the run-wide semaphore, and CONTINUOUSLY: the loop
+waits for the next record to land - never for a whole batch - so an entry whose own dep has
+landed starts at once rather than behind the slowest of its peers. Each landed record goes
+through the design's TWO condition checks: the entry's own ``acceptance``, and the plan-wide
+``holds_while``. A ``plan`` entry is SPECIAL-CASED into a recursion rather than dispatched
+through the registry, which is why the registry's ``plan`` body is a guard that raises
 (:func:`~agentdag.composition.kernel.build_op_registry`).
 
 What this module deliberately does NOT do, and where it is owed:
 
-* **It never re-plans.** A refuted condition comes back in :attr:`Executed.fired` and the
-  subtree stops; the stop notice, the barrier and the re-dispatch are Tasks 34 and 35. A
-  loop that re-planned here would do it while the wave's other nodes were still in flight,
-  which is exactly what the barrier exists to prevent.
-* **It stops the subtree between WAVES, not inside one.** Every entry dispatched in a wave
-  runs to terminal; a refutation stops the NEXT wave from starting. Interrupting a node
-  already in flight needs the stop notice, which does not exist yet - so the honest
-  statement of what "stops the subtree" means today is "starts nothing further".
-* **It does not read ``spec.isolation``.** Where an entry runs is component 8's subject, and
-  ``Isolation`` remains parsed-never-enforced (Checkpoint A finding 4, "own worktree").
-  Every entry runs in ``ctx.cwd``.
+* **It never re-plans.** A refuted condition, and a sub-plan the validator refused, both come
+  back on :class:`Executed` and the subtree starts nothing further; the stop notice and the
+  re-dispatch are Tasks 34 and 35. What this loop DOES do at that moment is wait for the nodes
+  already in flight to reach terminal, because abandoning them would leave real dispatches
+  unawaited - a barrier without the notice that should precede it.
+* **It cannot stop a node already running.** Interrupting one needs the stop notice, which does
+  not exist yet, so "stops the subtree" means "starts nothing further and waits out what is
+  running".
+* **It does not read ``spec.isolation``.** Where an entry runs is component 8's subject (user,
+  2026-08-30); ``Isolation`` remains parsed-never-enforced. Every entry runs in ``ctx.cwd``.
 
 Contents:
-    * :class:`RunNodeBudgetExceededError` / :class:`PlanDepthExceededError` - the two run bounds' errors.
+    * :class:`RunNodeBudgetExceededError` / :class:`PlanDepthExceededError` - the run bounds' errors.
     * :class:`NodeBudget` - how many nodes this RUN has dispatched, shared across every plan.
-    * :class:`Executed` - one subtree's records, whether it is done, and what refuted it.
+    * :class:`NodeIds` - the RUN's node-id allocator, shared for the same reason.
+    * :class:`SubPlanRefused` - one sub-plan the validator refused, with its reasons verbatim.
+    * :class:`Executed` - one subtree's records, whether it is done, and why it stopped.
     * :func:`execute_plan` - the loop itself.
 """
 
@@ -42,7 +44,7 @@ from ...domain.plan import evaluate_holds_while
 from .planner import Planned, dispatch_planner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from ...domain.condition import Condition
     from ...domain.models import NodeSpec
@@ -53,8 +55,10 @@ if TYPE_CHECKING:
 __all__ = [
     "Executed",
     "NodeBudget",
+    "NodeIds",
     "PlanDepthExceededError",
     "RunNodeBudgetExceededError",
+    "SubPlanRefused",
     "execute_plan",
 ]
 
@@ -117,17 +121,63 @@ class NodeBudget:
         return self._spent
 
 
+class NodeIds:
+    """The RUN's node-id allocator: one counter for every plan and sub-plan of one run.
+
+    Run-scoped for the same reason :class:`NodeBudget` is, and found the same way - by
+    measurement rather than by argument. An earlier version built a counter per sub-plan and
+    skipped ids already in ``dispatcher.records``; two ``plan`` entries recursing at the same
+    time both minted ``n-0001``, because an id that has been ALLOCATED but not yet DISPATCHED
+    is in no record yet. Two nodes then shared one id, one journal key and one node directory
+    - exactly what
+    :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s duplicate-id rule
+    refuses WITHIN a plan, reintroduced ACROSS plans.
+
+    Ids are opaque and carry no plan structure (``n-0001``, not ``n-<parent>-0001``): the
+    schemas, the ``hash8`` node directories and the design all treat a node id as a name, not
+    a path.
+    """
+
+    def __init__(self) -> None:
+        """Start before the first id."""
+        self._n = 0
+
+    def allocate(self) -> str:
+        """Mint the next node id for this run."""
+        self._n += 1
+        return f"n-{self._n:04d}"
+
+    @property
+    def minted(self) -> int:
+        """How many ids this run has handed out."""
+        return self._n
+
+
+@dataclass(frozen=True, slots=True)
+class SubPlanRefused:
+    """A ``plan`` entry whose planner produced nothing the validator would accept."""
+
+    node_id: str
+    """The ``plan`` entry's own node id - the planner node that was dispatched."""
+
+    reasons: tuple[str, ...]
+    """Why, VERBATIM: the validator's own reasons, or what went wrong reading what the node
+    wrote. Carried unflattened all the way from
+    :class:`~agentdag.application.kernel.planner.NotPlanned` because the planner re-dispatched
+    for this subtree (Task 35) is briefed with them, and a summary cannot be acted on."""
+
+
 @dataclass(frozen=True, slots=True)
 class Executed:
-    """What running one plan's subtree produced."""
+    """What running one plan's subtree produced, and why it stopped."""
 
     records: Mapping[str, ResultRecord]
     """Every terminal record of this subtree, by node id - a nested sub-plan's own records
     joined in, so a parent reads one flat mapping however deep the recursion went."""
 
     done: bool
-    """Whether ``plan.done_when`` settled TRUE. An UNDECIDED ``done_when`` is not done: a
-    completion condition that cannot be settled has not been met."""
+    """Whether ``plan.done_when`` settled TRUE and nothing refuted. An UNDECIDED ``done_when``
+    is not done: a completion condition that cannot be settled has not been met."""
 
     fired: Condition | None
     """The condition that was REFUTED, if one was: an entry's ``acceptance`` or the plan's
@@ -138,10 +188,36 @@ class Executed:
     """The node id whose landed record refuted :attr:`fired`. For a ``holds_while`` that is
     the record that LANDED, not the guard's owner: the entry may itself have passed."""
 
+    refused: tuple[SubPlanRefused, ...]
+    """Every sub-plan of this subtree the validator refused, at any depth, in the order they
+    landed. Empty when none was. A DIFFERENT cause from :attr:`fired` and kept apart from it
+    on purpose: a refuted premise and a planner that emitted an invalid plan need different
+    briefs when the planner is re-dispatched."""
+
+    unrun: tuple[str, ...]
+    """The entries of this subtree that were never dispatched, in plan order - because the
+    subtree stopped, or because their deps never landed. Design section 4 step 4 is what
+    needs this: "the new plan replaces S's UNEXECUTED entries", and this names them."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Wiring:
+    """What every level of one run's recursion shares, bundled so it is threaded once.
+
+    ``spent`` and ``ids`` are the two RUN-scoped mutables; the rest is fixed for the run.
+    Depth and the admitted-node graph are NOT here - they differ per level.
+    """
+
+    ctx: PlanContext
+    registry: OpRegistry
+    limits: RunLimits
+    spent: NodeBudget
+    ids: NodeIds
+
 
 @dataclass(frozen=True, slots=True)
 class _Landed:
-    """One entry's dispatch, and everything it contributed to the parent's records."""
+    """One entry's dispatch, and everything it contributed to the parent."""
 
     entry: Entry
     record: ResultRecord
@@ -150,6 +226,12 @@ class _Landed:
 
     subtree: Mapping[str, ResultRecord]
     """A sub-plan's records, empty for every op but ``plan``."""
+
+    refused: tuple[SubPlanRefused, ...] = ()
+    """Sub-plan refusals from this entry and anything below it."""
+
+    unrun: tuple[str, ...] = ()
+    """Entries a nested sub-plan never dispatched."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,12 +250,13 @@ async def execute_plan(
     limits: RunLimits,
     depth: int,
     spent: NodeBudget,
+    ids: NodeIds | None = None,
     admitted: Mapping[str, NodeSpec] | None = None,
 ) -> Executed:
     """Run one plan's entries to terminal, recursing on ``op="plan"`` entries.
 
-    Returns rather than re-plans: a refuted condition is REPORTED in
-    :attr:`Executed.fired` and the subtree starts nothing further. The
+    Returns rather than re-plans: a refuted condition and a refused sub-plan are both
+    REPORTED on :class:`Executed`, and the subtree starts nothing further. The
     trigger/barrier/re-dispatch path is Tasks 34 and 35.
 
     Args:
@@ -185,42 +268,59 @@ async def execute_plan(
         limits: The run's ceilings; ``max_nodes_per_run`` and ``max_plan_depth`` bind here.
         depth: How deep this plan sits, 0 for the run's own top-level plan.
         spent: The RUN's node budget, shared with every other plan of this run.
-        admitted: The nodes admitted ABOVE this plan, by node id - what a sub-plan's deps
-            and conditions may name besides its own entries
-            (:func:`~agentdag.application.kernel.plan_validate.validate_plan`'s ``graph``).
-            ``None`` at the root, where nothing has been admitted yet. Threaded rather than
-            read off the coordinator because the dispatcher keeps RECORDS, not specs, so
-            this loop is the only place the specs of already-run entries exist.
+        ids: The RUN's node-id allocator, shared for the same reason. ``None`` creates one,
+            which is right only for a call that IS the run's top-level plan - two runs
+            sharing a coordinator must not share ids, and two plans of ONE run must.
+        admitted: The nodes admitted ABOVE this plan, by node id - what a sub-plan's deps and
+            conditions may name besides its own entries (``validate_plan``'s ``graph``).
+            ``None`` at the root. Threaded rather than read off the coordinator because the
+            dispatcher keeps RECORDS, not specs, so this loop is the only place the specs of
+            already-run entries exist.
 
     Returns:
-        This subtree's records, whether ``done_when`` settled true, and what refuted, if
-        anything did.
+        This subtree's records, whether it is done, and why it stopped.
 
     Raises:
         PlanDepthExceededError: ``depth`` has reached ``limits.max_plan_depth``.
         RunNodeBudgetExceededError: a dispatch would cross ``limits.max_nodes_per_run``.
     """
-    _refuse_too_deep(depth, limits)
-    records: dict[str, ResultRecord] = {}
-    graph: dict[str, NodeSpec] = dict(admitted or {})
-    pending = {e.spec.node_id: e for e in plan.entries}
-    refutation: _Refutation | None = None
-    while pending and refutation is None:
-        ready = _ready(pending, records)
-        if not ready:
+    wiring = _Wiring(ctx=ctx, registry=registry, limits=limits, spent=spent, ids=ids or NodeIds())
+    return await _execute(plan, wiring=wiring, depth=depth, admitted=dict(admitted or {}))
+
+
+async def _execute(plan: Plan, *, wiring: _Wiring, depth: int, admitted: dict[str, NodeSpec]) -> Executed:
+    """Drive one plan to terminal. The recursion re-enters HERE, sharing ``wiring``."""
+    _refuse_too_deep(depth, wiring.limits)
+    run = _Progress(pending={e.spec.node_id: e for e in plan.entries}, graph=admitted)
+    in_flight: dict[asyncio.Task[_Landed], Entry] = {}
+    while run.refutation is None and run.failure is None:
+        run.failure = _launch_ready(run, in_flight, wiring=wiring, depth=depth)
+        if not in_flight or run.failure is not None:
             break
-        for node_id in [e.spec.node_id for e in ready]:
-            del pending[node_id]
-        landed = await _run_wave(
-            ready, ctx=ctx, registry=registry, limits=limits, depth=depth, spent=spent, admitted=graph
-        )
-        _absorb(landed, into=records)
-        # AFTER the wave, never during it: a sub-plan dispatched by this wave may name a node
-        # admitted by an EARLIER wave, but not its own wave-mates - entries ready together are
-        # by definition entries neither depends on.
-        graph.update({item.entry.spec.node_id: item.entry.spec for item in landed})
-        refutation = _first_refutation(landed, plan=plan, view=_view(ctx, records))
-    return _executed(plan, records=records, view=_view(ctx, records), refutation=refutation)
+        await _settle(await _await_next(in_flight), run, plan=plan, wiring=wiring)
+    await _settle(await _await_all(in_flight), run, plan=plan, wiring=wiring)
+    if run.failure is not None:
+        raise run.failure
+    return _executed(plan, run=run, view=_view(wiring.ctx, run.records))
+
+
+class _Progress:
+    """One plan's mutable progress: what is left, what landed, and why it stopped.
+
+    A class rather than six locals threaded through helpers - the loop's helpers all read and
+    write the same set, and passing them individually is what turned the first version's
+    signatures into six-parameter lists.
+    """
+
+    def __init__(self, *, pending: dict[str, Entry], graph: dict[str, NodeSpec]) -> None:
+        """Start with every entry pending and nothing landed."""
+        self.pending = pending
+        self.graph = graph
+        self.records: dict[str, ResultRecord] = {}
+        self.refused: list[SubPlanRefused] = []
+        self.unrun: list[str] = []
+        self.refutation: _Refutation | None = None
+        self.failure: BaseException | None = None
 
 
 def _refuse_too_deep(depth: int, limits: RunLimits) -> None:
@@ -236,6 +336,31 @@ def _refuse_too_deep(depth: int, limits: RunLimits) -> None:
         )
 
 
+def _launch_ready(
+    run: _Progress,
+    in_flight: dict[asyncio.Task[_Landed], Entry],
+    *,
+    wiring: _Wiring,
+    depth: int,
+) -> BaseException | None:
+    """Start every pending entry whose deps have landed; report a budget refusal instead of raising.
+
+    Returned rather than raised so the caller can still wait out the nodes already in flight:
+    raising here would abandon real dispatches with no record of them.
+    """
+    for entry in _ready(run.pending, run.records):
+        try:
+            wiring.spent.spend(limit=wiring.limits.max_nodes_per_run)
+        except RunNodeBudgetExceededError as exc:
+            return exc
+        del run.pending[entry.spec.node_id]
+        # A SNAPSHOT of the graph: a task started now must see what had landed when it
+        # started, not whatever lands while it runs.
+        coro = _run_entry(entry, wiring=wiring, depth=depth, admitted=dict(run.graph))
+        in_flight[asyncio.ensure_future(coro)] = entry
+    return None
+
+
 def _ready(pending: Mapping[str, Entry], records: Mapping[str, ResultRecord]) -> list[Entry]:
     """Return the pending entries whose deps have all landed, in plan order.
 
@@ -248,76 +373,84 @@ def _ready(pending: Mapping[str, Entry], records: Mapping[str, ResultRecord]) ->
     return [e for e in pending.values() if all(dep not in pending or dep in records for dep in e.spec.deps)]
 
 
-async def _run_wave(
-    ready: Sequence[Entry],
-    *,
-    ctx: PlanContext,
-    registry: OpRegistry,
-    limits: RunLimits,
-    depth: int,
-    spent: NodeBudget,
-    admitted: Mapping[str, NodeSpec],
-) -> list[_Landed]:
-    """Dispatch every entry of one wave concurrently and return them in wave order.
+async def _await_next(in_flight: dict[asyncio.Task[_Landed], Entry]) -> list[_Landed | BaseException]:
+    """Wait for the NEXT dispatch to land and return just what settled.
 
-    ``return_exceptions=True`` then re-raise, rather than letting ``gather`` cancel: a
-    sibling already in flight is a REAL node with a real cost, and cancelling it to report
-    an error raised by another branch would abandon work the journal has no record of.
-    Every branch is allowed to finish, then the first failure is raised.
+    ``FIRST_COMPLETED``, which is design 3.3's ``await next_terminal()``: a batch wait makes
+    an entry whose own dep has landed queue behind the slowest of its peers.
     """
-    outcomes = await asyncio.gather(
-        *(
-            _run_entry(e, ctx=ctx, registry=registry, limits=limits, depth=depth, spent=spent, admitted=admitted)
-            for e in ready
-        ),
-        return_exceptions=True,
-    )
-    return [_landed_or_raise(outcome) for outcome in outcomes]
+    settled, _ = await asyncio.wait(set(in_flight), return_when=asyncio.FIRST_COMPLETED)
+    return [_result_of(task, in_flight) for task in settled]
 
 
-def _landed_or_raise(outcome: _Landed | BaseException) -> _Landed:
-    """Return a wave branch's result, re-raising whatever it raised instead.
+async def _await_all(in_flight: dict[asyncio.Task[_Landed], Entry]) -> list[_Landed | BaseException]:
+    """Wait out every remaining dispatch - the barrier this loop can build without a stop notice.
 
-    ``BaseException`` and not ``Exception``: ``gather(return_exceptions=True)`` collects a
-    ``CancelledError`` or a ``KeyboardInterrupt`` alongside ordinary failures, and those are
-    the coordinator process itself going away - the same rule
-    :meth:`~agentdag.application.kernel.context.Coordinator.map` states for its own branches.
+    Never cancels. A node in flight is a REAL dispatch with a real cost, and cancelling it to
+    report something another branch decided would abandon work the journal has no record of
+    (the rule :meth:`~agentdag.application.kernel.context.Coordinator.map` states for its own
+    branches). Task 34's stop notice is what makes stopping one legitimate.
     """
-    if isinstance(outcome, BaseException):
-        raise outcome
-    return outcome
+    if not in_flight:
+        return []
+    settled, _ = await asyncio.wait(set(in_flight), return_when=asyncio.ALL_COMPLETED)
+    return [_result_of(task, in_flight) for task in settled]
 
 
-async def _run_entry(
-    entry: Entry,
-    *,
-    ctx: PlanContext,
-    registry: OpRegistry,
-    limits: RunLimits,
-    depth: int,
-    spent: NodeBudget,
-    admitted: Mapping[str, NodeSpec],
-) -> _Landed:
+def _result_of(task: asyncio.Task[_Landed], in_flight: dict[asyncio.Task[_Landed], Entry]) -> _Landed | BaseException:
+    """Take one settled task's result off the in-flight set, exception included.
+
+    Returned rather than re-raised for the same reason as the budget refusal: whatever else
+    is running still has to be waited out.
+    """
+    del in_flight[task]
+    exc = task.exception()
+    return exc if exc is not None else task.result()
+
+
+async def _settle(settled: Sequence[_Landed | BaseException], run: _Progress, *, plan: Plan, wiring: _Wiring) -> None:
+    """Absorb what landed, then run the two condition checks over it.
+
+    ``async`` only so the caller reads as one sequence of awaits; it does no I/O.
+    """
+    landed: list[_Landed] = []
+    for item in settled:
+        if isinstance(item, BaseException):
+            run.failure = run.failure or item
+            continue
+        landed.append(item)
+        _absorb(item, run)
+    if run.refutation is None:
+        run.refutation = _first_refutation(landed, plan=plan, view=_view(wiring.ctx, run.records))
+
+
+def _absorb(item: _Landed, run: _Progress) -> None:
+    """Merge one landed entry - its own record, any subtree, and anything it reported."""
+    run.records[item.entry.spec.node_id] = item.record
+    run.records.update(item.subtree)
+    run.graph[item.entry.spec.node_id] = item.entry.spec
+    run.refused.extend(item.refused)
+    run.unrun.extend(item.unrun)
+
+
+async def _run_entry(entry: Entry, *, wiring: _Wiring, depth: int, admitted: Mapping[str, NodeSpec]) -> _Landed:
     """Dispatch one entry, recursing when it names ``plan``."""
-    spent.spend(limit=limits.max_nodes_per_run)
     if entry.op == PLAN_OP:
-        return await _run_sub_plan(
-            entry, ctx=ctx, registry=registry, limits=limits, depth=depth, spent=spent, admitted=admitted
-        )
-    record = await _dispatch_leaf(entry, ctx=ctx, registry=registry)
+        return await _run_sub_plan(entry, wiring=wiring, depth=depth, admitted=admitted)
+    record = await _dispatch_leaf(entry, wiring=wiring)
     return _Landed(entry=entry, record=record, subtree={})
 
 
-async def _dispatch_leaf(entry: Entry, *, ctx: PlanContext, registry: OpRegistry) -> ResultRecord:
+async def _dispatch_leaf(entry: Entry, *, wiring: _Wiring) -> ResultRecord:
     """Build this entry's op body and await it inside one slot of the run-wide bound.
 
     The slot is held around the body ALONE. A recursion must never hold one (see
     :func:`_run_sub_plan`), and neither may anything else that waits on a nested dispatch.
     """
-    body = registry.get(entry.op).build(entry, ctx)
-    async with ctx.co.parallel_bound():
+    body = wiring.registry.get(entry.op).build(entry, wiring.ctx)
+    async with wiring.ctx.co.parallel_bound():
         result = await body()
-    return _record_of(result, entry=entry, ctx=ctx)
+    return _record_of(result, entry=entry, ctx=wiring.ctx)
 
 
 def _record_of(result: object, *, entry: Entry, ctx: PlanContext) -> ResultRecord:
@@ -342,53 +475,38 @@ def _record_of(result: object, *, entry: Entry, ctx: PlanContext) -> ResultRecor
     return record
 
 
-async def _run_sub_plan(
-    entry: Entry,
-    *,
-    ctx: PlanContext,
-    registry: OpRegistry,
-    limits: RunLimits,
-    depth: int,
-    spent: NodeBudget,
-    admitted: Mapping[str, NodeSpec],
-) -> _Landed:
+async def _run_sub_plan(entry: Entry, *, wiring: _Wiring, depth: int, admitted: Mapping[str, NodeSpec]) -> _Landed:
     """Dispatch this entry's planner, then execute what it planned one level deeper.
 
     The run-wide slot is taken for the PLANNER DISPATCH ONLY and released before the
-    recursion: holding it across ``execute_plan`` would deadlock at ``parallel=1``, because
-    the sub-plan's own leaves queue for the same semaphore the parent is sitting on.
+    recursion: holding it across the sub-plan would deadlock at ``parallel=1``, because the
+    sub-plan's own leaves queue for the same semaphore the parent is sitting on.
 
-    A sub-plan that will not validate comes back as
-    :class:`~agentdag.application.kernel.planner.NotPlanned`. Its planner record still joins
-    the parent's records, and the entry contributes no subtree - so the entry's dependents
-    never become ready and this subtree stops with ``done`` false. Turning those reasons
-    into a re-dispatch is Task 35's; reporting them as a stalled subtree is what this loop
-    can honestly do without a barrier.
+    A sub-plan the validator refused comes back as
+    :class:`~agentdag.application.kernel.planner.NotPlanned`, and its reasons are carried out
+    on :attr:`Executed.refused` rather than lost here. The entry's dependents never become
+    ready, so they land in :attr:`Executed.unrun`.
     """
-    async with ctx.co.parallel_bound():
+    # NOT charged here: :func:`_launch_ready` already spent for this entry, and a planner is
+    # the one node a `plan` entry dispatches itself. Charging in both places billed every plan
+    # entry twice, which a budget test still passed - it raised, just not for its own reason.
+    async with wiring.ctx.co.parallel_bound():
         planned = await dispatch_planner(
             spec=entry.spec,
             goal=_sub_goal(entry),
-            evidence=_evidence(entry, ctx),
-            ctx=ctx,
-            registry=registry,
-            limits=limits,
+            evidence=_evidence(entry, wiring.ctx),
+            ctx=wiring.ctx,
+            registry=wiring.registry,
+            limits=wiring.limits,
             graph=admitted,
             is_root=False,
-            allocate_id=_allocator(ctx),
+            allocate_id=wiring.ids.allocate,
         )
     if not isinstance(planned, Planned):
-        return _Landed(entry=entry, record=planned.record, subtree={})
-    sub = await execute_plan(
-        planned.plan,
-        ctx=ctx,
-        registry=registry,
-        limits=limits,
-        depth=depth + 1,
-        spent=spent,
-        admitted=admitted,
-    )
-    return _Landed(entry=entry, record=planned.record, subtree=sub.records)
+        refusal = SubPlanRefused(node_id=entry.spec.node_id, reasons=planned.reasons)
+        return _Landed(entry=entry, record=planned.record, subtree={}, refused=(refusal,))
+    sub = await _execute(planned.plan, wiring=wiring, depth=depth + 1, admitted=dict(admitted))
+    return _Landed(entry=entry, record=planned.record, subtree=sub.records, refused=sub.refused, unrun=sub.unrun)
 
 
 def _sub_goal(entry: Entry) -> str:
@@ -414,33 +532,6 @@ def _evidence(entry: Entry, ctx: PlanContext) -> dict[str, ResultRecord]:
     return {dep: records[dep] for dep in entry.spec.deps if dep in records}
 
 
-def _allocator(ctx: PlanContext) -> Callable[[], str]:
-    """Hand out node ids for a sub-plan's entries, unique within this run.
-
-    Keyed on how many records the run already holds, so two sub-plans of one run cannot mint
-    the same id: an id already dispatched is in ``dispatcher.records``, and the counter walks
-    past any that collide rather than trusting its own arithmetic.
-    """
-    taken = ctx.co.dispatcher.records
-    counter = {"n": 0}
-
-    def allocate() -> str:
-        while True:
-            counter["n"] += 1
-            candidate = f"n-{counter['n']:04d}"
-            if candidate not in taken:
-                return candidate
-
-    return allocate
-
-
-def _absorb(landed: Iterable[_Landed], *, into: dict[str, ResultRecord]) -> None:
-    """Merge a wave's records - each entry's own, plus any subtree it expanded into."""
-    for item in landed:
-        into[item.entry.spec.node_id] = item.record
-        into.update(item.subtree)
-
-
 def _view(ctx: PlanContext, records: Mapping[str, ResultRecord]) -> Mapping[str, ResultRecord]:
     """Return the records a condition of this plan may name.
 
@@ -454,7 +545,7 @@ def _view(ctx: PlanContext, records: Mapping[str, ResultRecord]) -> Mapping[str,
 
 
 def _first_refutation(landed: Sequence[_Landed], *, plan: Plan, view: Mapping[str, ResultRecord]) -> _Refutation | None:
-    """Return the first condition a wave's records refuted, in wave order, or ``None``.
+    """Return the first condition these records refuted, in landing order, or ``None``.
 
     Two checks per landed record, in design section 4's own order: the entry's own
     ``acceptance``, then the plan's ``holds_while``. Only a settled ``False`` refutes - an
@@ -472,26 +563,23 @@ def _first_refutation(landed: Sequence[_Landed], *, plan: Plan, view: Mapping[st
     return None
 
 
-def _executed(
-    plan: Plan,
-    *,
-    records: Mapping[str, ResultRecord],
-    view: Mapping[str, ResultRecord],
-    refutation: _Refutation | None,
-) -> Executed:
+def _executed(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -> Executed:
     """Settle ``done_when`` over what ran and assemble the subtree's result.
 
-    A REFUTED subtree is never done, whatever ``done_when`` says. Design section 3.3
-    evaluates ``done_when`` only after the loop runs to completion; a refutation leaves it
-    through ``replan``, so the two verdicts never meet there. They can meet here, and the
-    refutation wins: a plan that stopped early has entries that never ran, so a
-    ``done_when`` settling True over the records that DID land is answering a question about
-    a plan nobody finished. Reporting ``done`` beside a non-null ``fired`` would also hand
-    Task 35 a contradiction to branch on.
+    A subtree that was REFUTED, or that carries a refused sub-plan, is never done - whatever
+    ``done_when`` says. Design section 3.3 evaluates ``done_when`` only after the loop runs to
+    completion; a refutation leaves it through ``replan``, so the two verdicts never meet
+    there. They can meet in a function that RETURNS, and the stop wins: a plan that stopped
+    early has entries that never ran, so a ``done_when`` settling True over the records that
+    DID land is answering a question about a plan nobody finished.
     """
+    stopped = run.refutation is not None or bool(run.refused)
+    unrun = tuple(run.unrun) + tuple(e.spec.node_id for e in run.pending.values())
     return Executed(
-        records=records,
-        done=refutation is None and evaluate(plan.done_when, view) is True,
-        fired=None if refutation is None else refutation.condition,
-        fired_on=None if refutation is None else refutation.node_id,
+        records=run.records,
+        done=not stopped and evaluate(plan.done_when, view) is True,
+        fired=None if run.refutation is None else run.refutation.condition,
+        fired_on=None if run.refutation is None else run.refutation.node_id,
+        refused=tuple(run.refused),
+        unrun=unrun,
     )
