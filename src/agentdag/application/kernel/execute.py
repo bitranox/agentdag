@@ -250,7 +250,7 @@ async def execute_plan(
     limits: RunLimits,
     depth: int,
     spent: NodeBudget,
-    ids: NodeIds | None = None,
+    ids: NodeIds,
     admitted: Mapping[str, NodeSpec] | None = None,
 ) -> Executed:
     """Run one plan's entries to terminal, recursing on ``op="plan"`` entries.
@@ -268,9 +268,11 @@ async def execute_plan(
         limits: The run's ceilings; ``max_nodes_per_run`` and ``max_plan_depth`` bind here.
         depth: How deep this plan sits, 0 for the run's own top-level plan.
         spent: The RUN's node budget, shared with every other plan of this run.
-        ids: The RUN's node-id allocator, shared for the same reason. ``None`` creates one,
-            which is right only for a call that IS the run's top-level plan - two runs
-            sharing a coordinator must not share ids, and two plans of ONE run must.
+        ids: The RUN's node-id allocator, shared for the same reason. REQUIRED, with no
+            default, and that is the guard: a second top-level call on the SAME run - which
+            is exactly what Task 35's re-dispatch is - would otherwise restart at ``n-0001``
+            and collide with ids already in the journal. A default made that a docstring's
+            job, and a docstring is what failed the first time this went wrong.
         admitted: The nodes admitted ABOVE this plan, by node id - what a sub-plan's deps and
             conditions may name besides its own entries (``validate_plan``'s ``graph``).
             ``None`` at the root. Threaded rather than read off the coordinator because the
@@ -284,7 +286,7 @@ async def execute_plan(
         PlanDepthExceededError: ``depth`` has reached ``limits.max_plan_depth``.
         RunNodeBudgetExceededError: a dispatch would cross ``limits.max_nodes_per_run``.
     """
-    wiring = _Wiring(ctx=ctx, registry=registry, limits=limits, spent=spent, ids=ids or NodeIds())
+    wiring = _Wiring(ctx=ctx, registry=registry, limits=limits, spent=spent, ids=ids)
     return await _execute(plan, wiring=wiring, depth=depth, admitted=dict(admitted or {}))
 
 

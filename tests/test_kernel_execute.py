@@ -229,6 +229,7 @@ def run_plan(
     run_limits: RunLimits | None = None,
     depth: int = 0,
     spent: NodeBudget | None = None,
+    ids: NodeIds | None = None,
 ) -> Executed:
     """Execute ``plan`` against a real coordinator over a fresh run directory."""
     run_dir = fresh_run_dir(tmp_path)
@@ -243,6 +244,7 @@ def run_plan(
             limits=run_limits or limits(),
             depth=depth,
             spent=spent or NodeBudget(),
+            ids=ids or NodeIds(),
         )
     )
 
@@ -597,7 +599,7 @@ def test_a_ready_entry_starts_while_a_slower_peer_is_still_running(tmp_path: Pat
         coordinator = wire(run_dir, executor, FakeScanner())
         ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
         task = asyncio.ensure_future(
-            execute_plan(plan, ctx=ctx, registry=REG, limits=limits(), depth=0, spent=NodeBudget())
+            execute_plan(plan, ctx=ctx, registry=REG, limits=limits(), depth=0, spent=NodeBudget(), ids=NodeIds())
         )
         await _spin_until(lambda: "b" in executor.started, "b was never dispatched")
         executor.gate("b").set()  # release ONLY b; a stays in flight
