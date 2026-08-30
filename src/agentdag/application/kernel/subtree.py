@@ -52,10 +52,21 @@ class StopScope:
         True
     """
 
-    def __init__(self) -> None:
-        """Start empty and not stopping."""
+    def __init__(self, parent: StopScope | None = None) -> None:
+        """Start empty and not stopping, optionally nested inside ``parent``.
+
+        Args:
+            parent: The scope of the plan this one runs UNDER, or None at the top. A parent
+                that stops carries its whole subtree with it: the design's rule is that a
+                sibling is affected only through a premise its PARENT declared, and the
+                other half of that rule is that when the parent DOES declare one and it
+                refutes, everything below the parent stops. Without the link a parent's
+                notice would reach only its own entries, and a grandchild already past its
+                planner would run on unnotified while the barrier waited it out.
+        """
         self._in_flight: dict[str, datetime] = {}
         self._stopping = False
+        self._parent = parent
 
     def enter(self, node_id: str, at: datetime) -> None:
         """Record that ``node_id`` started at ``at`` and is now the barrier's to wait for.
@@ -93,9 +104,20 @@ class StopScope:
         """Whether ``node_id`` should hand over now.
 
         False for a node that never entered this scope, so a scope shared across sibling
-        subtrees cannot notify someone else's node.
+        subtrees cannot notify someone else's node. True when THIS scope is stopping or any
+        scope above it is - a subtree whose parent was abandoned is abandoned too.
         """
-        return self._stopping and node_id in self._in_flight
+        return self.stopping and node_id in self._in_flight
+
+    @property
+    def stopping(self) -> bool:
+        """Whether this subtree is stopping, from its own request or an ancestor's.
+
+        Walks up rather than being pushed down on ``request_stop``: a child scope created
+        AFTER its parent stopped must read as stopping too, and a push would have missed it
+        for exactly the reason a late entrant reads as stopping here.
+        """
+        return self._stopping or (self._parent is not None and self._parent.stopping)
 
     def in_flight(self) -> frozenset[str]:
         """The ids that have entered and not yet left - what :func:`barrier` waits on."""

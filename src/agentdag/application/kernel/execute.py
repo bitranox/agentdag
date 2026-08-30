@@ -34,7 +34,8 @@ Contents:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 from ...domain.condition import evaluate, referenceable_view, referenced_fields
@@ -362,6 +363,7 @@ async def _execute(
     admitted: dict[str, NodeSpec],
     planner: NodeSpec | None,
     replans: int = 0,
+    parent: StopScope | None = None,
 ) -> Executed:
     """Drive one plan to terminal, re-planning while a condition refutes and the allowance holds.
 
@@ -379,7 +381,7 @@ async def _execute(
     refused: list[SubPlanRefused] = []
     spent_replans = replans
     while True:
-        run = await _one_pass(current, wiring=wiring, depth=depth, admitted=admitted, kept=kept)
+        run = await _one_pass(current, wiring=wiring, depth=depth, admitted=admitted, kept=kept, parent=parent)
         if run.failure is not None:
             raise run.failure
         kept = dict(run.records)
@@ -468,7 +470,13 @@ def _replan_goal(plan: Plan, cause: Cause) -> str:
 
 
 async def _one_pass(
-    plan: Plan, *, wiring: _Wiring, depth: int, admitted: dict[str, NodeSpec], kept: Mapping[str, ResultRecord]
+    plan: Plan,
+    *,
+    wiring: _Wiring,
+    depth: int,
+    admitted: dict[str, NodeSpec],
+    kept: Mapping[str, ResultRecord],
+    parent: StopScope | None,
 ) -> _Progress:
     """Run one plan's entries until something refutes or nothing is left, then drain.
 
@@ -478,16 +486,21 @@ async def _one_pass(
     """
     run = _Progress(pending={e.spec.node_id: e for e in plan.entries}, graph=admitted)
     run.records.update(kept)
-    scope = StopScope()
+    scope = StopScope(parent)
+    # The op bodies this pass builds must ask about THIS pass's scope, and a body closes over
+    # the context it was built with - so the scope travels on a context of this pass's own,
+    # never by mutating the shared one, which would hand the next plan's nodes a scope that
+    # is already stopping.
+    passing = replace(wiring, ctx=replace(wiring.ctx, stopping=scope))
     in_flight: dict[asyncio.Task[_Landed], Entry] = {}
     while run.refutation is None and run.failure is None:
-        run.failure = _launch_ready(run, in_flight, wiring=wiring, depth=depth, scope=scope)
+        run.failure = _launch_ready(run, in_flight, wiring=passing, depth=depth, scope=scope)
         if not in_flight or run.failure is not None:
             break
-        await _settle(await _await_next(in_flight), run, plan=plan, wiring=wiring)
+        await _settle(await _await_next(in_flight), run, plan=plan, wiring=passing)
     if run.refutation is not None and in_flight:
-        run.stuck = await _stop_and_wait(scope, wiring=wiring, in_flight=in_flight)
-    await _settle(await _await_all(in_flight), run, plan=plan, wiring=wiring)
+        run.stuck = await _stop_and_wait(scope, wiring=passing, in_flight=in_flight)
+    await _settle(await _await_all(in_flight), run, plan=plan, wiring=passing)
     return run
 
 
@@ -730,6 +743,7 @@ async def _run_sub_plan(
     async with wiring.ctx.co.parallel_bound():
         scope.enter(entry.spec.node_id, wiring.ctx.co.clock.now())
         planned = await dispatch_planner(
+            is_stopping=partial(scope.is_stopping, entry.spec.node_id),
             spec=entry.spec,
             goal=_sub_goal(entry),
             evidence=_evidence(entry, wiring.ctx),
@@ -744,7 +758,14 @@ async def _run_sub_plan(
         refusal = SubPlanRefused(node_id=entry.spec.node_id, reasons=planned.reasons)
         return _Landed(entry=entry, record=planned.record, subtree={}, refused=(refusal,))
     try:
-        sub = await _execute(planned.plan, wiring=wiring, depth=depth + 1, admitted=dict(admitted), planner=entry.spec)
+        sub = await _execute(
+            planned.plan,
+            wiring=wiring,
+            depth=depth + 1,
+            admitted=dict(admitted),
+            planner=entry.spec,
+            parent=scope,
+        )
     except ReplanLimitExceededError as exc:
         # Exhaustion is REPORTED to the parent, never raised through it: a raise here would
         # take the whole run down over one subtree the parent may well be able to branch

@@ -108,7 +108,7 @@ def rc_is_zero(node_id: str = "g") -> Compare:
     return Compare(ref=FieldRef(entry=node_id, field="rc"), op="==", value=0)
 
 
-def work_only_plan(goal: str, node_id: str) -> str:
+def work_only_plan(goal: str, node_id: str, brief: str | None = None) -> str:
     """One plan carrying a single ``work`` entry, as a planner node writes it."""
     return json.dumps(
         {
@@ -118,7 +118,7 @@ def work_only_plan(goal: str, node_id: str) -> str:
                     "spec": {"node_id": node_id, "kind": "work", "deadline_s": 60.0},
                     "op": "work",
                     "args": {},
-                    "brief": f"do {node_id}",
+                    "brief": brief or f"do {node_id}",
                     "output_contract": ["status"],
                     "acceptance": None,
                 }
@@ -458,3 +458,182 @@ def test_a_node_that_lands_inside_the_bound_leaves_nothing_stuck(tmp_path: Path)
 
     assert out.stuck == frozenset()
     assert executor.planner_dispatches == 1
+
+
+class NoticeWatchingExecutor(ReplanningExecutor):
+    """Polls its own stop predicate while it works, recording whether the notice arrived.
+
+    A node cannot be asked whether it was notified after the fact - the predicate is read at
+    the executor's turn seam and nowhere else - so the only honest observation is to read it
+    from INSIDE a dispatch that is still running, which is exactly when the subtree stops.
+    """
+
+    def __init__(self, *, watch: str, plans: Sequence[str] | None = None) -> None:
+        """Watch ``watch``'s dispatch for the stop notice."""
+        super().__init__(plans=plans)
+        self.notified: set[str] = set()
+        self._watch = watch
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Poll the predicate while the watched node works, then behave as usual."""
+        node_id = request.node_dir.parent.name
+        if node_id == self._watch:
+            for _ in range(400):  # bounded: a notice that never comes must FAIL, never hang
+                if request.is_stopping is not None and request.is_stopping():
+                    self.notified.add(node_id)
+                    break
+                await asyncio.sleep(0.001)
+        return await super().run(request)
+
+
+@pytest.mark.os_agnostic
+def test_a_node_still_running_when_its_subtree_refutes_gets_the_stop_notice(tmp_path: Path) -> None:
+    """The wire the barrier exists for: request_stop must reach a node that is still working.
+
+    Without it the scope is a predicate nothing reads - the subtree stops on paper, every node
+    runs to its natural end, and the barrier waits out full deadlines for nodes that were
+    never asked to hand over.
+    """
+    executor = NoticeWatchingExecutor(watch="slow", plans=[work_only_plan("fix it", "repair")])
+    plan = plan_with([entry(node_id="slow"), entry(node_id="g", op="gate:make-test", acceptance=rc_is_zero())])
+
+    run_plan(tmp_path, plan, executor=executor, planner=spec_of("replanner", op="plan"))
+
+    assert executor.notified == {"slow"}
+
+
+@pytest.mark.os_agnostic
+def test_a_node_whose_subtree_never_refutes_is_never_notified(tmp_path: Path) -> None:
+    """The control. Without it an executor whose predicate answered True always would pass.
+
+    The gate is absent, so nothing refutes and nothing may be asked to hand over - and the
+    watched node's own poll runs to its bound and records nothing.
+    """
+    executor = NoticeWatchingExecutor(watch="slow", plans=[work_only_plan("fix it", "repair")])
+    plan = plan_with([entry(node_id="slow"), entry(node_id="other")])
+
+    run_plan(tmp_path, plan, executor=executor, planner=spec_of("replanner", op="plan"))
+
+    assert executor.notified == set()
+    assert executor.planner_dispatches == 0
+
+
+def two_subplan_parent(*, holds_while: Condition | None) -> Plan:
+    """A parent whose two entries each plan a subtree of their own."""
+    return plan_with(
+        [
+            entry(node_id="left", op="plan", args={"goal": "left work"}),
+            entry(node_id="right", op="plan", args={"goal": "right work"}),
+        ],
+        holds_while=holds_while,
+    )
+
+
+class SubtreeNoticeExecutor(ReplanningExecutor):
+    """Plans a one-work-entry subtree per planner, and watches every WORK node for the notice.
+
+    Every work node polls its own predicate, so which subtree was notified is read off the
+    set rather than inferred from which nodes ran - a stopped node is NOT cancelled, so it
+    finishes either way and the records alone cannot tell the two apart.
+    """
+
+    def __init__(self, *, plans: Sequence[str]) -> None:
+        """Watch every work node this executor is handed."""
+        super().__init__(plans=plans)
+        self.notified: set[str] = set()
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Poll for the notice on a work node; write the staged plan on a planner node.
+
+        Recorded by BRIEF, not by node id: a sub-plan's entries get ids ALLOCATED by the
+        coordinator (``n-0001`` and on), so whatever the plan JSON named them is overwritten
+        before they ever run, and an assertion on those names would compare against ids the
+        fixture cannot know.
+        """
+        if not _is_planner(request):
+            for _ in range(150):  # bounded, so an absent notice FAILS rather than hangs
+                if request.is_stopping is not None and request.is_stopping():
+                    self.notified.add(request.brief)
+                    break
+                await asyncio.sleep(0.001)
+        return await super().run(request)
+
+
+def gate_then_work_plan(goal: str, gate_id: str, work_brief: str) -> str:
+    """A subtree whose gate refutes while its own work node is still running."""
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": "w", "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": work_brief,
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                },
+                {
+                    "spec": {"node_id": gate_id, "kind": "gate", "deadline_s": 60.0},
+                    "op": "gate:make-test",
+                    "args": {},
+                    "brief": "run the gate",
+                    "output_contract": ["status", "rc"],
+                    "acceptance": {"ref": {"entry": gate_id, "field": "rc"}, "op": "==", "value": 0},
+                },
+            ],
+            "done_when": {"ref": {"entry": "w", "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+@pytest.mark.os_agnostic
+def test_a_sibling_subtree_is_not_notified_when_its_neighbour_re_plans(tmp_path: Path) -> None:
+    """Design section 4's safe direction: a sibling is affected ONLY through the PARENT's premise.
+
+    ``left``'s own gate refutes, so left's subtree stops. The parent declares no
+    ``holds_while``, so nothing has been said about ``right`` - notifying it because its
+    neighbour refuted would re-plan WRONG rather than LATE.
+
+    Readable only because a stopped node is not cancelled: both work nodes finish either way,
+    so the records cannot tell them apart and the NOTICE is the whole signal.
+    """
+    executor = SubtreeNoticeExecutor(
+        plans=[gate_then_work_plan("left", "lg", "do lw"), work_only_plan("right", "rw", "do rw")]
+    )
+
+    run_plan(tmp_path, two_subplan_parent(holds_while=None), executor=executor, planner=None)
+
+    assert "do lw" in executor.notified  # its own subtree refuted
+    assert "do rw" not in executor.notified  # the neighbour's refutation did not reach it
+
+
+@pytest.mark.os_agnostic
+def test_a_parent_premise_notifies_the_subtrees_below_it(tmp_path: Path) -> None:
+    """The control for the arm above, in the direction where the rule must ACT.
+
+    Without it an implementation that never notified a NESTED node would pass, and the
+    premise-at-the-parent half of the rule would be untested. The parent's ``holds_while`` is
+    a premise it declared over both subtrees, so when it refutes the notice must reach past
+    the plan entries into the subtrees they planned.
+
+    The parent carries a fast gate entry purely to make the moment deterministic:
+    ``holds_while`` is evaluated when a record LANDS, and a parent whose only entries are
+    plan entries cannot evaluate it until a whole subtree has finished - by which time there
+    may be nothing left in flight to notify, and the arm would pass or fail on timing.
+    """
+    executor = SubtreeNoticeExecutor(
+        plans=[work_only_plan("left", "lw", "do lw"), work_only_plan("right", "rw", "do rw")]
+    )
+    parent = plan_with(
+        [
+            entry(node_id="tick", op="gate:make-test"),
+            entry(node_id="left", op="plan", args={"goal": "left work"}),
+            entry(node_id="right", op="plan", args={"goal": "right work"}),
+        ],
+        holds_while=ALWAYS_FALSE,
+    )
+
+    run_plan(tmp_path, parent, executor=executor, planner=None)
+
+    assert executor.notified >= {"do lw", "do rw"}
