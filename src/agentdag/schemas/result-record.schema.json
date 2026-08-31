@@ -138,7 +138,7 @@
           "dataset": {
             "type": "string",
             "minLength": 1,
-            "description": "The semdex dataset name actually read from."
+            "description": "The knowledge-index dataset name actually read from."
           },
           "content_hash": {
             "type": "string",

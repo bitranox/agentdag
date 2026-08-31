@@ -1,6 +1,6 @@
 """SystemdScope: run the coordinator in a real ``systemd --user`` scope (design C8, Task 17).
 
-Measured live on ``lxc-pydev`` (S0 probe, ``workflow/design/probes/s0-systemd-scopes.md`` in
+Measured live on the Linux dev host (S0 probe, ``workflow/design/probes/s0-systemd-scopes.md`` in
 RESEARCH, re-verified while building this module): ``systemd-run --user --scope --unit=NAME
 --collect ARGV`` creates a transient unit named ``NAME.scope`` - systemd appends the ``.scope``
 suffix itself when ``--unit`` is given without one - so every later lookup (``systemctl --user

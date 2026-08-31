@@ -331,11 +331,7 @@ def test_apply_replay_pushes_nothing_and_refuses_non_scratch(tmp_path: Path) -> 
     assert apply(intents, scratch_root=scratch, git=gitp, store=store) == ["already-done"]
     with pytest.raises(ValueError, match="not under"):
         apply(
-            [
-                PushIntent(
-                    repo=Path("/media/srv-main-softdev/projects/public/libs/x"), head_sha="0" * 40, dedup_key="x-0"
-                )
-            ],
+            [PushIntent(repo=Path("/x/libs/x"), head_sha="0" * 40, dedup_key="x-0")],
             scratch_root=scratch,
             git=gitp,
             store=store,

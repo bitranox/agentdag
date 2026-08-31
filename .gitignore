@@ -199,6 +199,10 @@ CLAUDE.local.md
 # Python virtual environments (managed by bmk)
 .venv*/
 
+# Local private-marker list read by tests/test_repo_publishable.py. Gitignored on purpose:
+# a shipped blocklist of hostnames publishes exactly what it exists to keep out.
+.private-markers
+
 # Autonomous-execution decision log: never committed HERE, and since 2026-09-01 this path
 # is a symlink to its one real home in the private research repo. It stays private because
 # its spend figures are the subject of their own sentences, so redacting them would destroy

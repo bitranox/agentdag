@@ -37,4 +37,4 @@ def test_dedup_key_is_name_and_sha() -> None:
 def test_is_scratch_target(tmp_path: Path) -> None:
     (tmp_path / "origin").mkdir()
     assert is_scratch_target(tmp_path / "origin" / "r.git", tmp_path)
-    assert not is_scratch_target(Path("/media/srv-main-softdev/projects/public/libs/x"), tmp_path)
+    assert not is_scratch_target(Path("/x/libs/x"), tmp_path)

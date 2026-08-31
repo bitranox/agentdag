@@ -296,7 +296,7 @@ class NodeError(BaseModel):
 
 
 class KnowledgeUsed(BaseModel):
-    """One semdex dataset a node actually read from, recorded from day one (design 2.2, 3.2)."""
+    """One knowledge-index dataset a node actually read from, recorded from day one (design 2.2, 3.2)."""
 
     model_config = ConfigDict(frozen=True)
 

@@ -25,7 +25,7 @@ Rules deliberately absent or partial, none of them an oversight:
   the divergence is recorded rather than guessed at.
 
 * ``knowledge`` and ``stage_into`` against the workflow's grant - design 2.1 puts both outside
-  slice 1 ("NOT IN SLICE 1: both need semdex 4.4 and 4.9, neither shipped").
+  slice 1 ("NOT IN SLICE 1: both need the knowledge-index project's 4.4 and 4.9, neither shipped").
 * ``budget`` against ``tokens_per_row`` - already enforced, and as a REFUSAL, by
   :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`, which returns a
   non-transient ``BUDGET_EXCEEDED`` record without calling the executor. Duplicating it here

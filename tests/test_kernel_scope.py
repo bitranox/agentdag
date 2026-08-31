@@ -4,7 +4,7 @@
 (``os_agnostic``); :class:`~agentdag.adapters.kernel.scope_systemd.SystemdScope` needs a
 real Linux host with a live ``systemd --user`` manager, so it is ``os_linux`` and
 ``local_only`` - CI runs with ``-m "not local_only"`` and never sees it (measured live on
-``lxc-pydev``, S0 probe, ``workflow/design/probes/s0-systemd-scopes.md`` in RESEARCH:
+the Linux dev host, S0 probe, ``workflow/design/probes/s0-systemd-scopes.md`` in RESEARCH:
 ``systemd-run --user --scope --unit=NAME`` names the resulting unit ``NAME.scope``, which
 is exactly what :class:`SystemdScope` returns as ``ScopeHandle.unit``).
 

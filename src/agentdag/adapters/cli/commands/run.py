@@ -199,7 +199,7 @@ First, this env is not only the child's: ``scope.start()`` hands it to
 :class:`SystemdScope <agentdag.adapters.kernel.scope_systemd.SystemdScope>`, which passes
 it as the environment of the ``systemd-run`` process ITSELF, and ``systemd-run --user``
 refuses outright without one of the two ("Failed to connect to user scope bus via local
-transport" - measured live on ``lxc-pydev`` while building this module: an empty env makes
+transport" - measured live on the Linux dev host while building this module: an empty env makes
 it fail even though ``systemd-run`` is on PATH and the user manager is up). Second, the
 coordinator process launched inside the scope re-enters
 :func:`~agentdag.composition.kernel.wire_kernel` to build its own wiring, and that calls

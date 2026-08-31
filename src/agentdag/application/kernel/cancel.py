@@ -81,7 +81,7 @@ caller writes the intent (:func:`request_cancel`) strictly before this can run."
 def scope_unit(run_id: str) -> str:
     """Return the scope unit name a coordinator launch and a later kill both use for ``run_id``.
 
-    A HYPHEN, never ``@``: measured live on ``lxc-pydev`` while building Task 17
+    A HYPHEN, never ``@``: measured live on the Linux dev host while building Task 17
     (``adapters.kernel.scope_systemd``'s own module docstring),
     ``systemd-run --user --scope --unit=agentdag-run@<run_id>`` fails outright ("Invalid
     argument") because systemd reads ``@`` in a unit name as the template-instance

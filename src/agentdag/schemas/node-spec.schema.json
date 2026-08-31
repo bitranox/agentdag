@@ -74,12 +74,12 @@
         "minLength": 1,
         "pattern": "^(facts|docs:[A-Za-z0-9._-]+|run:[A-Za-z0-9._-]+|staging:[A-Za-z0-9._-]+)$"
       },
-      "description": "semdex dataset names this node may read (2.1), one of the namespaces of design 3.7. Enters the journal key as the allowed list (3.2). NOT IN SLICE 1: needs semdex 4.4 (filter port) and 4.9 (staging queue); see ../../../PLANS/build-plan-high.md cuts."
+      "description": "knowledge-index dataset names this node may read (2.1), one of the namespaces of design 3.7. Enters the journal key as the allowed list (3.2). NOT IN SLICE 1: needs the knowledge-index project's 4.4 (filter port) and 4.9 (staging queue); see ../../../PLANS/build-plan-high.md cuts."
     },
     "stage_into": {
       "type": "string",
       "minLength": 1,
-      "description": "The single semdex dataset this node may WRITE to (2.1). Validated explicitly (2.4) and part of the journal key (3.2), because changing where a node writes makes it a different call. NOT IN SLICE 1, with knowledge.",
+      "description": "The single knowledge-index dataset this node may WRITE to (2.1). Validated explicitly (2.4) and part of the journal key (3.2), because changing where a node writes makes it a different call. NOT IN SLICE 1, with knowledge.",
       "pattern": "^(run:[A-Za-z0-9._-]+|staging:[A-Za-z0-9._-]+)$"
     },
     "write_set": {
