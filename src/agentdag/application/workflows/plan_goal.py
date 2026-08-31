@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ...domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
 from ..kernel.execute import NodeBudget, NodeIds
 from ..kernel.registry import PlanContext
-from ..kernel.root import run_root
+from ..kernel.root import run_root, with_budget_grants
 
 if TYPE_CHECKING:
     from ..kernel.context import Coordinator
@@ -36,6 +36,15 @@ PLANNER_ID = "p_root"
 
 APPROVE_ID = "a_planning"
 """The node a person answers when the planner has used every attempt it was allowed."""
+
+BUDGET_APPROVE_ID = "a_budget"
+"""The node a person answers when the RUN has spent its node budget.
+
+Its OWN node rather than a second question on :data:`APPROVE_ID`, and that is forced rather
+than stylistic: a decision is recorded per (node id, payload hash), and
+:func:`~agentdag.application.kernel.root.with_budget_grants` has to count the budget grants
+at run start from the journal alone. Sharing a node would leave it unable to tell which
+decisions were about the budget without rebuilding every payload the run ever offered."""
 
 WORKTREE = "root"
 """The directory under ``wt/`` the planned entries run in.
@@ -85,9 +94,10 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
         goal=args.goal,
         planner=_planner_spec(),
         approve=_approve_spec(),
+        budget_approve=_budget_approve_spec(),
         ctx=PlanContext(co=co, cwd=cwd),
         registry=co.registry,
-        limits=co.policy.run_limits,
+        limits=with_budget_grants(co.policy.run_limits, co=co, approve_id=BUDGET_APPROVE_ID),
         graph={},
         spent=NodeBudget(),
         ids=NodeIds(),
@@ -114,5 +124,21 @@ def _approve_spec() -> NodeSpec:
         executor="code",
         isolation=Isolation.NONE,
         deps=[PLANNER_ID],
+        deadline_s=_DECIDE_BY_S,
+    )
+
+
+def _budget_approve_spec() -> NodeSpec:
+    """The human gate for a run that has spent its node budget.
+
+    No ``deps``: unlike the planning gate this question is about the whole RUN rather than
+    about what one planner produced, and it can be reached before that planner's own
+    exhaustion ever is.
+    """
+    return NodeSpec(
+        node_id=BUDGET_APPROVE_ID,
+        kind=Kind.APPROVE,
+        executor="code",
+        isolation=Isolation.NONE,
         deadline_s=_DECIDE_BY_S,
     )

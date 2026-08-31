@@ -39,11 +39,55 @@ if TYPE_CHECKING:
     from ...domain.models import NodeSpec, ResultRecord
     from ...domain.plan import Plan
     from ...domain.policy import RunLimits
+    from .context import Coordinator
     from .execute import NodeBudget, NodeIds
     from .planner import NotPlanned
     from .registry import OpRegistry, PlanContext
 
-__all__ = ["ABANDON", "GRANT", "run_root"]
+__all__ = ["ABANDON", "GRANT", "run_root", "with_budget_grants"]
+
+
+def with_budget_grants(limits: RunLimits, *, co: Coordinator, approve_id: str) -> RunLimits:
+    """Return ``limits`` with ``max_nodes_per_run`` raised by the budget grants on record.
+
+    **This is the only place a budget grant takes effect, and it runs at RUN START.** The
+    node budget is per-LAUNCH and is charged for every dispatch this launch makes, REPLAYED
+    ONES INCLUDED - :func:`~agentdag.application.kernel.execute._launch_ready` spends before
+    the dispatch, and a journal-served record costs the same as one that ran. So a grant
+    cannot be applied where it is asked for: by then this launch has already charged its way
+    to the ceiling, and raising a number in memory would leave the run re-entering a pass
+    that was built to run once. Instead the grant is recorded, the launch ends, and the NEXT
+    launch replays under a ceiling this function has already raised.
+
+    ``base x (1 + grants)``, so one grant buys another whole ``max_nodes_per_run`` - the same
+    thing GRANT buys on the re-plan ladder. Note what the replay costs: of that fresh
+    allowance the relaunch spends whatever the previous launch had already dispatched before
+    it can reach new work, so the NET gain is an allowance minus the history. That is a
+    property of a per-launch budget, not of this function.
+
+    Counted by NODE ID, which is why the budget question needs an approve node of its own: a
+    decision is recorded per (node id, payload hash), so grants on the two root questions are
+    told apart by node id and nothing else. Sharing one node would make this count unable to
+    say which decisions were about the budget without rebuilding every payload ever offered.
+
+    Args:
+        limits: The run's ceilings as the policy table shipped them.
+        co: The coordinator, whose replay index holds the decisions folded from the journal.
+            Its ``fold_decisions`` must have run, which ``run_coordinator`` does at startup.
+        approve_id: The node id the budget question is asked under.
+
+    Returns:
+        ``limits`` unchanged when nothing was granted, else a copy with the raised ceiling.
+    """
+    grants = sum(
+        1
+        for (node_id, _), line in co.dispatcher.index.decisions.items()
+        if node_id == approve_id and line.decision == GRANT
+    )
+    if not grants:
+        return limits
+    return limits.model_copy(update={"max_nodes_per_run": limits.max_nodes_per_run * (1 + grants)})
+
 
 ABANDON = "abandon"
 """Stop asking and report what could not be planned. The DEFAULT, and its effect is ``none``.
@@ -74,6 +118,7 @@ async def run_root(
     goal: str,
     planner: NodeSpec,
     approve: NodeSpec,
+    budget_approve: NodeSpec,
     ctx: PlanContext,
     registry: OpRegistry,
     limits: RunLimits,
@@ -126,13 +171,17 @@ async def run_root(
         return await _granted_more(approve, planner=planner, plan=plan, cause=cause, granted=granted,
                                    ctx=ctx, asked=asked)  # fmt: skip
 
+    async def budget_exhausted(*, spent: int, limit: int) -> None:
+        """Ask what to do about a run that has spent its node budget."""
+        await _budget_answered(budget_approve, spent=spent, limit=limit, ctx=ctx, asked=asked)
+
     while True:
         planned = await _plan(goal=_ask(goal, reasons=reasons, granted=granted), planner=planner, ctx=ctx,
                               registry=registry, limits=limits, graph=graph, ids=ids)  # fmt: skip
         if isinstance(planned, Planned):
             return await execute_plan(planned.plan, ctx=ctx, registry=registry, limits=limits, depth=0,
                                       spent=spent, ids=ids, planner=planner, admitted=graph,
-                                      grant_more=grant_more)  # fmt: skip
+                                      grant_more=grant_more, budget_exhausted=budget_exhausted)  # fmt: skip
         reasons = planned.reasons
         if attempts < limits.max_replans:
             attempts += 1
@@ -274,6 +323,87 @@ async def _granted_more(
         )
     asked.add(decision.payload_hash)
     return decision.decision == GRANT
+
+
+async def _budget_answered(approve: NodeSpec, *, spent: int, limit: int, ctx: PlanContext, asked: set[str]) -> None:
+    """Ask what to do about a spent node budget, and return only when the answer is ABANDON.
+
+    The third root question, and the only one whose GRANT this launch cannot act on. A grant
+    takes effect in :func:`with_budget_grants` at the START of a launch, so by the time a
+    recorded grant could be read here the ceiling it would have raised is already fixed and
+    this launch has already spent its way to it.
+
+    That makes a served GRANT here a WIRING failure rather than an outcome: it says a grant
+    is on record that run start did not apply, which happens when the program passes
+    ``co.policy.run_limits`` straight through instead of putting it through
+    :func:`with_budget_grants`, or counts against a different node id. Left unchecked the run
+    would ask the same question every launch forever, each time from a person's point of view
+    having ignored their answer, so it is refused loudly instead.
+
+    Raises:
+        Suspended: through :meth:`~agentdag.application.kernel.context.Coordinator.approve`,
+            when nobody has answered this exact question yet. The launch ends resumably.
+        KernelError: a GRANT is recorded for this payload and the ceiling was not raised
+            from it, or this launch has already had an answer served for it.
+    """
+    payload = _spent_budget(approve, spent=spent, limit=limit, ctx=ctx)
+    decision = await ctx.co.approve(approve, payload=payload)
+    if decision.payload_hash in asked:
+        raise KernelError(
+            f"the spent-budget payload hashed to {decision.payload_hash!r} a second time in "
+            "one launch, so a decision already served would be served again"
+        )
+    asked.add(decision.payload_hash)
+    if decision.decision == GRANT:
+        raise KernelError(
+            f"node budget {limit} was granted more for this run, but this launch started with "
+            f"that same ceiling - so run start did not apply the grant. The workflow program "
+            f"must pass its run limits through with_budget_grants(), counting {approve.node_id!r}"
+        )
+
+
+def _spent_budget(approve: NodeSpec, *, spent: int, limit: int, ctx: PlanContext) -> ApprovePayload:
+    """Build the question a person answers when the run has spent its node budget.
+
+    ``artefact_refs`` names the run's own directory rather than a node's: unlike the two
+    planning questions this one is about the WHOLE run, and there is no single dispatch that
+    caused it. What makes a repeat ask a NEW question is the ceiling itself, which the text
+    carries and which a granted round raises - so a second exhaustion is asked at a different
+    number and cannot re-serve the first answer.
+    """
+    return ApprovePayload(
+        text=_budget_question(spent=spent, limit=limit),
+        node_id=approve.node_id,
+        artefact_refs=["."],
+        options=[
+            ApproveOption(id=ABANDON, label="abandon: stop here and keep what the run produced", effect="none"),
+            ApproveOption(id=GRANT, label="grant the run another whole node budget", effect="none"),
+        ],
+        default=ABANDON,
+        decide_by=_decide_by(ctx, window_s=approve.deadline_s),
+        workflow=ctx.co.workflow,
+        run_id=ctx.co.run_id,
+    )
+
+
+def _budget_question(*, spent: int, limit: int) -> str:
+    """Render the spent budget for a person, and say what a grant will and will not buy.
+
+    The replay cost is stated because it is the one thing that makes this question different
+    from "do you want to keep going": a granted allowance is spent partly on re-charging the
+    dispatches this run has already made, so the NET gain is smaller than the number offered
+    and a decider who does not know that will be surprised by where the next stop lands.
+    """
+    return render_for_operator(
+        f"This run has dispatched {spent} nodes and has reached its ceiling of {limit}.\n"
+        f"The ceiling is a runaway guard rather than a spending plan, so hitting it means "
+        f"either that the goal is genuinely wider than expected, or that something is "
+        f"looping.\n\n"
+        f"Abandon the run and keep what it has produced, or grant it another {limit} nodes. "
+        f"A grant takes effect when the run is next started, and that relaunch re-charges "
+        f"the work already done before it reaches anything new - so it buys less new work "
+        f"than the number suggests."
+    )
 
 
 def _refuted(

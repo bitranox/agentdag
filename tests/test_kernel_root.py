@@ -35,13 +35,13 @@ from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.sandbox_none import NoSandbox
 from agentdag.application.kernel.execute import NodeBudget, NodeIds
 from agentdag.application.kernel.registry import PlanContext
-from agentdag.application.kernel.root import run_root
+from agentdag.application.kernel.root import run_root, with_budget_grants
 from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.plan_goal import PlanGoalArgs
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import PlanAcceptedLine, PlanInvalidatedLine, RunStartedLine
-from agentdag.domain.kernel_errors import Suspended
+from agentdag.domain.kernel_errors import KernelError, Suspended
 from agentdag.domain.keys import hash8
 from agentdag.domain.models import ApprovePayload, Budget, Decision, Kind, NodeSpec, RunStatus, TierRole
 from agentdag.domain.policy import RunLimits
@@ -58,9 +58,16 @@ REG = build_op_registry()
 
 PLANNER_ID = "p_root"
 APPROVE_ID = "a_root_planning"
+BUDGET_APPROVE_ID = "a_root_budget"
+"""The budget question's OWN node, and it has to be its own.
+
+A decision is recorded per (node id, payload hash), so grants on the two root questions are
+told apart by node id alone. Sharing one node would make the run-start count of budget grants
+- which is what a granted round actually takes effect through - unable to see which decisions
+were about the budget without rebuilding every payload it ever offered."""
 
 
-def limits(*, max_replans: int = 3) -> RunLimits:
+def limits(*, max_replans: int = 3, max_nodes_per_run: int = 1000) -> RunLimits:
     """Run limits generous everywhere but the one bound an arm names."""
     return RunLimits(
         tokens_per_row={"sonnet": 1_000_000_000},
@@ -69,7 +76,7 @@ def limits(*, max_replans: int = 3) -> RunLimits:
         planner_kinds=[],
         top_role_budget_floor=0.0,
         max_replans=max_replans,
-        max_nodes_per_run=1000,
+        max_nodes_per_run=max_nodes_per_run,
         max_nodes_per_plan=1000,
         max_plan_depth=5,
     )
@@ -89,6 +96,11 @@ def planner_spec() -> NodeSpec:
 def approve_spec() -> NodeSpec:
     """The human gate the ladder ends at; its deadline IS the decision window."""
     return NodeSpec(node_id=APPROVE_ID, kind=Kind.APPROVE, executor="code", deadline_s=3600)
+
+
+def budget_approve_spec() -> NodeSpec:
+    """The human gate for a run that has spent its node budget."""
+    return NodeSpec(node_id=BUDGET_APPROVE_ID, kind=Kind.APPROVE, executor="code", deadline_s=3600)
 
 
 def valid_plan(goal: str = "g", node_id: str = "repair") -> str:
@@ -219,23 +231,33 @@ def drive(
     goal: str = "g",
     run_limits: RunLimits | None = None,
     gate_port: RedGate | None = None,
+    apply_budget_grants: bool = True,
 ) -> Executed:
     """Run the root ladder over ``run_dir``, as a relaunch would over an existing one.
 
     ``gate_port`` defaults to the coordinator's own, which is the REAL ``make test`` gate; an
     arm whose plan carries a gate entry must pass a fake, or the fixture shells out.
+
+    The node-budget ceiling is raised HERE, from the grants this run's journal already holds,
+    exactly as the workflow program does it - a budget grant takes effect at run start and
+    nowhere else, so a fixture that passed the base ceiling would make every relaunch stop in
+    the same place and the grant would look broken.
     """
     coordinator = wire(run_dir, executor, FakeScanner(), gate_port=gate_port)  # type: ignore[arg-type]
     coordinator.fold_decisions()
     ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
+    base = run_limits or limits()
     return asyncio.run(
         run_root(
             goal=goal,
             planner=planner_spec(),
             approve=approve_spec(),
+            budget_approve=budget_approve_spec(),
             ctx=ctx,
             registry=REG,
-            limits=run_limits or limits(),
+            limits=with_budget_grants(base, co=coordinator, approve_id=BUDGET_APPROVE_ID)
+            if apply_budget_grants
+            else base,
             graph={},
             spent=NodeBudget(),
             ids=NodeIds(),
@@ -249,10 +271,15 @@ def payload_on_offer(run_dir: FsRunDir, payload_hash: str) -> ApprovePayload:
     return ApprovePayload.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def answer(run_dir: FsRunDir, payload_hash: str, verdict: str) -> None:
-    """Record a human's decision against the exact payload the run suspended on."""
+def answer(run_dir: FsRunDir, payload_hash: str, verdict: str, *, node_id: str = APPROVE_ID) -> None:
+    """Record a human's decision against the exact payload the run suspended on.
+
+    ``node_id`` defaults to the planning gate because most arms ask that one; the budget gate
+    is a DIFFERENT node, and passing the wrong one here files the decision where nothing will
+    look for it, which reads as the run ignoring an answer rather than as a test bug.
+    """
     run_dir.write_decision(
-        Decision(node_id=APPROVE_ID, decision=verdict, by="tester", token_id="local", payload_hash=payload_hash)
+        Decision(node_id=node_id, decision=verdict, by="tester", token_id="local", payload_hash=payload_hash)
     )
 
 
@@ -647,3 +674,150 @@ def test_each_granted_round_asks_a_question_of_its_own(tmp_path: Path) -> None:
         answer(run_dir, seen[-1], "replan")
 
     assert len(set(seen)) == 3, "an exhaustion re-asked a question whose answer is already recorded"
+
+
+def wide_plan(goal: str = "g", *, n: int = 4) -> str:
+    """A root plan the validator accepts whose entries alone outnumber a small node budget.
+
+    Every entry is state-changing ``work``, so the root-only rule on ``done_when`` is
+    satisfied and the plan REACHES execution - which is the point: what must run out here is
+    the run's node budget, not its re-plan allowance and not the validator's patience.
+    """
+    ids = [f"w{i}" for i in range(n)]
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": i, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {i}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                }
+                for i in ids
+            ],
+            "done_when": {"ref": {"entry": ids[0], "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+@pytest.mark.os_agnostic
+def test_a_root_run_that_exhausts_the_node_budget_asks_rather_than_failing(tmp_path: Path) -> None:
+    """The third root exhaustion, and the one Task 36 left reachable.
+
+    Task 36 made a refuted CONDITION ask instead of raising, but every granted round spends
+    from the RUN-wide node budget - so a run granted enough rounds still died on
+    ``max_nodes_per_run``, unresumable, which is the death Task 36 was written to remove. The
+    budget is a runaway guard rather than a calibrated spend ceiling: ``tier-policy.yaml``
+    raised it 200 to 1000 at Checkpoint A precisely because a calibrated one refused
+    legitimate wide work, so hitting it is exactly the case a person should judge.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[wide_plan(n=4)])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_nodes_per_run=3))
+
+    assert info.value.node_id == BUDGET_APPROVE_ID
+    assert info.value.payload_hash is not None
+
+
+@pytest.mark.os_agnostic
+def test_a_budget_grant_takes_effect_at_the_next_run_start_and_lets_the_run_finish(tmp_path: Path) -> None:
+    """The decision, 2026-08-31: a budget grant takes effect at RUN START and nowhere else.
+
+    It cannot take effect where it is asked for. The node budget is per-LAUNCH and is charged
+    for every dispatch the launch makes, replayed ones included, so by the time the question
+    is asked this launch has already spent its way to the ceiling. The grant is recorded, the
+    launch ends, and the NEXT launch replays under a ceiling ``with_budget_grants`` raised
+    from the journal before anything was dispatched.
+
+    Sized so the arm can tell that apart from "it stopped asking": four entries plus the
+    planner need five nodes, the first launch is given three, and the grant makes it six. A
+    ceiling raised anywhere later than run start leaves the replay charging under three and
+    stopping in the same place.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, RootPlanningExecutor(plans=[wide_plan(n=4)]), run_limits=limits(max_nodes_per_run=3))
+    answer(run_dir, str(info.value.payload_hash), "replan", node_id=BUDGET_APPROVE_ID)
+
+    out = drive(run_dir, RootPlanningExecutor(plans=[wide_plan(n=4)]), run_limits=limits(max_nodes_per_run=3))
+
+    assert out.done is True, "the granted ceiling did not reach the replay, so the run stopped again"
+    assert out.unrun == ()
+
+
+@pytest.mark.os_agnostic
+def test_an_abandoned_budget_is_reported_unfinished_even_when_done_when_settles(tmp_path: Path) -> None:
+    """Abandon reports rather than raises - and the subtree must NOT come back done.
+
+    The forcing is the point. ``_verdict`` calls a subtree stopped when a condition refuted or
+    a sub-plan was refused, and a spent budget is neither, so this plan's ``done_when`` - which
+    names the FIRST entry, one that did land before the ceiling - would otherwise settle True
+    and report a run DONE while entries it never dispatched sit in ``unrun``.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, RootPlanningExecutor(plans=[wide_plan(n=4)]), run_limits=limits(max_nodes_per_run=3))
+    answer(run_dir, str(info.value.payload_hash), "abandon", node_id=BUDGET_APPROVE_ID)
+
+    out = drive(run_dir, RootPlanningExecutor(plans=[wide_plan(n=4)]), run_limits=limits(max_nodes_per_run=3))
+
+    assert out.done is False, "a run that never dispatched half its plan reported itself done"
+    assert out.unrun != (), "the entries the ceiling stopped must be named"
+    assert any(r.node_id.startswith("n-") for r in out.records.values()), "records were thrown away"
+
+
+@pytest.mark.os_agnostic
+def test_a_grant_the_run_start_never_applied_is_refused_loudly(tmp_path: Path) -> None:
+    """The guard that makes ``with_budget_grants`` load-bearing rather than merely present.
+
+    A GRANT served at the ASK means a grant is on record that run start did not apply - the
+    program passed its limits through unchanged, or counted against another node id. Without
+    this the run would re-ask the identical question every launch, forever, each time looking
+    to the person like their answer had been ignored.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, RootPlanningExecutor(plans=[wide_plan(n=4)]), run_limits=limits(max_nodes_per_run=3))
+    answer(run_dir, str(info.value.payload_hash), "replan", node_id=BUDGET_APPROVE_ID)
+
+    with pytest.raises(KernelError) as raised:
+        drive(
+            run_dir,
+            RootPlanningExecutor(plans=[wide_plan(n=4)]),
+            run_limits=limits(max_nodes_per_run=3),
+            apply_budget_grants=False,
+        )
+
+    assert "with_budget_grants" in str(raised.value)
+
+
+@pytest.mark.os_agnostic
+def test_with_budget_grants_scales_by_the_grants_on_record_and_only_by_those(tmp_path: Path) -> None:
+    """The function under the arms above, exercised directly against a real journal.
+
+    Both directions, because each catches an implementation the other passes: one that always
+    multiplies would start every run on a ceiling the policy table does not state, and one
+    that never multiplies makes a grant buy nothing while still clearing the ask.
+    """
+    run_dir = root_run_dir(tmp_path)
+    base = limits(max_nodes_per_run=7)
+    coordinator = wire(run_dir, RootPlanningExecutor(plans=[]), FakeScanner())  # type: ignore[arg-type]
+    coordinator.fold_decisions()
+
+    assert with_budget_grants(base, co=coordinator, approve_id=BUDGET_APPROVE_ID).max_nodes_per_run == 7
+
+    # Leading characters differ, not trailing: a payload hash is shortened to hash8 for the
+    # directory it is filed under, so ids sharing a prefix collide on disk.
+    answer(run_dir, "sha256:" + "1a" * 32, "replan", node_id=BUDGET_APPROVE_ID)
+    answer(run_dir, "sha256:" + "2b" * 32, "replan", node_id=BUDGET_APPROVE_ID)
+    answer(run_dir, "sha256:" + "3c" * 32, "replan", node_id=APPROVE_ID)
+    coordinator.fold_decisions()
+
+    # Two budget grants, so three whole allowances. The PLANNING grant must not count: the
+    # two questions are told apart by node id and nothing else.
+    assert with_budget_grants(base, co=coordinator, approve_id=BUDGET_APPROVE_ID).max_nodes_per_run == 21
