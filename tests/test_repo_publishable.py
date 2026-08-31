@@ -63,7 +63,11 @@ PRIVATE_MARKERS_FILE = REPO_ROOT / ".private-markers"
 
 # Absolute paths under roots that a real machine mounts and documentation does not use as an
 # example. `/home/` and `/Users/` are deliberately NOT here: `/home/op/...` in a config comment
-# is a placeholder, and firing on it would train the reader to ignore this test.
+# is a placeholder, and firing on it would train the reader to ignore this test. That leaves a
+# real home path visible to the private-name list only, which is a KNOWN and accepted gap (user,
+# 2026-09-01): the list runs on the local gate before every push, which is where such a path
+# would be pasted. Do not "fix" this by widening the pattern and allow-listing the placeholder
+# lines - a path-keyed exemption list goes stale silently as those files move.
 NON_FHS_MOUNT_PATH = re.compile(r"(?:^|[^A-Za-z0-9_<`.-])/(?:media|mnt|srv|rotek)/[A-Za-z0-9_.-]+")
 
 # A key or certificate named after the account it authenticates, e.g. user@host_nopass.key.
