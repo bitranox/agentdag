@@ -1,0 +1,19 @@
+# Open work
+
+The standing backlog. One item per line, edited line by line - never rewritten wholesale, which is
+what let items rot when they lived in `handover.md`. Rank in tens so an insertion is a new number
+rather than a renumbering. `USER:` outranks every `FOUND:`; size breaks ties within an origin.
+
+Created 2026-08-31 by reconciling the outgoing handover, so several dates are marked `?`: the
+handover recorded the item but not when it was first raised, and an invented date would silently
+reset the age that makes a long-carried item conspicuous.
+
+- [ ] (2026-08-31?) [10] USER: track `PLANS/`, `EXECUTION-USER-REVIEW.md` and `handover.md` in agentdag itself instead of the manual `RESEARCH/agentdag-working/` copy | size: one read-through plus a gitignore edit | open: the copy already went stale once and lost two shipped tasks; agentdag is PUBLIC and these carry internal research and cost measurements, so the read-through for what must not be published IS the work | next: read the three files for anything unpublishable, then decide tracked-or-not and say which
+- [ ] (2026-08-30) [20] USER: does P3 restore the cut item? | size: one decision | open: blocked on the user, asked 2026-08-30 and again 2026-08-31, unanswered both times; "a hard token budget already ships" is true for an operator who set a turn budget and false by default | next: the user answers; then correct the cut-list row's wording to name the mechanism AND its condition
+- [ ] (2026-08-31) [30] USER: does the non-idempotent-resume finding deserve a differentiator row, and in whose words? | size: one decision | open: blocked on the user; P4 measured that after a crash a resume is neither exclusive nor idempotent, which is NOT the property the plan claimed, and the P1-P4 block forbids a probe changing scope text | next: the user decides; then write the row
+- [ ] (2026-08-31) [40] FOUND: build component 5's judge op and the completion ladder | size: large - a new op, its typed verdict, its body, and its own `facts_if_no_work` | open: decision 4's validator half shipped 2026-08-31 (`c7ed9a0`), the judge itself is untouched | next: write the judge body, then set `facts_if_no_work` by READING the emitter it writes - for a judge, what a verdict reads on a run that achieved nothing is the whole question, not a formality
+- [ ] (2026-08-31?) [50] FOUND: 167 unframed memory bodies | size: 167 bodies | open: carried unchanged through four handovers, never started | next: sample ten to see whether the framing is mechanical enough to batch before committing to all 167
+- [ ] (2026-08-31) [60] FOUND: decide the degenerate-dispatch rule - a root `done_when` can still settle on a `work` node that RAN and reported `turns == 0` | size: one rule plus its tests | open: surfaced while rewriting decision 4 and deliberately left out of it, because the node did run so it is not decision 4's never-started question; it needs a second notion of "ran and achieved nothing" | next: decide whether it is a validator rule or an execute-time one, then write it
+- [ ] (2026-08-29?) [70] FOUND: the ragged-table check sits in `repo-gate`'s maintainer-only `if not ci:` branch | size: one line moved | open: undecided across three handovers; a contributor PR with a ragged table passes CI today | next: move the line out of that block, or record why it stays maintainer-only
+- [ ] (2026-08-31) [80] FOUND: which two executors ran concurrently in P4's arm B | size: one probe run | open: the duplicate execution is measured, but the mechanism is inferred - likely the resume waking the respawned worker while the resuming process also drove the turn | next: re-run arm B with the respawned worker stopped first, leaving exactly one executor
+- [x] (2026-08-31) [90] FOUND: `29162fb` unpushed on main | closed: pushed 2026-08-31 with `c7ed9a0`; it was also the source of a phantom CI nudge naming a sha with zero runs
