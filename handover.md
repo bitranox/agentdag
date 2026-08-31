@@ -53,6 +53,14 @@ filename). `EXECUTION-USER-REVIEW.md` is NOT published: its 14 spend figures are
 own sentences, so redacting them destroys the entries. It became a symlink to the private repo
 instead, which solves the staleness without publishing anything.
 
+**A publication guard, and the three pre-existing leaks it found** (`d011f1f`, CI green). The
+no-leak obligation on `PLANS/` and `handover.md` is now enforced by `tests/test_repo_publishable.py`
+rather than by whoever remembers. Structural rules ship; the private-name list cannot, because a
+shipped blocklist of hostnames publishes them, so it loads from a gitignored `.private-markers`
+that binds the local gate. It failed on first run against defects older than itself: the mount path
+in two graph_a tests, a build hostname in four docstrings, a private sibling project in two shipped
+JSON schemas plus a docstring and a comment. All prose, no API change.
+
 ## Decided, do not reopen
 
 1. **Decision 4 is decided by running the real evaluator over synthetic worst-case records**, not by
