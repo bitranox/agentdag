@@ -163,13 +163,19 @@ class RunLimits(BaseModel):
     planner_kinds: list[Kind]
     top_role_budget_floor: float
     max_replans: int
-    """How many times ONE plan may be re-planned before its subtree gives up.
+    """How many times ONE plan may be re-planned before its subtree stops and reports.
 
     Per PLAN, not per run: a sub-plan gets its own allowance, because a nested subtree that
     could not be planned is a different question from a run that keeps re-planning at the top.
-    Enforced by :func:`~agentdag.application.kernel.execute.execute_plan`, which raises
-    ``ReplanLimitExceededError`` on exhaustion; a sub-plan's exhaustion is reported to its
-    parent rather than raised through it.
+    Enforced by :func:`~agentdag.application.kernel.execute.execute_plan`.
+
+    What exhaustion DOES depends on whether anything above the plan can be asked, and there
+    are exactly two answers. A SUB-plan raises ``ReplanLimitExceededError``, which its parent
+    turns into a refusal it can branch on rather than letting it through. The ROOT has no
+    parent, so it asks a person instead (design 2.3 rule 5's "retry, then ask"), and a grant
+    buys another whole ``max_replans`` - so this is the size of ONE round, not the total a
+    root run may ever spend. A person can grant further rounds without bound; nothing
+    unattended can, because the exhaustion approve defaults to abandoning.
     """
     max_nodes_per_run: int
     """How many nodes a whole run may dispatch, across every plan it accepts.

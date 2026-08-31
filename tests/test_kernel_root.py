@@ -21,7 +21,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import FakeScanner, fresh_run_dir, outcome, policy_path, wire
+from kernel_fakes import FakeScanner, RedGate, fresh_run_dir, outcome, policy_path, wire
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
@@ -111,6 +111,42 @@ def valid_plan(goal: str = "g", node_id: str = "repair") -> str:
     )
 
 
+def refuted_condition_plan(goal: str = "g", *, work_id: str = "repair", gate_id: str = "g1") -> str:
+    """A root plan the validator ACCEPTS and a RED gate then refutes.
+
+    The two entries do different jobs. The ``work`` one is what carries ``done_when``, and it
+    is state-changing, so the root-only rule that a completion condition may not rest on a
+    gate's exit code alone (``_requires_state_change``) is satisfied and this plan REACHES
+    execution. The gate's own ``acceptance`` is what a :class:`RedGate` then refutes. Without
+    the work entry the validator would refuse the plan and every arm below would be testing
+    the OTHER ladder - the one for plans that never ran.
+    """
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": work_id, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {work_id}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                },
+                {
+                    "spec": {"node_id": gate_id, "kind": "gate", "deadline_s": 60.0},
+                    "op": "gate:make-test",
+                    "args": {},
+                    "brief": "run the gate",
+                    "output_contract": ["status", "rc"],
+                    "acceptance": {"ref": {"entry": gate_id, "field": "rc"}, "op": "==", "value": 0},
+                },
+            ],
+            "done_when": {"ref": {"entry": work_id, "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
 def unregistered_op_plan(goal: str = "g", op: str = "teleport") -> str:
     """A plan the validator refuses by ABSENCE: nothing registers ``op``."""
     return json.dumps(
@@ -182,9 +218,14 @@ def drive(
     *,
     goal: str = "g",
     run_limits: RunLimits | None = None,
+    gate_port: RedGate | None = None,
 ) -> Executed:
-    """Run the root ladder over ``run_dir``, as a relaunch would over an existing one."""
-    coordinator = wire(run_dir, executor, FakeScanner())  # type: ignore[arg-type]
+    """Run the root ladder over ``run_dir``, as a relaunch would over an existing one.
+
+    ``gate_port`` defaults to the coordinator's own, which is the REAL ``make test`` gate; an
+    arm whose plan carries a gate entry must pass a fake, or the fixture shells out.
+    """
+    coordinator = wire(run_dir, executor, FakeScanner(), gate_port=gate_port)  # type: ignore[arg-type]
     coordinator.fold_decisions()
     ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
     return asyncio.run(
@@ -476,3 +517,133 @@ def test_the_policy_port_carries_the_whole_run_limits(tmp_path: Path) -> None:
     assert policy.run_limits.max_replans >= 0
     assert policy.run_limits.max_nodes_per_run > 0
     assert policy.run_limits.deadline_ceiling_s > 0
+
+
+@pytest.mark.os_agnostic
+def test_a_root_plan_whose_condition_refutes_past_the_allowance_asks_rather_than_failing(
+    tmp_path: Path,
+) -> None:
+    """The root's OTHER exhaustion: the plan was accepted, ran, and its condition refuted.
+
+    Until this arm that path raised ``ReplanLimitExceededError`` out of ``execute_plan``, so
+    the run ended FAILED and unresumable - and it strands the EXPENSIVE records, the ones a
+    plan that actually RAN produced. The plans here all validate, so nothing on this path can
+    reach the ladder for plans the validator refuses; what exhausts is the re-plan allowance
+    inside ``execute_plan``.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[refuted_condition_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1), gate_port=RedGate())
+
+    assert info.value.node_id == APPROVE_ID
+    assert info.value.payload_hash is not None
+
+
+@pytest.mark.os_agnostic
+def test_a_granted_round_buys_another_whole_max_replans(tmp_path: Path) -> None:
+    """The user's decision, 2026-08-31: a grant buys another ``max_replans``, not one attempt.
+
+    ``max_replans=2`` is what makes the arm able to tell those apart - at 1 they are the same
+    number and an implementation granting a single attempt passes. Counted on the RESUMED
+    launch, where every dispatch the first launch made is served from the journal, so what
+    the executor sees run is exactly what the grant bought.
+    """
+    run_dir = root_run_dir(tmp_path)
+    first = RootPlanningExecutor(plans=[refuted_condition_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, first, run_limits=limits(max_replans=2), gate_port=RedGate())
+    answer(run_dir, str(info.value.payload_hash), "replan")
+
+    granted = RootPlanningExecutor(plans=[refuted_condition_plan()])
+    with pytest.raises(Suspended):
+        drive(run_dir, granted, run_limits=limits(max_replans=2), gate_port=RedGate())
+
+    assert first.planner_dispatches == 3, "the opening plan plus max_replans re-plans"
+    assert granted.planner_dispatches == 2, "a granted round must buy max_replans, not one attempt"
+
+
+@pytest.mark.os_agnostic
+def test_an_abandoned_refutation_reports_the_records_it_earned(tmp_path: Path) -> None:
+    """Abandon must REPORT, never raise: the point of the ladder is that the run stays
+    resumable and keeps the expensive records a plan that actually ran produced.
+
+    The ``cause`` is the field that says why it stopped, and it is what distinguishes this
+    from the abandon on the validator ladder - that one has reasons and no cause, because
+    nothing ever ran.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(
+            run_dir,
+            RootPlanningExecutor(plans=[refuted_condition_plan()]),
+            run_limits=limits(max_replans=1),
+            gate_port=RedGate(),
+        )
+    answer(run_dir, str(info.value.payload_hash), "abandon")
+
+    out = drive(
+        run_dir,
+        RootPlanningExecutor(plans=[refuted_condition_plan()]),
+        run_limits=limits(max_replans=1),
+        gate_port=RedGate(),
+    )
+
+    assert out.done is False
+    assert out.cause is not None, "an abandoned refutation must say which condition stopped it"
+    assert any(record.node_id.startswith("n-") for record in out.records.values()), "records were thrown away"
+
+
+@pytest.mark.os_agnostic
+def test_every_re_plan_brief_is_distinct_so_a_granted_round_is_a_real_dispatch(tmp_path: Path) -> None:
+    """The property the whole ladder rests on, pinned on the mechanism that supplies it.
+
+    A dispatch briefed to the identical word is SERVED from the resumed launch's replay index
+    rather than run, so if two rounds could brief the planner the same way, a grant would
+    replay the dispatch the decider had just read and buy nothing.
+
+    Nothing enforces that directly, which is why it is pinned here rather than trusted. Two
+    renderings supply it independently - the refuting node id and values in the goal text,
+    and the evidence block the planner brief appends - and both reduce to node ids being
+    allocated fresh per accepted plan. Verified by mutating BOTH: removing either alone
+    leaves this arm green, and only with both gone do the three briefs collapse into one.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[refuted_condition_plan()])
+
+    with pytest.raises(Suspended):
+        drive(run_dir, executor, run_limits=limits(max_replans=3), gate_port=RedGate())
+
+    re_plans = [brief for brief in executor.briefs if "was stopped" in brief]
+    assert len(re_plans) == 3, "max_replans=3 must brief the planner three times over"
+    assert len(set(re_plans)) == 3, "two rounds briefed the planner identically, so one was served not run"
+
+
+@pytest.mark.os_agnostic
+def test_each_granted_round_asks_a_question_of_its_own(tmp_path: Path) -> None:
+    """Termination. A decision is FINAL per (node id, payload hash), so an exhaustion that
+    rebuilt an identical payload would have the recorded grant RE-SERVED instead of asked,
+    and the ladder would re-plan unattended forever.
+
+    THREE rounds, not two, for the reason the sibling arm on the validator ladder runs three:
+    a second round comes out distinct even with the distinguishing mechanism gone, because
+    the approve node's OWN record joins the planner's evidence the first time a decision is
+    served and changes the next brief once, for free.
+    """
+    run_dir = root_run_dir(tmp_path)
+    seen: list[str] = []
+
+    for _ in range(3):
+        with pytest.raises(Suspended) as info:
+            drive(
+                run_dir,
+                RootPlanningExecutor(plans=[refuted_condition_plan()]),
+                run_limits=limits(max_replans=1),
+                gate_port=RedGate(),
+            )
+        seen.append(str(info.value.payload_hash))
+        answer(run_dir, seen[-1], "replan")
+
+    assert len(set(seen)) == 3, "an exhaustion re-asked a question whose answer is already recorded"

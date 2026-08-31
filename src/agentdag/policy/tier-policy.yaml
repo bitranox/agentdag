@@ -236,11 +236,15 @@ run_limits:
   # a `top` request below this fraction of the row's remaining run budget is
   # downgraded and audited (2.3 rule 4 - the design's "5%")
   top_role_budget_floor: 0.05
-  # M6 (Task 30): how many times ONE plan may be re-planned before its subtree gives up.
+  # M6 (Task 30): how many times ONE plan may be re-planned before its subtree stops.
   # ENFORCED since Task 35 by execute_plan: a refuted condition stops the subtree, the barrier
   # waits its in-flight nodes out, and the planner is re-dispatched with the cause, until this
   # many re-dispatches have been spent. Per PLAN, not per run - a sub-plan gets its own
   # allowance, and its exhaustion is reported to its parent rather than raised through it.
+  # At the ROOT there is no parent to report to, so exhaustion asks a person, and a granted
+  # round buys another whole max_replans. This is therefore the size of ONE round rather than
+  # the total a root run may spend; only a person can grant more, since the question defaults
+  # to abandoning and a default is the only option an unattended deadline applies.
   max_replans: 3
   # M6 (Task 30): how many nodes a whole run may dispatch, across every plan it accepts.
   # ENFORCED since Task 33 by execute.NodeBudget, which counts across the whole run - a

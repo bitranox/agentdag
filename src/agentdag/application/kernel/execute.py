@@ -42,7 +42,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from ...domain.condition import evaluate, referenceable_view, referenced_fields
 from ...domain.journal import SubtreeDoneLine
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Cause",
     "Executed",
+    "GrantMoreReplans",
     "NodeBudget",
     "NodeIds",
     "PlanDepthExceededError",
@@ -298,6 +299,34 @@ class _Refutation:
     node_id: str
 
 
+class GrantMoreReplans(Protocol):
+    """Asked whether a plan that spent its re-plan allowance may have another.
+
+    The seam by which the ROOT's "retry, then ask a person" ladder reaches a loop that must
+    know nothing about approvals: :func:`execute_plan` calls this and branches on a bool,
+    while what it costs - an ``approve`` node, a suspend, a resumed launch - is entirely the
+    caller's. Declared here rather than in ``ports.py`` because both of its arguments are
+    this module's own types.
+
+    A granted round buys another ``max_replans``, which is what GRANT already means one
+    ladder up (:data:`~agentdag.application.kernel.root.GRANT`). One word, one meaning.
+    """
+
+    async def __call__(self, *, plan: Plan, cause: Cause, granted: int) -> bool:
+        """Return whether to keep re-planning ``plan``, which ``cause`` has just stopped again.
+
+        Args:
+            plan: The plan that was running - the LAST one, not the one the run opened with,
+                so a caller rendering it for a person shows what actually stopped.
+            cause: The condition that refuted, on which node, and the values it read.
+            granted: How many rounds this plan has already been granted, 0 the first time.
+
+        Returns:
+            True to spend another ``max_replans`` on it; False to abandon.
+        """
+        ...
+
+
 async def execute_plan(
     plan: Plan,
     *,
@@ -310,6 +339,7 @@ async def execute_plan(
     planner: NodeSpec | None,
     admitted: Mapping[str, NodeSpec] | None = None,
     replans: int = 0,
+    grant_more: GrantMoreReplans | None = None,
 ) -> Executed:
     """Run one plan's entries to terminal, re-planning a refuted subtree, recursing on ``op="plan"``.
 
@@ -348,6 +378,13 @@ async def execute_plan(
             already-run entries exist.
         replans: How many re-plans THIS plan has already spent, so a resumed or nested call
             cannot restart the allowance.
+        grant_more: Asked when this plan has spent ``limits.max_replans`` and its condition
+            STILL refutes: True buys another ``max_replans``, False abandons. Supplied only
+            by the ROOT (:func:`~agentdag.application.kernel.root.run_root`), and root-only
+            BY CONSTRUCTION rather than by a depth test - the recursion into a sub-plan
+            simply does not pass it, so a sub-plan keeps reporting its exhaustion to the
+            parent that can branch on it. ``None`` therefore means what it meant before this
+            existed: exhaustion raises.
 
     Returns:
         This subtree's records, whether it is done, and why it stopped.
@@ -359,7 +396,13 @@ async def execute_plan(
     """
     wiring = _Wiring(ctx=ctx, registry=registry, limits=limits, spent=spent, ids=ids)
     return await _execute(
-        plan, wiring=wiring, depth=depth, admitted=dict(admitted or {}), planner=planner, replans=replans
+        plan,
+        wiring=wiring,
+        depth=depth,
+        admitted=dict(admitted or {}),
+        planner=planner,
+        replans=replans,
+        grant_more=grant_more,
     )
 
 
@@ -372,6 +415,7 @@ async def _execute(
     planner: NodeSpec | None,
     replans: int = 0,
     parent: StopScope | None = None,
+    grant_more: GrantMoreReplans | None = None,
 ) -> Executed:
     """Drive one plan to terminal, re-planning while a condition refutes and the allowance holds.
 
@@ -388,6 +432,7 @@ async def _execute(
     kept: dict[str, ResultRecord] = {}
     refused: list[SubPlanRefused] = []
     spent_replans = replans
+    granted = 0
     while True:
         run = await _one_pass(current, wiring=wiring, depth=depth, admitted=admitted, kept=kept, parent=parent)
         if run.failure is not None:
@@ -407,16 +452,27 @@ async def _execute(
             executed = _executed(current, run=run, view=view)
             _journal_subtree_done(planner, done=executed.done, wiring=wiring)
             return executed
-        if spent_replans >= wiring.limits.max_replans:
-            # Exhaustion is a VERDICT, not an error escaping unreported: the parent turns it
-            # into a refusal it can branch on, and without this line the journal would show a
-            # run of accepted plans under one node id and then simply stop.
-            _journal_subtree_done(planner, done=_verdict(current, run=run, view=view), wiring=wiring)
-            raise ReplanLimitExceededError(
-                f"plan {current.goal!r} spent max_replans={wiring.limits.max_replans} "
-                f"and its condition still refutes on node {run.refutation.node_id!r}"  # type: ignore[union-attr]
-            )
         cause = _cause_of(refutation, view=view)
+        if spent_replans >= wiring.limits.max_replans:
+            if grant_more is None:
+                # No ladder above this plan, so exhaustion is a VERDICT rather than an error
+                # escaping unreported: the parent turns it into a refusal it can branch on,
+                # and without this line the journal would show a run of accepted plans under
+                # one node id and then simply stop.
+                _journal_subtree_done(planner, done=_verdict(current, run=run, view=view), wiring=wiring)
+                raise ReplanLimitExceededError(
+                    f"plan {current.goal!r} spent max_replans={wiring.limits.max_replans} "
+                    f"and its condition still refutes on node {refutation.node_id!r}"
+                )
+            if not await grant_more(plan=current, cause=cause, granted=granted):
+                # Abandoned. Reported, never raised: the run finishes normally holding every
+                # record it earned, which is the same shape a person abandoning the OTHER
+                # root ladder already gets (``root._abandoned``).
+                executed = _executed(current, run=run, view=view)
+                _journal_subtree_done(planner, done=executed.done, wiring=wiring)
+                return executed
+            granted += 1
+            spent_replans = 0
         planned = await _replan(current, cause=cause, planner=planner, wiring=wiring, admitted=admitted)
         if planned is None:
             return _executed(current, run=run, view=view)
@@ -466,7 +522,12 @@ def _journal_subtree_done(planner: NodeSpec | None, *, done: bool, wiring: _Wiri
 
 
 async def _replan(
-    plan: Plan, *, cause: Cause, planner: NodeSpec, wiring: _Wiring, admitted: Mapping[str, NodeSpec]
+    plan: Plan,
+    *,
+    cause: Cause,
+    planner: NodeSpec,
+    wiring: _Wiring,
+    admitted: Mapping[str, NodeSpec],
 ) -> Plan | None:
     """Re-dispatch ``planner`` with the cause, returning the plan it produced or None.
 
@@ -495,6 +556,28 @@ def _replan_goal(plan: Plan, cause: Cause) -> str:
     The values are rendered rather than summarised - a planner told only that something
     failed writes the next plan blind, and the whole point of :class:`Cause` is that it
     carries what the condition READ.
+
+    This brief carries NO granted-round counter, and that is a decided asymmetry with
+    :func:`~agentdag.application.kernel.root._ask` one ladder up rather than an oversight.
+    There a counter is load-bearing: that ladder re-asks with the same goal and the same
+    reasons, so without it the brief is identical, the resumed launch serves the dispatch
+    from its replay index, and the grant buys nothing.
+
+    Here the brief is already distinct every round, and TWO renderings make it so
+    independently - measured by mutation, because removing either one alone changes nothing:
+
+    * this text renders ``cause.node_id``, which :func:`_refuted` takes from the LANDING
+      ENTRY, not from whatever node the condition referenced - so even a condition over an
+      admitted node reports an id from the current plan;
+    * :func:`~agentdag.application.kernel.planner._brief` appends the evidence block, which
+      grows by every record the round landed.
+
+    Both reduce to one fact: :class:`NodeIds` allocates fresh ids for every accepted plan and
+    never reuses one, so no two rounds can describe themselves the same way. A counter was
+    written into this brief first, on the assumption that the ids could repeat; it was
+    removed once measurement showed they cannot.
+    ``test_every_re_plan_brief_is_distinct_so_a_granted_round_is_a_real_dispatch`` pins the
+    property, since nothing else in this module enforces it.
     """
     read = ", ".join(f"{name}={value!r}" for name, value in sorted(cause.values.items())) or "(nothing had landed)"
     return (
