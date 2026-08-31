@@ -189,14 +189,19 @@ def manager_state_is_live(stdout: str) -> bool:
 # Building the registry touches no live Coordinator: every closure below takes one only
 # through the `PlanContext` its RETURNED body reads when finally invoked (a later task).
 #
-# Every registration carries a `# state:` line DIRECTLY above its `can_change_state=`, giving
-# the one-line reason that flag has the value it has, read off this op's own body. The flag is
-# set by what the body DOES - True when a record from this op can tell "this work finished"
-# from "this work never started", False when the op only OBSERVES and its reading is the same
-# before the work and after it - never by the op's NAME; that every `gate:*` comes out False is
-# a consequence of the test, not the test itself (see `registry.OpSpec.can_change_state`).
+# Every registration carries a `# state:` line DIRECTLY above its `facts_if_no_work=`, giving
+# the one-line reason that declaration says what it says, read off this op's own body. It is
+# the record this op would carry in a run that accomplished NOTHING - set by what the body
+# EMITS, never by the op's NAME; that every `gate:*` declares a satisfied-looking reading is a
+# consequence of what those bodies do, not the test itself. `None` means no such record can
+# exist, because for that op a record only exists because something happened.
 # `tests/test_kernel_registry.py` parses those lines back out of this file and fails on a
-# registration that carries none, so an unexamined flag is an omission rather than a default.
+# registration that carries none, so an unexamined op is an omission rather than a default.
+#
+# It replaced a `can_change_state` boolean, which asked whether an op's records COULD evidence
+# work when decision 4 needs to know whether THIS COMPARISON does. `reduce:count` is where the
+# two part company: rightly flagged True, and yet `count == 0` is exactly the do-nothing value
+# (see `registry.OpSpec.facts_if_no_work`).
 
 
 _WORK_CONTRACT = frozenset(
@@ -488,8 +493,11 @@ def build_op_registry() -> OpRegistry:
             name="work",
             args_model=_WorkArgs,
             output_contract=_WORK_CONTRACT,
-            # state: True - the record IS work an executor did; only running it makes one (context.py:198)
-            can_change_state=True,
+            # state: None - a run that accomplished nothing is one where no `work` node ran,
+            # because RUNNING one is the accomplishment; the record only exists because an
+            # executor did something (context.py:198). Its absence is then read three-valued,
+            # so naming a `work` field is what rescues a root plan from the gate-alone shape.
+            facts_if_no_work=None,
             build=_build_work,
         )
     )
@@ -498,8 +506,9 @@ def build_op_registry() -> OpRegistry:
             name="gate:make-test",
             args_model=_GateMakeTestArgs,
             output_contract=frozenset({"rc"}),  # application/kernel/context.py:499
-            # state: False - the gate only READS a check that was green before the work too (context.py:489)
-            can_change_state=False,
+            # state: rc 0 - `make test` is green before a refactor and green after, so a
+            # green reading is exactly what a run that did nothing also produces (context.py:489)
+            facts_if_no_work={"rc": 0},
             build=_build_gate_make_test,
         )
     )
@@ -511,8 +520,9 @@ def build_op_registry() -> OpRegistry:
             # Set from what the body does, not from the brief's `gate:` NAME PREFIX rule, which
             # this op's name does not match: `scan.stray == 0` alone would otherwise be the same
             # never-started-reads-as-finished loophole decision 4 closes for gates.
-            # state: False - a manifest diff only OBSERVES; a clean scan reads alike, run or not (context.py:580)
-            can_change_state=False,
+            # state: stray 0 - a manifest diff only OBSERVES, and a clean scan reads alike
+            # whether anything ran (context.py:580)
+            facts_if_no_work={"stray": 0},
             build=_build_scan,
         )
     )
@@ -521,8 +531,9 @@ def build_op_registry() -> OpRegistry:
             name="reduce:count",
             args_model=_ReduceCountArgs,
             output_contract=frozenset({"count"}),  # _build_reduce_count's own fold, above
-            # state: True - the fold above counts 0 with nothing dispatched and N once N passed (kernel.py:360)
-            can_change_state=True,
+            # state: count 0 - the fold above counts 0 with nothing dispatched, and N once N
+            # passed, so 0 is the do-nothing reading and any positive count is evidence (kernel.py:360)
+            facts_if_no_work={"count": 0},
             build=_build_reduce_count,
         )
     )
@@ -531,8 +542,9 @@ def build_op_registry() -> OpRegistry:
             name="approve",
             args_model=_ApproveArgs,
             output_contract=frozenset({"decision"}),  # application/kernel/context.py:798
-            # state: True - a Decision exists only because a person answered THIS payload (context.py:787)
-            can_change_state=True,
+            # state: None - a Decision exists ONLY because a person answered THIS payload, so
+            # there is no reading a run that did nothing could produce (context.py:787)
+            facts_if_no_work=None,
             build=_build_approve,
         )
     )
@@ -551,15 +563,18 @@ def build_op_registry() -> OpRegistry:
             # Not exploitable yet: a plan entry is not executed until the loop that recurses on
             # it exists. An earlier version of this comment claimed the sub-plan's own
             # validation caught it; that was false and is corrected here.
-            # state: True - a plan entry stands for the subtree it expands into, which runs the state-changing work
-            can_change_state=True,
+            # state: None - a plan entry stands for the subtree it expands into, and that
+            # subtree's record exists only once it ran; its contract is empty either way
+            facts_if_no_work=None,
             build=_build_plan_entry_guard,
         )
     )
     # `judge` is deliberately NOT registered, like `apply` (Checkpoint B, user 2026-08-29).
     # A registered-but-raising op validates by NAME and dies at dispatch, so a plan naming it
     # is accepted and the run fails mid-flight, after spend; absence refuses it at plan-accept
-    # time instead. It also avoids shipping an unverified `can_change_state`: there is no body,
-    # so no emitter has been read, and decision 4's rule keys on precisely that flag. The task
-    # that builds the judge sets the flag by reading the emitter it writes.
+    # time instead. It also avoids shipping an unverified `facts_if_no_work`: there is no body,
+    # so no emitter has been read, and decision 4's rule is decided against precisely that
+    # declaration. The task that builds the judge writes it by reading the emitter it writes -
+    # and must say what a verdict reads on a run that achieved nothing, which for a judge is
+    # the whole question, not a formality.
     return registry

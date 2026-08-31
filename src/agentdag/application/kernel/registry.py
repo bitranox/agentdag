@@ -19,15 +19,15 @@ Contents:
     * :class:`UnregisteredOpError` - a plan named an op nobody registered.
     * :class:`PlanContext` - what a registered op's body needs beyond the ``Entry`` itself.
     * :data:`Body` - the fully-bound async call an ``OpSpec.build`` hands back.
-    * :class:`OpSpec` - one registered op: its args model, its output contract, whether it
-      can change run state, and how to build its body.
+    * :class:`OpSpec` - one registered op: its args model, its output contract, the record it
+      would carry if no work were accomplished, and how to build its body.
     * :class:`OpRegistry` - op name -> :class:`OpSpec`, refusing a duplicate registration
       and an absent lookup by two different, typed signals.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -117,27 +117,39 @@ class OpSpec:
             field of an entry naming this op only when that field is a member here - the
             ceiling :func:`~agentdag.application.kernel.plan_validate.validate_plan` checks
             every ``FieldRef`` against.
-        can_change_state: Whether a record from this op can be the reason a ROOT plan is
-            done. Set from WHAT THE BODY DOES, never from the op's NAME: ``True`` when a
-            record this op produces can distinguish "this work FINISHED" from "this work
-            NEVER STARTED", ``False`` when the op only OBSERVES - its reading is the same
-            before the work and after it, so no value it can report tells the two apart.
+        facts_if_no_work: The ``key_facts`` a record from this op carries in a run where
+            NOTHING WAS ACCOMPLISHED, or ``None`` when no such record can exist because the
+            record's very existence means something happened.
 
-            A ``gate:*`` op comes out ``False`` under that test (``make test`` is green
-            before a refactor and green after, so ``rc == 0`` proves nothing about the
-            work), and so does the read-only ``scan``, which carries no ``gate:`` prefix
-            at all: a clean isolation scan reads identically whether anything ran. The
-            prefix is a CONSEQUENCE of the test on those bodies, never the test itself -
-            keying the flag on the name is what let a read-only op register as ``True``.
-            ``reduce:count`` is the other direction: it dispatches nothing itself, yet its
-            count is 0 with nothing done and N once N nodes passed, so the record does
-            distinguish the two and the flag is ``True``.
+            This is what decision 4 is decided against
+            (:func:`~agentdag.application.kernel.plan_validate.validate_plan`'s root rule):
+            a root ``done_when`` is refused when it settles True over these records, because
+            a condition satisfied by a do-nothing run cannot tell finished from
+            never-started. Set it from WHAT THE BODY EMITS, never from the op's NAME.
 
-            Each registration in
+            It replaced a per-op ``can_change_state`` boolean, which asked the wrong
+            question. The flag asked whether an op's records COULD evidence work; the rule
+            needs to know whether THIS COMPARISON does. ``reduce:count`` is the case that
+            exposed the difference: its count is 0 with nothing dispatched and N once N
+            nodes passed, so the flag was rightly ``True`` - and yet ``count == 0`` is
+            precisely the do-nothing value, so ``done_when: count == 0`` passed the flag
+            and completed a run that dispatched nothing. ``count >= 1`` is the same op and
+            the same field and is real evidence. Only a per-field VALUE separates them.
+
+            A ``gate:*`` op declares ``{"rc": 0}`` (``make test`` is green before a refactor
+            and green after), and so does the read-only ``scan`` with ``{"stray": 0}``,
+            which carries no ``gate:`` prefix at all - the prefix is a CONSEQUENCE of what
+            those bodies do, never the test itself. ``approve`` declares ``None``: a
+            ``Decision`` exists only because a person answered THIS payload.
+
+            When it is not ``None`` it must cover :attr:`output_contract` exactly, enforced
+            in :meth:`OpRegistry.register`. A field left out would be ABSENT from the
+            synthesized record, and an absent field makes its comparison undecided rather
+            than True, which silently WIDENS what a root plan may settle on. Making the
+            author state a value per field is what stops the next contract entry from
+            reopening the hole. Each registration in
             :func:`~agentdag.composition.kernel.build_op_registry` records the one-line
-            reason for its own value beside the flag. See
-            :func:`~agentdag.application.kernel.plan_validate.validate_plan`'s root rule
-            (decision 4) for what the flag is then used for.
+            reason for its own value beside the declaration.
         build: Given the entry naming this op and the :class:`PlanContext` to dispatch
             through, produce this call's :data:`Body`. NOT invoked by validation:
             :func:`~agentdag.application.kernel.plan_validate.validate_plan` checks an
@@ -148,7 +160,7 @@ class OpSpec:
     name: str
     args_model: type[BaseModel]
     output_contract: frozenset[str]
-    can_change_state: bool
+    facts_if_no_work: Mapping[str, object] | None
     build: Callable[[Entry, PlanContext], Body]
 
 
@@ -173,10 +185,21 @@ class OpRegistry:
 
         Raises:
             KernelError: ``op.name`` is already registered - two ops cannot share a name,
-                because a plan entry naming it could then mean either one.
+                because a plan entry naming it could then mean either one. Or ``op`` declares
+                a :attr:`OpSpec.facts_if_no_work` that does not cover its own
+                :attr:`OpSpec.output_contract` exactly: a field missing from it is absent
+                from the synthesized record, so its comparison goes undecided instead of
+                True and decision 4 quietly stops guarding that field.
         """
         if op.name in self._ops:
             raise KernelError(f"op {op.name!r} is already registered")
+        if op.facts_if_no_work is not None and set(op.facts_if_no_work) != set(op.output_contract):
+            missing = sorted(set(op.output_contract) - set(op.facts_if_no_work))
+            extra = sorted(set(op.facts_if_no_work) - set(op.output_contract))
+            raise KernelError(
+                f"op {op.name!r} declares facts_if_no_work that does not match its output_contract "
+                f"(missing {missing}, not in the contract {extra})"
+            )
         self._ops[op.name] = op
 
     def get(self, name: str) -> OpSpec:

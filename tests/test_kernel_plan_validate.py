@@ -181,12 +181,13 @@ def test_more_than_max_nodes_per_plan_is_refused() -> None:
 
 
 def test_root_done_when_over_only_gate_fields_is_refused_unless_a_state_changer_is_named() -> None:
-    """Decision 4. The rule reads an entry's ``can_change_state`` FLAG and names no op.
+    """Decision 4. The rule settles ``done_when`` over do-nothing records and names no op.
 
-    This test used a ``judge`` entry purely because it was a convenient True-flagged one, and
-    its old name (``..._unless_judged``) said the rule was about judging. It is not, and that
-    reading cost a wrong entry in the build plan on 2026-08-29. ``work`` carries the same flag
-    and makes the test say what the rule does.
+    This test used a ``judge`` entry purely because it was a convenient one, and its old name
+    (``..._unless_judged``) said the rule was about judging. It is not, and that reading cost a
+    wrong entry in the build plan on 2026-08-29. ``work`` says what the rule does: a gate still
+    RUNS in a do-nothing run and reads ``rc == 0`` either way, while a ``work`` record exists
+    only because something was dispatched, so naming one is what rescues the plan.
     """
     gate_only = Compare(ref=FieldRef(entry="n0", field="rc"), op="==", value=0)
     out = validate_plan(
@@ -306,8 +307,23 @@ def test_root_done_when_that_a_gate_alone_can_settle_is_refused() -> None:
     assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
 
 
-def test_root_done_when_whose_only_state_change_is_negated_is_refused() -> None:
-    """IMPORTANT 6: a negation is not a lever - ``Not(w)`` holds while the work entry never runs."""
+def test_root_done_when_whose_only_state_change_is_negated_is_accepted() -> None:
+    """A negated lever cannot settle a run that never dispatched the work, so decision 4 lets it by.
+
+    This REVERSED on 2026-08-31, deliberately. The old expectation was ``Refused``, on the
+    stated ground that "``Not(w)`` holds while the work entry never runs". Measured against the
+    evaluator the dispatcher actually uses, that is false - with no ``work`` record present
+    ``AllOf(gate.rc == 0, Not(w.turns >= 1))`` evaluates ``None``, not ``True``, and
+    ``execute.py`` completes a subtree only on ``True``. The old verdict came from a syntactic
+    rule ("a ``Not`` never requires state change") whose justification did not survive contact
+    with the semantics it was guarding; deciding decision 4 by running the real evaluator over
+    the do-nothing records is what surfaced it.
+
+    What this shape CAN settle on is a ``work`` node that ran and reported ``turns == 0``. That
+    is a degenerate dispatch being read as success, which is worth its own rule - but it is not
+    decision 4's question, because the node did run. Recorded in EXECUTION-USER-REVIEW.md so
+    the concern is not lost in a passing test.
+    """
     gate, changer, entries = _gate_and_state_changer()
     out = validate_plan(
         plan_with(entries=entries, done_when=AllOf(all=(gate, Not(not_=changer)))),
@@ -317,7 +333,7 @@ def test_root_done_when_whose_only_state_change_is_negated_is_refused() -> None:
         is_root=True,
         allocate_id=ids(),
     )
-    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+    assert isinstance(out, Accepted)
 
 
 def test_root_done_when_conjoining_a_gate_with_a_state_changer_is_accepted() -> None:
@@ -362,6 +378,78 @@ def test_root_done_when_over_an_empty_group_is_decided_deliberately() -> None:
     assert isinstance(empty_any, Refused)
     assert any("never settle True" in r for r in empty_any.reasons)
     assert not any("cannot change state" in r for r in empty_any.reasons)
+
+
+def test_a_state_changing_op_compared_against_its_own_no_work_value_is_refused() -> None:
+    """Decision 4 is a question about the COMPARISON, not about the op.
+
+    ``reduce:count`` is registered as able to change state for a real reason: its fold counts 0
+    with nothing dispatched and N once N nodes passed. But that is exactly what makes
+    ``count == 0`` the NEVER-STARTED value, so a ``done_when`` settling on it completes a run
+    that dispatched nothing - the loophole decision 4 exists to close, reached through an op
+    the old per-op flag waved through.
+
+    ``count >= 1`` is the same op and the same field, and it IS evidence, so it must still be
+    accepted. That pair is what makes this a test of the comparison rather than of the op.
+    """
+    gate = Compare(ref=FieldRef(entry="n0", field="rc"), op="==", value=0)
+    entries = [entry(op="gate:make-test", node_id="n0"), entry(op="reduce:count", node_id="n1")]
+
+    def verdict(done: Condition) -> Accepted | Refused:
+        return validate_plan(
+            plan_with(entries=entries, done_when=done),
+            registry=REG,
+            graph={},
+            limits=LIMITS,
+            is_root=True,
+            allocate_id=ids(),
+        )
+
+    vacuous = Compare(ref=FieldRef(entry="n1", field="count"), op="==", value=0)
+    conjoined = verdict(AllOf(all=(gate, vacuous)))
+    assert isinstance(conjoined, Refused) and any("cannot change state" in r for r in conjoined.reasons)
+
+    alone = verdict(vacuous)
+    assert isinstance(alone, Refused) and any("cannot change state" in r for r in alone.reasons)
+
+    real_evidence = verdict(AllOf(all=(gate, Compare(ref=FieldRef(entry="n1", field="count"), op=">=", value=1))))
+    assert isinstance(real_evidence, Accepted)
+
+
+def test_a_root_done_when_leaning_on_an_admitted_node_this_plan_does_not_own_is_refused() -> None:
+    """An entry this plan never names is assumed satisfiable WITHOUT work, so it cannot rescue it.
+
+    A ``done_when`` may reference an already-admitted graph node, and nothing here can say what
+    that node reports on a do-nothing run - this plan does not name its op. Reading it as
+    merely UNDECIDED is the loose direction: it would let a root plan pass by leaning on
+    behaviour the rule cannot see. Assuming instead that it is satisfiable without work keeps
+    the refusal exactly where the previous rule put it, and the fix is the same one decision 4
+    asks for anyway - conjoin an entry of the plan's own.
+    """
+    admitted = NodeSpec(node_id="g_outer", kind=Kind.GATE, deadline_s=60)
+    leaning = Compare(ref=FieldRef(entry="g_outer", field="rc"), op="==", value=0)
+    out = validate_plan(
+        plan_with(entries=[entry(op="work", node_id="n0")], done_when=leaning),
+        registry=REG,
+        graph={"g_outer": admitted},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(out, Refused) and any("cannot change state" in r for r in out.reasons)
+
+    rescued = validate_plan(
+        plan_with(
+            entries=[entry(op="work", node_id="n0")],
+            done_when=AllOf(all=(leaning, Compare(ref=FieldRef(entry="n0", field="turns"), op=">=", value=1))),
+        ),
+        registry=REG,
+        graph={"g_outer": admitted},
+        limits=LIMITS,
+        is_root=True,
+        allocate_id=ids(),
+    )
+    assert isinstance(rescued, Accepted)
 
 
 def test_a_read_only_scan_cannot_complete_a_root_plan_on_its_own() -> None:

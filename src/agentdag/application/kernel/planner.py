@@ -51,8 +51,12 @@ Notes that will save you a refused plan:
 overwritten, so refer to entries by the ids the schema's own examples use.
 - "done_when" is required, and a condition may only reference fields the named entry's op \
 declares in its output contract.
-- A root plan's "done_when" may not be settleable by a gate's exit code alone. Conjoin \
-something that changes state, or the plan is refused.
+- A root plan's "done_when" is refused if it would already be true of a run that did \
+NOTHING. A gate that is green before the work is green after, a clean scan reads the same \
+either way, and a count of what passed is 0 with nothing dispatched - so "rc == 0", \
+"stray == 0" and "count == 0" all describe a run that never started. Conjoin something that \
+can only be true once work happened: a "work" entry's own field, an "approve" decision, or a \
+positive count such as "count >= 1".
 - Judging is not yet available: there is no "judge" op to name, and a plan that names one is \
 refused. State what would have to be judged in the entry's brief instead.
 - The plan is accepted whole or refused whole, with every reason at once.

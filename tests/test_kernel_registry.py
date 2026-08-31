@@ -39,7 +39,9 @@ WORK = OpSpec(
     name="work",
     args_model=_NoArgs,
     output_contract=frozenset({"status"}),
-    can_change_state=True,
+    # None, so this fixture stays exempt from the covers-the-contract invariant: these tests
+    # are about registration and lookup, not about what a do-nothing run reads.
+    facts_if_no_work=None,
     build=_build,
 )
 
@@ -148,11 +150,52 @@ def test_status_is_referenceable_on_every_op_including_one_with_an_empty_contrac
     assert "status" in RESERVED_TOP_LEVEL_FIELDS
 
 
-def test_only_gates_and_the_read_only_scan_cannot_change_state() -> None:
-    """MINOR 7: a scan reads; it changes nothing, so it cannot be a root plan's completion lever."""
+def test_every_op_that_can_read_the_same_run_or_not_declares_that_reading() -> None:
+    """MINOR 7: a scan reads; it changes nothing, so it cannot be a root plan's completion lever.
+
+    The ops that DECLARE a no-work record are exactly those that still RUN in a run which
+    accomplished nothing, and whose reading is then what it would have been anyway. That
+    includes ``reduce:count``, which the old boolean put on the other side for a good reason
+    (its count is 0 with nothing dispatched and N once N passed) - and that reason is exactly
+    why ``count == 0`` is the do-nothing reading it must now declare.
+
+    ``work``, ``approve`` and ``plan`` declare ``None``: running one IS the accomplishment, so
+    in a do-nothing run there is no record of them at all, and their absence is what rescues a
+    root plan from the gate-alone shape.
+    """
     reg = build_op_registry()
-    cannot = {name for name in reg.names() if not reg.get(name).can_change_state}
-    assert cannot == {"gate:make-test", "scan"}
+    declares = {name for name in reg.names() if reg.get(name).facts_if_no_work is not None}
+    assert declares == {"gate:make-test", "scan", "reduce:count"}
+    assert {name for name in reg.names() if reg.get(name).facts_if_no_work is None} == {"approve", "plan", "work"}
+
+
+def test_a_declared_no_work_record_must_cover_the_whole_output_contract() -> None:
+    """A field left out is ABSENT from the synthesized record, so its comparison goes undecided
+    rather than True - which silently widens what a root plan may settle on. The registry
+    refuses the omission at registration rather than letting decision 4 quietly stop guarding
+    that field, so the next contract entry cannot reopen the hole by being forgotten.
+    """
+    reg = OpRegistry()
+    short = OpSpec(
+        name="two-fields",
+        args_model=_NoArgs,
+        output_contract=frozenset({"a", "b"}),
+        facts_if_no_work={"a": 0},
+        build=_build,
+    )
+    with pytest.raises(KernelError, match="output_contract"):
+        reg.register(short)
+
+    reg.register(
+        OpSpec(
+            name="two-fields",
+            args_model=_NoArgs,
+            output_contract=frozenset({"a", "b"}),
+            facts_if_no_work={"a": 0, "b": False},
+            build=_build,
+        )
+    )
+    assert reg.get("two-fields").facts_if_no_work == {"a": 0, "b": False}
 
 
 KERNEL_SOURCE = Path(__file__).resolve().parent.parent / "src" / "agentdag" / "composition" / "kernel.py"
@@ -168,20 +211,33 @@ def _op_name_of(call: ast.Call) -> str | None:
     return None
 
 
-def _line_above_the_flag(call: ast.Call, lines: list[str]) -> str | None:
-    """Return the source line directly above this call's ``can_change_state=``, stripped."""
+def _comment_block_above(call: ast.Call, lines: list[str]) -> str | None:
+    """Return the contiguous comment block directly above this call's ``facts_if_no_work=``.
+
+    Walks UP from the declaration through unbroken ``#`` lines and joins them, rather than
+    reading only the single line above: a one-line reason cannot say what a do-nothing run
+    reads for an op with eight contract fields, and a reason worth writing should not have to
+    fit the parser. The marker is looked for anywhere in the block, so ``# state:`` opens it
+    and the rest continues it.
+    """
     for keyword in call.keywords:
-        if keyword.arg == "can_change_state":
-            return lines[keyword.lineno - 2].strip()
+        if keyword.arg != "facts_if_no_work":
+            continue
+        block: list[str] = []
+        cursor = keyword.lineno - 2
+        while cursor >= 0 and lines[cursor].strip().startswith("#"):
+            block.append(lines[cursor].strip().removeprefix("#").strip())
+            cursor -= 1
+        return " ".join(reversed(block)) if block else None
     return None
 
 
 def flag_reasons() -> dict[str, str]:
-    """Map each op the composition root registers to the reason recorded beside its flag.
+    """Map each op the composition root registers to the reason recorded beside its declaration.
 
     Parsed from ``composition/kernel.py``'s own source: every ``OpSpec(...)`` must carry a
-    ``# state:`` comment on the line directly above its ``can_change_state=``. An op whose
-    registration has no such line is absent from this mapping, which is what the test asserts
+    ``# state:`` comment block directly above its ``facts_if_no_work=``. An op whose
+    registration has none is absent from this mapping, which is what the test asserts
     on - so the reason is auditable at the registration rather than asserted in a report.
     """
     text = KERNEL_SOURCE.read_text(encoding="utf-8")
@@ -191,18 +247,23 @@ def flag_reasons() -> dict[str, str]:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "OpSpec":
             continue
         name = _op_name_of(node)
-        above = _line_above_the_flag(node, lines)
-        if name is not None and above is not None and above.startswith(_STATE_MARKER):
-            reasons[name] = above.removeprefix(_STATE_MARKER).strip()
+        above = _comment_block_above(node, lines)
+        marker = _STATE_MARKER.removeprefix("#").strip()
+        if name is None or above is None or marker not in above:
+            continue
+        # From the marker, not from the top of the block: two registrations carry further
+        # commentary above their reason, and requiring the block to OPEN with the marker
+        # reported those as having no reason at all.
+        reasons[name] = above[above.index(marker) + len(marker) :].strip()
     return reasons
 
 
-def test_every_registration_records_why_its_can_change_state_flag_is_what_it_is() -> None:
-    """MINOR 5: the flag table has to be AUDITABLE at the registration, not asserted elsewhere.
+def test_every_registration_records_why_its_no_work_record_is_what_it_is() -> None:
+    """MINOR 5: the table has to be AUDITABLE at the registration, not asserted elsewhere.
 
-    A previous pass re-derived ``scan``'s flag alone and reported the whole table as
+    A previous pass re-derived ``scan``'s entry alone and reported the whole table as
     re-derived. A reason written beside each registration is what makes the next reader able
-    to check one op without re-deriving all seven - and what makes an unexamined flag visible
+    to check one op without re-deriving all six - and what makes an unexamined op visible
     as an omission rather than invisible as a default.
 
     The control that this parse is not vacuously empty is the equality below: it fails just as
@@ -222,9 +283,9 @@ def test_judge_is_not_registered_until_component_5() -> None:
     validates by NAME and then raises at dispatch: the plan is accepted, and the run dies
     mid-flight, after spend. Unregistering moves that refusal to plan-accept time.
 
-    It also retires an unverified flag rather than shipping a guess. `judge` was registered
-    `can_change_state=True` above a comment saying UNVERIFIED - no body existed, so no emitter
-    had been read - and decision 4's rule keys on exactly that flag. Component 5 sets it by
-    reading the emitter it writes.
+    It also retires an unverified declaration rather than shipping a guess. `judge` was once
+    registered `can_change_state=True` above a comment saying UNVERIFIED - no body existed, so
+    no emitter had been read - and decision 4's rule is decided against exactly that
+    declaration. Component 5 writes it by reading the emitter it writes.
     """
     assert "judge" not in build_op_registry().names()

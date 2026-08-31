@@ -16,9 +16,9 @@ one" (that module's own docstring). This module is the "how". The rules:
 * the plan must not carry more entries than policy allows;
 * for a ROOT plan only, ``done_when`` must be able to settle True AT ALL - a tree that no
   records can satisfy admits a run that can only ever go to its limits;
-* and, for a ROOT plan only, ``done_when`` must not be settleable WITHOUT a record from an op
-  that can change state (decision 4): a gate or a scan re-runs a check, and a check that
-  reads the same before and after cannot tell finished from never-started.
+* and, for a ROOT plan only, ``done_when`` must not settle True over the records a run that
+  accomplished NOTHING would hold (decision 4): a gate or a scan re-runs a check, and a check
+  that reads the same before and after cannot tell finished from never-started.
 
 Whole or nothing (decision 1): every rule runs over every entry, and :class:`Refused` carries
 every reason found, never just the first - a planner re-run on one refusal fixes what it can
@@ -38,7 +38,17 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from ...domain.condition import RESERVED_TOP_LEVEL_FIELDS, AllOf, AnyOf, Compare, FieldRef, Not, referenced_fields
+from ...domain.condition import (
+    RESERVED_TOP_LEVEL_FIELDS,
+    AllOf,
+    AnyOf,
+    Compare,
+    FieldRef,
+    Not,
+    evaluate,
+    referenced_fields,
+)
+from ...domain.models import NodeStatus, ResultRecord
 from .registry import UnregisteredOpError
 
 if TYPE_CHECKING:
@@ -304,62 +314,101 @@ def _can_settle_false(cond: Condition) -> bool:
 
 
 def _root_state_change_reasons(plan: Plan, registry: OpRegistry) -> list[str]:
-    """Return the reason a ROOT plan's ``done_when`` can settle without any state change.
+    """Return the reason a ROOT plan's ``done_when`` can settle over a run that did nothing.
 
-    A gate or a scan re-runs a check; neither is ever itself the reason a run is done
-    (decision 4), because a check that reads the same before and after cannot tell finished
-    from never-started. The question is not whether ``done_when`` MENTIONS a state-changing
-    op - that is satisfied by ``AnyOf(gate.rc == 0, judge.verdict == "pass")``, which then
-    settles on the gate alone - but whether it can settle WITHOUT one. See
-    :func:`_requires_state_change`.
+    Decision 4. A gate or a scan re-runs a check; neither is ever itself the reason a run is
+    done, because a check that reads the same before and after cannot tell finished from
+    never-started. The question is not whether ``done_when`` MENTIONS an op whose records
+    could evidence work - that is satisfied by ``AnyOf(gate.rc == 0, judge.verdict ==
+    "pass")``, which then settles on the gate alone - but whether it can settle WITHOUT any.
+
+    The test is direct: build the records a run that accomplished NOTHING would hold
+    (:func:`_no_work_records`) and settle ``done_when`` over them with the very evaluator the
+    dispatcher uses (:func:`~agentdag.domain.condition.evaluate`). True means this plan calls
+    itself done having done nothing, so it is refused. Sharing the evaluator is the point:
+    the rule cannot drift from the semantics it is guarding, which is what a second,
+    hand-rolled walk over the condition grammar allowed. That walk asked its question per OP,
+    and a per-op answer cannot see that ``reduce:count``'s ``count == 0`` is the do-nothing
+    value while ``count >= 1`` is evidence - both name the same op.
+
+    ``None`` (undecided) is not True and so does not refuse: an undecided ``done_when`` never
+    completes a run either, so a plan that cannot settle over the do-nothing records is
+    exactly a plan needing something to happen first.
     """
-    entries_by_id = {e.spec.node_id: e for e in plan.entries}
-    if _requires_state_change(plan.done_when, entries_by_id, registry):
-        return []
-    return [
-        "done_when can settle without a record from any op that can change state; "
-        "a root plan whose levers cannot change state cannot tell finished from never-started"
-    ]
+    if evaluate(_conservative(plan.done_when, plan), _no_work_records(plan, registry)) is True:
+        return [
+            "done_when settles True over the records a run that accomplished nothing would hold; "
+            "a root plan whose levers cannot change state cannot tell finished from never-started"
+        ]
+    return []
 
 
-def _requires_state_change(cond: Condition, entries_by_id: Mapping[str, Entry], registry: OpRegistry) -> bool:
-    """Return whether every way ``cond`` can settle True involves a state-changing op.
+def _no_work_records(plan: Plan, registry: OpRegistry) -> dict[str, ResultRecord]:
+    """Build, per entry, the record it would carry had the run accomplished nothing.
 
-    Recursive over the condition grammar, one line per shape:
+    The scenario modelled is "every node that WOULD run in a
+        do-nothing run ran, and nothing was accomplished".
 
-    * a :class:`~agentdag.domain.condition.Compare` requires one exactly when the entry its
-      ``ref`` names is registered to an op with ``can_change_state``. An entry this plan does
-      not name - an already-admitted ``graph`` node, or one whose op is unregistered - counts
-      as NOT requiring one: ``graph`` carries no op name, so there is nothing to read the flag
-      off, and guessing an admitted node can change state is the direction that would let the
-      loophole back in. That is deliberately conservative: it can refuse a root plan a human
-      would have allowed, and such a plan is fixed by conjoining a state-changing entry of
-      its own, which is the shape decision 4 is asking for anyway.
-    * an :class:`~agentdag.domain.condition.AllOf` requires one when ANY conjunct does: a
-      conjunction only settles True with every conjunct True, so one state-changing conjunct
-      is on every satisfying path. The empty conjunction is vacuously True with no conjunct
-      at all, so ``any(())`` correctly reports no requirement and the plan is refused.
-    * an :class:`~agentdag.domain.condition.AnyOf` requires one only when EVERY branch does:
-      a disjunction settles on whichever branch holds first, so one branch without a
-      state-changing op is a way to be done without one. The empty disjunction never settles
-      True at all, so ``all(())`` reporting a requirement here costs nothing - it is
-      :func:`_can_settle_true` that refuses that plan, on the ground it can never complete
-      rather than on this rule.
-    * a :class:`~agentdag.domain.condition.Not` never requires one. A negation holds by its
-      child being FALSE, and a node that never ran has no record - so far from proving work
-      happened, ``Not`` is most easily satisfied when nothing did.
+        An op declaring :attr:`~agentdag.application.kernel.registry.OpSpec.facts_if_no_work`
+        contributes a record holding exactly those facts: a gate, a scan and a reduce all still
+        RUN in such a run, and their readings are what they would have been anyway. An op
+        declaring ``None`` contributes NO record, because running it IS the accomplishment -
+        dispatching ``work``, answering an ``approve``, expanding a ``plan`` - and its absence is
+        then read three-valued, so a comparison on it goes UNDECIDED rather than False.
+
+        That distinction is load-bearing in both directions:
+        ``AnyOf(gate.rc == 0, work.turns >= 1)`` settles True on the gate branch alone and is
+        refused, while ``AllOf`` of the same two is undecided and accepted - which is exactly the
+        shape decision 4 asks a planner to write.
+
+        ``status`` is DONE on every synthesized record. A node reaches DONE whether or not it
+        achieved anything, so DONE is the honest do-nothing value, and a root ``done_when`` that
+        settles on a status alone is refused for that reason.
     """
+    records: dict[str, ResultRecord] = {}
+    for entry in plan.entries:
+        op = _op_or_none(entry, registry)
+        if op is None or op.facts_if_no_work is None:
+            continue
+        records[entry.spec.node_id] = ResultRecord(
+            node_id=entry.spec.node_id,
+            attempt=0,
+            status=NodeStatus.DONE,
+            key_facts=dict(op.facts_if_no_work),
+            executor_used="-",
+            model_used="-",
+            effort_used="-",
+            duration_s=0.0,
+            input_hash="sha256:0",
+        )
+    return records
+
+
+_ALWAYS_TRUE = AllOf(all=())
+"""A condition that settles True with no children, per Kleene's vacuous AND.
+
+Used to stand in for a comparison this rule must treat as satisfiable without work.
+"""
+
+
+def _conservative(cond: Condition, plan: Plan) -> Condition:
+    """Replace every comparison on an entry THIS plan does not own with an always-True leaf.
+
+    A ``done_when`` may reference an already-admitted graph node, whose op this plan never
+    names, so nothing here can say what it reports on a do-nothing run. Leaving it absent
+    would make its comparison undecided, which is the LOOSER direction - it would let a root
+    plan pass by leaning on a node whose behaviour this rule cannot see. Assuming instead
+    that such a node is satisfiable without work keeps the refusal where it was before this
+    rule was rewritten: conservative, and fixed by conjoining an entry of the plan's own.
+    """
+    owned = {e.spec.node_id for e in plan.entries}
     if isinstance(cond, Compare):
-        target = entries_by_id.get(cond.ref.entry)
-        if target is None:
-            return False
-        op = _op_or_none(target, registry)
-        return op is not None and op.can_change_state
+        return cond if cond.ref.entry in owned else _ALWAYS_TRUE
     if isinstance(cond, Not):
-        return False
+        return Not(not_=_conservative(cond.not_, plan))
     if isinstance(cond, AllOf):
-        return any(_requires_state_change(child, entries_by_id, registry) for child in cond.all)
-    return all(_requires_state_change(child, entries_by_id, registry) for child in cond.any)
+        return AllOf(all=tuple(_conservative(child, plan) for child in cond.all))
+    return AnyOf(any=tuple(_conservative(child, plan) for child in cond.any))
 
 
 def _op_or_none(entry: Entry, registry: OpRegistry) -> OpSpec | None:
