@@ -560,13 +560,21 @@ def _replan_goal(plan: Plan, cause: Cause, *, granted: int = 0) -> str:
     failed writes the next plan blind, and the whole point of :class:`Cause` is that it
     carries what the condition READ.
 
-    A GRANTED round is named, for the reason :func:`~agentdag.application.kernel.root._ask`
-    names it one ladder up: the exhaustion suspends, and the launch that resumes carries a
-    replay index holding every line the earlier one wrote - so a re-dispatch briefed to the
-    identical word is SERVED FROM THE JOURNAL rather than run. A grant that changed nothing
-    in this text would replay the very dispatch the decider had just read, call that another
-    round, and exhaust in the same place having spent nothing. Naming the round is what makes
-    the dispatch real. It reaches the PLANNER only; design 4's payload carries no counter.
+    A GRANTED round is named. :func:`~agentdag.application.kernel.root._ask` names it one
+    ladder up because there it is load-bearing: that ladder re-asks with the same goal and
+    the same reasons, so without the round the brief is identical, the resumed launch serves
+    the dispatch from its replay index, and the grant buys nothing.
+
+    That argument does NOT carry over here, and it was measured rather than assumed: this
+    brief renders ``cause.node_id``, node ids are allocated fresh for every accepted plan, so
+    consecutive rounds already differ and removing this line leaves the ordinary path
+    working. What it defends is the case where they do NOT differ - a refutation landing on
+    an ADMITTED node, whose id is stable across rounds, with the values it read unchanged.
+    Then the whole triple repeats, the re-dispatch is served, and the ladder asks again
+    having done nothing. One line to make the property hold outright rather than by an
+    incidental property of the id allocator.
+
+    It reaches the PLANNER only; design 4's payload carries no counter.
     """
     read = ", ".join(f"{name}={value!r}" for name, value in sorted(cause.values.items())) or "(nothing had landed)"
     asked = (

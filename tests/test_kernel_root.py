@@ -539,3 +539,115 @@ def test_a_root_plan_whose_condition_refutes_past_the_allowance_asks_rather_than
 
     assert info.value.node_id == APPROVE_ID
     assert info.value.payload_hash is not None
+
+
+@pytest.mark.os_agnostic
+def test_a_granted_round_buys_another_whole_max_replans(tmp_path: Path) -> None:
+    """The user's decision, 2026-08-31: a grant buys another ``max_replans``, not one attempt.
+
+    ``max_replans=2`` is what makes the arm able to tell those apart - at 1 they are the same
+    number and an implementation granting a single attempt passes. Counted on the RESUMED
+    launch, where every dispatch the first launch made is served from the journal, so what
+    the executor sees run is exactly what the grant bought.
+    """
+    run_dir = root_run_dir(tmp_path)
+    first = RootPlanningExecutor(plans=[refuted_condition_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, first, run_limits=limits(max_replans=2), gate_port=RedGate())
+    answer(run_dir, str(info.value.payload_hash), "replan")
+
+    granted = RootPlanningExecutor(plans=[refuted_condition_plan()])
+    with pytest.raises(Suspended):
+        drive(run_dir, granted, run_limits=limits(max_replans=2), gate_port=RedGate())
+
+    assert first.planner_dispatches == 3, "the opening plan plus max_replans re-plans"
+    assert granted.planner_dispatches == 2, "a granted round must buy max_replans, not one attempt"
+
+
+@pytest.mark.os_agnostic
+def test_an_abandoned_refutation_reports_the_records_it_earned(tmp_path: Path) -> None:
+    """Abandon must REPORT, never raise: the point of the ladder is that the run stays
+    resumable and keeps the expensive records a plan that actually ran produced.
+
+    The ``cause`` is the field that says why it stopped, and it is what distinguishes this
+    from the abandon on the validator ladder - that one has reasons and no cause, because
+    nothing ever ran.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(
+            run_dir,
+            RootPlanningExecutor(plans=[refuted_condition_plan()]),
+            run_limits=limits(max_replans=1),
+            gate_port=RedGate(),
+        )
+    answer(run_dir, str(info.value.payload_hash), "abandon")
+
+    out = drive(
+        run_dir,
+        RootPlanningExecutor(plans=[refuted_condition_plan()]),
+        run_limits=limits(max_replans=1),
+        gate_port=RedGate(),
+    )
+
+    assert out.done is False
+    assert out.cause is not None, "an abandoned refutation must say which condition stopped it"
+    assert any(record.node_id.startswith("n-") for record in out.records.values()), "records were thrown away"
+
+
+@pytest.mark.os_agnostic
+def test_a_granted_round_tells_the_planner_which_round_it_is(tmp_path: Path) -> None:
+    """The round reaches the PLANNER's brief, which is the only place it is allowed to reach.
+
+    Pinned rather than left to the reader because the reason it exists is narrow and easy to
+    delete as dead: on the ordinary path the brief already differs between rounds, since it
+    renders the refuting node id and ids are allocated fresh per accepted plan. What it
+    defends is a refutation on an ADMITTED node, whose id is stable, where the whole brief
+    would otherwise repeat and the resumed launch would serve the dispatch instead of running
+    it. Design 4's operator payload carries no counter, so this must NOT reach it.
+    """
+    run_dir = root_run_dir(tmp_path)
+    with pytest.raises(Suspended) as info:
+        drive(
+            run_dir,
+            RootPlanningExecutor(plans=[refuted_condition_plan()]),
+            run_limits=limits(max_replans=1),
+            gate_port=RedGate(),
+        )
+    answer(run_dir, str(info.value.payload_hash), "replan")
+
+    granted = RootPlanningExecutor(plans=[refuted_condition_plan()])
+    with pytest.raises(Suspended) as second:
+        drive(run_dir, granted, run_limits=limits(max_replans=1), gate_port=RedGate())
+
+    assert "granted planning round 2" in granted.briefs[-1]
+    assert "round 2" not in payload_on_offer(run_dir, str(second.value.payload_hash)).text
+
+
+@pytest.mark.os_agnostic
+def test_each_granted_round_asks_a_question_of_its_own(tmp_path: Path) -> None:
+    """Termination. A decision is FINAL per (node id, payload hash), so an exhaustion that
+    rebuilt an identical payload would have the recorded grant RE-SERVED instead of asked,
+    and the ladder would re-plan unattended forever.
+
+    THREE rounds, not two, for the reason the sibling arm on the validator ladder runs three:
+    a second round comes out distinct even with the distinguishing mechanism gone, because
+    the approve node's OWN record joins the planner's evidence the first time a decision is
+    served and changes the next brief once, for free.
+    """
+    run_dir = root_run_dir(tmp_path)
+    seen: list[str] = []
+
+    for _ in range(3):
+        with pytest.raises(Suspended) as info:
+            drive(
+                run_dir,
+                RootPlanningExecutor(plans=[refuted_condition_plan()]),
+                run_limits=limits(max_replans=1),
+                gate_port=RedGate(),
+            )
+        seen.append(str(info.value.payload_hash))
+        answer(run_dir, seen[-1], "replan")
+
+    assert len(set(seen)) == 3, "an exhaustion re-asked a question whose answer is already recorded"
