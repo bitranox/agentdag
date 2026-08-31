@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from .registry import OpRegistry, PlanContext
 
 __all__ = [
+    "BudgetExhausted",
     "Cause",
     "Executed",
     "GrantMoreReplans",
@@ -327,6 +328,32 @@ class GrantMoreReplans(Protocol):
         ...
 
 
+class BudgetExhausted(Protocol):
+    """Told that the RUN-wide node budget is spent, when there is somebody to tell.
+
+    Deliberately returns ``None`` rather than a bool, unlike :class:`GrantMoreReplans`, and
+    the asymmetry is the design: a re-plan grant can be honoured where it is asked for, but a
+    budget grant cannot. The budget is per-LAUNCH and charges replayed dispatches, so by the
+    time this is called the launch has already spent its way to the ceiling. A grant is
+    therefore recorded, the launch ends, and the next launch replays under a ceiling
+    :func:`~agentdag.application.kernel.root.with_budget_grants` raised at START. There is no
+    "continue" this loop could act on, so none is offered.
+
+    Two outcomes reach the caller, and both are unambiguous: it RAISES (``Suspended`` when
+    nobody has answered yet, and the launch ends resumably) or it RETURNS, which means the
+    question was answered with abandon and the subtree is reported unfinished.
+    """
+
+    async def __call__(self, *, spent: int, limit: int) -> None:
+        """Report the spent budget to whoever can decide what happens next.
+
+        Args:
+            spent: How many dispatches this LAUNCH has charged, replayed ones included.
+            limit: The ceiling it hit - already raised by any grants on record.
+        """
+        ...
+
+
 async def execute_plan(
     plan: Plan,
     *,
@@ -340,6 +367,7 @@ async def execute_plan(
     admitted: Mapping[str, NodeSpec] | None = None,
     replans: int = 0,
     grant_more: GrantMoreReplans | None = None,
+    budget_exhausted: BudgetExhausted | None = None,
 ) -> Executed:
     """Run one plan's entries to terminal, re-planning a refuted subtree, recursing on ``op="plan"``.
 
@@ -403,6 +431,7 @@ async def execute_plan(
         planner=planner,
         replans=replans,
         grant_more=grant_more,
+        budget_exhausted=budget_exhausted,
     )
 
 
@@ -416,6 +445,7 @@ async def _execute(
     replans: int = 0,
     parent: StopScope | None = None,
     grant_more: GrantMoreReplans | None = None,
+    budget_exhausted: BudgetExhausted | None = None,
 ) -> Executed:
     """Drive one plan to terminal, re-planning while a condition refutes and the allowance holds.
 
@@ -436,7 +466,19 @@ async def _execute(
     while True:
         run = await _one_pass(current, wiring=wiring, depth=depth, admitted=admitted, kept=kept, parent=parent)
         if run.failure is not None:
-            raise run.failure
+            if budget_exhausted is None or not isinstance(run.failure, RunNodeBudgetExceededError):
+                raise run.failure
+            # The run-wide budget ran out and there is somebody to ask. This catches a
+            # nested plan's exhaustion too: a sub-plan raises, _settle turns the task's
+            # exception into its parent's run.failure, and each level re-raises until it
+            # arrives here as one.
+            await budget_exhausted(spent=wiring.spent.spent, limit=wiring.limits.max_nodes_per_run)
+            kept = dict(run.records)
+            refused.extend(run.refused)
+            run.refused = list(refused)
+            executed = _abandoned_unfinished(current, run=run, view=_view(wiring.ctx, run.records))
+            _journal_subtree_done(planner, done=executed.done, wiring=wiring)
+            return executed
         kept = dict(run.records)
         refused.extend(run.refused)
         run.refused = list(refused)
@@ -960,6 +1002,19 @@ def _verdict(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) ->
     """
     stopped = run.refutation is not None or bool(run.refused)
     return not stopped and evaluate(plan.done_when, view) is True
+
+
+def _abandoned_unfinished(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -> Executed:
+    """Assemble a subtree that STOPPED on a run bound, and force it not-done.
+
+    The forcing is the whole function. :func:`_verdict` treats a subtree as stopped when a
+    condition refuted or a sub-plan was refused, and a spent node budget is NEITHER - so a
+    plan whose ``done_when`` happens to settle True over the entries that DID land would be
+    reported DONE while entries it never dispatched sit in ``unrun``. That is the trap
+    :func:`_executed`'s own docstring names for the refutation path, reachable here by a
+    different door.
+    """
+    return replace(_executed(plan, run=run, view=view), done=False)
 
 
 def _executed(plan: Plan, *, run: _Progress, view: Mapping[str, ResultRecord]) -> Executed:

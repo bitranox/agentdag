@@ -246,11 +246,16 @@ run_limits:
   # the total a root run may spend; only a person can grant more, since the question defaults
   # to abandoning and a default is the only option an unattended deadline applies.
   max_replans: 3
-  # M6 (Task 30): how many nodes a whole run may dispatch, across every plan it accepts.
+  # M6 (Task 30): how many nodes ONE LAUNCH may dispatch, across every plan it accepts.
   # ENFORCED since Task 33 by execute.NodeBudget, which counts across the whole run - a
   # nested sub-plan spends from this same total, never from a fresh per-plan allowance.
   # Checkpoint A (2026-08-29) raised this from 200 for the same reason as max_nodes_per_plan
-  # below: a ceiling calibrated on what planners produce refuses legitimate wide work.
+  # below: a ceiling calibrated on what planners produce refuses legitimate wide work. So it
+  # is a RUNAWAY GUARD, not a spending plan - at this size it fires only on a run that has
+  # gone wrong, which is why exhausting it at the root asks a person rather than failing the
+  # run (Task 37). A granted round buys another whole allowance and takes effect at the START
+  # of the next launch. Note it is charged per LAUNCH and a journal-served replay costs the
+  # same as work that ran, so a resumed run spends part of this re-charging its own history.
   max_nodes_per_run: 1000
   # M6 (Task 30): how many entries a single accepted plan may carry, enforced by
   # validate_plan's size rule.
