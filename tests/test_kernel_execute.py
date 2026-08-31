@@ -699,3 +699,25 @@ def test_one_allocator_serves_a_whole_run_and_keeps_counting(tmp_path: Path) -> 
     assert ids.allocate() == "n-0001"
     assert ids.allocate() == "n-0002"
     assert ids.minted == 2
+
+
+@pytest.mark.os_agnostic
+def test_the_allocator_never_reuses_an_id_which_is_what_keeps_a_re_plan_a_real_dispatch() -> None:
+    """A downstream property is pinned HERE, where the thing that supplies it lives.
+
+    The root's re-plan ladder rests on this and cannot see it. A dispatch briefed to the
+    identical word is SERVED from a resumed launch's replay index rather than run, so if two
+    rounds could brief the planner the same way, a granted round would replay the dispatch
+    the decider had just read and buy nothing while the run asked again. What stops that is
+    that every re-plan brief names ids from the plan that refuted, and no id is ever issued
+    twice - see ``_replan_goal``, which carries no round counter BECAUSE of this.
+
+    Without this arm the property is only observed end to end in ``test_kernel_root.py``, so
+    a change to allocation reddens a test about planner BRIEFS, a long way from the code
+    being edited.
+    """
+    ids = NodeIds()
+    minted = [ids.allocate() for _ in range(500)]
+
+    assert len(set(minted)) == 500, "an id was issued twice, so two re-plans could brief the planner alike"
+    assert minted == sorted(minted), "ids must increase, so a later round can never mint an earlier round's id"
