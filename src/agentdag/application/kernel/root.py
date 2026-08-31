@@ -29,7 +29,7 @@ from ...domain.kernel_errors import KernelError
 from ...domain.keys import hash8
 from ...domain.models import ApproveOption, ApprovePayload
 from .approve import render_for_operator
-from .execute import Executed, SubPlanRefused, execute_plan
+from .execute import Cause, Executed, SubPlanRefused, execute_plan
 from .planner import Planned, dispatch_planner
 from .ports import format_stamp
 
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ...domain.models import NodeSpec, ResultRecord
+    from ...domain.plan import Plan
     from ...domain.policy import RunLimits
     from .execute import NodeBudget, NodeIds
     from .planner import NotPlanned
@@ -115,12 +116,23 @@ async def run_root(
     attempts = 0
     reasons: tuple[str, ...] = ()
     asked: set[str] = set()
+
+    async def grant_more(*, plan: Plan, cause: Cause, granted: int) -> bool:
+        """Ask whether a root plan whose CONDITION keeps refuting may be re-planned again.
+
+        A nested ``def`` rather than a lambda: :class:`GrantMoreReplans` is keyword-only, and
+        pyright strict will not back-infer a lambda parameter's type from a Protocol.
+        """
+        return await _granted_more(approve, planner=planner, plan=plan, cause=cause, granted=granted,
+                                   ctx=ctx, asked=asked)  # fmt: skip
+
     while True:
         planned = await _plan(goal=_ask(goal, reasons=reasons, granted=granted), planner=planner, ctx=ctx,
                               registry=registry, limits=limits, graph=graph, ids=ids)  # fmt: skip
         if isinstance(planned, Planned):
             return await execute_plan(planned.plan, ctx=ctx, registry=registry, limits=limits, depth=0,
-                                      spent=spent, ids=ids, planner=planner, admitted=graph)  # fmt: skip
+                                      spent=spent, ids=ids, planner=planner, admitted=graph,
+                                      grant_more=grant_more)  # fmt: skip
         reasons = planned.reasons
         if attempts < limits.max_replans:
             attempts += 1
@@ -221,6 +233,99 @@ async def _granted(
         )
     asked.add(decision.payload_hash)
     return decision.decision == GRANT
+
+
+async def _granted_more(
+    approve: NodeSpec,
+    *,
+    planner: NodeSpec,
+    plan: Plan,
+    cause: Cause,
+    granted: int,
+    ctx: PlanContext,
+    asked: set[str],
+) -> bool:
+    """Ask whether to abandon or to re-plan a root whose CONDITION keeps refuting.
+
+    The sibling of :func:`_granted`, and deliberately not a parameterisation of it: the two
+    exhaustions are DIFFERENT questions. That one is asked about a plan nothing ever ran,
+    and its evidence is the validator's reasons; this one is asked about a plan that RAN, and
+    its evidence is a condition and the values it read. A single function taking either would
+    have to branch on which, in the one place whose whole job is to render a question a
+    person can answer.
+
+    ``asked`` is the same per-launch set :func:`_granted` guards with, shared on purpose:
+    both ladders can fire in one launch, and what must never happen is either of them having
+    a recorded decision RE-SERVED and reading that as a fresh grant.
+
+    Raises:
+        Suspended: through :meth:`~agentdag.application.kernel.context.Coordinator.approve`,
+            when this exact question has no answer recorded yet.
+        KernelError: this launch already had an answer served for this exact payload, so
+            asking again cannot terminate.
+    """
+    payload = _refuted(approve, planner=planner, plan=plan, cause=cause, granted=granted, ctx=ctx)
+    decision = await ctx.co.approve(approve, payload=payload)
+    if decision.payload_hash in asked:
+        raise KernelError(
+            f"the refuted-condition payload hashed to {decision.payload_hash!r} a second time "
+            "in one launch, so a decision already served would be served again and the "
+            "planning ladder could never terminate"
+        )
+    asked.add(decision.payload_hash)
+    return decision.decision == GRANT
+
+
+def _refuted(
+    approve: NodeSpec,
+    *,
+    planner: NodeSpec,
+    plan: Plan,
+    cause: Cause,
+    granted: int,
+    ctx: PlanContext,
+) -> ApprovePayload:
+    """Build the question a person answers when a root plan's condition keeps refuting.
+
+    ``artefact_refs`` names the node directory of the planner dispatch whose plan was the one
+    running, for the two jobs it does in :func:`_exhausted`: it points the decider at what the
+    planner actually wrote, and it is what makes a repeated ask a NEW question rather than one
+    whose recorded answer is re-served. It differs every round because
+    :func:`~agentdag.application.kernel.execute._replan_goal` names the granted round, so each
+    round's re-dispatch has a key of its own.
+    """
+    return ApprovePayload(
+        text=_refuted_question(plan, cause=cause, granted=granted),
+        node_id=approve.node_id,
+        artefact_refs=[_failed_dispatch_ref(planner, ctx=ctx)],
+        options=[
+            ApproveOption(id=ABANDON, label="abandon: report what could not be made to hold", effect="none"),
+            ApproveOption(id=GRANT, label="grant the planner another round of attempts", effect="none"),
+        ],
+        default=ABANDON,
+        decide_by=_decide_by(ctx, window_s=approve.deadline_s),
+        workflow=ctx.co.workflow,
+        run_id=ctx.co.run_id,
+    )
+
+
+def _refuted_question(plan: Plan, *, cause: Cause, granted: int) -> str:
+    """Render the refuted condition for a person, values included.
+
+    The VALUES are what makes this answerable: a decider told only that something failed is
+    being asked to guess, and the whole point of :class:`Cause` is that it carries what the
+    condition read. Rounds already granted are stated, because "grant another round" means
+    something different on the first ask than on the fourth.
+    """
+    read = "\n".join(f"  - {name} = {value!r}" for name, value in sorted(cause.values.items()))
+    so_far = "" if not granted else f"\n{granted} further round(s) have already been granted."
+    return render_for_operator(
+        f"The root plan for {plan.goal!r} has used every re-plan it was allowed and a "
+        f"condition over node {cause.node_id!r} still settles false.\n"
+        f"What that condition read:\n{read or '  (nothing had landed)'}\n"
+        f"{so_far}\n"
+        f"Abandon the run and keep what it has produced, or grant another round of planning."
+    )
 
 
 def _exhausted(approve: NodeSpec, *, planner: NodeSpec, reasons: tuple[str, ...], ctx: PlanContext) -> ApprovePayload:

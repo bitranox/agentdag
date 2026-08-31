@@ -21,7 +21,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import FakeScanner, fresh_run_dir, outcome, policy_path, wire
+from kernel_fakes import FakeScanner, RedGate, fresh_run_dir, outcome, policy_path, wire
 
 from agentdag.adapters.graph_a.gate_make import MakeTestGate
 from agentdag.adapters.graph_a.git_cli import GitCli
@@ -111,6 +111,42 @@ def valid_plan(goal: str = "g", node_id: str = "repair") -> str:
     )
 
 
+def refuted_condition_plan(goal: str = "g", *, work_id: str = "repair", gate_id: str = "g1") -> str:
+    """A root plan the validator ACCEPTS and a RED gate then refutes.
+
+    The two entries do different jobs. The ``work`` one is what carries ``done_when``, and it
+    is state-changing, so the root-only rule that a completion condition may not rest on a
+    gate's exit code alone (``_requires_state_change``) is satisfied and this plan REACHES
+    execution. The gate's own ``acceptance`` is what a :class:`RedGate` then refutes. Without
+    the work entry the validator would refuse the plan and every arm below would be testing
+    the OTHER ladder - the one for plans that never ran.
+    """
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": work_id, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {work_id}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                },
+                {
+                    "spec": {"node_id": gate_id, "kind": "gate", "deadline_s": 60.0},
+                    "op": "gate:make-test",
+                    "args": {},
+                    "brief": "run the gate",
+                    "output_contract": ["status", "rc"],
+                    "acceptance": {"ref": {"entry": gate_id, "field": "rc"}, "op": "==", "value": 0},
+                },
+            ],
+            "done_when": {"ref": {"entry": work_id, "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
 def unregistered_op_plan(goal: str = "g", op: str = "teleport") -> str:
     """A plan the validator refuses by ABSENCE: nothing registers ``op``."""
     return json.dumps(
@@ -182,9 +218,14 @@ def drive(
     *,
     goal: str = "g",
     run_limits: RunLimits | None = None,
+    gate_port: RedGate | None = None,
 ) -> Executed:
-    """Run the root ladder over ``run_dir``, as a relaunch would over an existing one."""
-    coordinator = wire(run_dir, executor, FakeScanner())  # type: ignore[arg-type]
+    """Run the root ladder over ``run_dir``, as a relaunch would over an existing one.
+
+    ``gate_port`` defaults to the coordinator's own, which is the REAL ``make test`` gate; an
+    arm whose plan carries a gate entry must pass a fake, or the fixture shells out.
+    """
+    coordinator = wire(run_dir, executor, FakeScanner(), gate_port=gate_port)  # type: ignore[arg-type]
     coordinator.fold_decisions()
     ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
     return asyncio.run(
@@ -476,3 +517,25 @@ def test_the_policy_port_carries_the_whole_run_limits(tmp_path: Path) -> None:
     assert policy.run_limits.max_replans >= 0
     assert policy.run_limits.max_nodes_per_run > 0
     assert policy.run_limits.deadline_ceiling_s > 0
+
+
+@pytest.mark.os_agnostic
+def test_a_root_plan_whose_condition_refutes_past_the_allowance_asks_rather_than_failing(
+    tmp_path: Path,
+) -> None:
+    """The root's OTHER exhaustion: the plan was accepted, ran, and its condition refuted.
+
+    Until this arm that path raised ``ReplanLimitExceededError`` out of ``execute_plan``, so
+    the run ended FAILED and unresumable - and it strands the EXPENSIVE records, the ones a
+    plan that actually RAN produced. The plans here all validate, so nothing on this path can
+    reach the ladder for plans the validator refuses; what exhausts is the re-plan allowance
+    inside ``execute_plan``.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RootPlanningExecutor(plans=[refuted_condition_plan()])
+
+    with pytest.raises(Suspended) as info:
+        drive(run_dir, executor, run_limits=limits(max_replans=1), gate_port=RedGate())
+
+    assert info.value.node_id == APPROVE_ID
+    assert info.value.payload_hash is not None
