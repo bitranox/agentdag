@@ -597,32 +597,28 @@ def test_an_abandoned_refutation_reports_the_records_it_earned(tmp_path: Path) -
 
 
 @pytest.mark.os_agnostic
-def test_a_granted_round_tells_the_planner_which_round_it_is(tmp_path: Path) -> None:
-    """The round reaches the PLANNER's brief, which is the only place it is allowed to reach.
+def test_every_re_plan_brief_is_distinct_so_a_granted_round_is_a_real_dispatch(tmp_path: Path) -> None:
+    """The property the whole ladder rests on, pinned on the mechanism that supplies it.
 
-    Pinned rather than left to the reader because the reason it exists is narrow and easy to
-    delete as dead: on the ordinary path the brief already differs between rounds, since it
-    renders the refuting node id and ids are allocated fresh per accepted plan. What it
-    defends is a refutation on an ADMITTED node, whose id is stable, where the whole brief
-    would otherwise repeat and the resumed launch would serve the dispatch instead of running
-    it. Design 4's operator payload carries no counter, so this must NOT reach it.
+    A dispatch briefed to the identical word is SERVED from the resumed launch's replay index
+    rather than run, so if two rounds could brief the planner the same way, a grant would
+    replay the dispatch the decider had just read and buy nothing.
+
+    Nothing enforces that directly, which is why it is pinned here rather than trusted. Two
+    renderings supply it independently - the refuting node id and values in the goal text,
+    and the evidence block the planner brief appends - and both reduce to node ids being
+    allocated fresh per accepted plan. Verified by mutating BOTH: removing either alone
+    leaves this arm green, and only with both gone do the three briefs collapse into one.
     """
     run_dir = root_run_dir(tmp_path)
-    with pytest.raises(Suspended) as info:
-        drive(
-            run_dir,
-            RootPlanningExecutor(plans=[refuted_condition_plan()]),
-            run_limits=limits(max_replans=1),
-            gate_port=RedGate(),
-        )
-    answer(run_dir, str(info.value.payload_hash), "replan")
+    executor = RootPlanningExecutor(plans=[refuted_condition_plan()])
 
-    granted = RootPlanningExecutor(plans=[refuted_condition_plan()])
-    with pytest.raises(Suspended) as second:
-        drive(run_dir, granted, run_limits=limits(max_replans=1), gate_port=RedGate())
+    with pytest.raises(Suspended):
+        drive(run_dir, executor, run_limits=limits(max_replans=3), gate_port=RedGate())
 
-    assert "granted planning round 2" in granted.briefs[-1]
-    assert "round 2" not in payload_on_offer(run_dir, str(second.value.payload_hash)).text
+    re_plans = [brief for brief in executor.briefs if "was stopped" in brief]
+    assert len(re_plans) == 3, "max_replans=3 must brief the planner three times over"
+    assert len(set(re_plans)) == 3, "two rounds briefed the planner identically, so one was served not run"
 
 
 @pytest.mark.os_agnostic

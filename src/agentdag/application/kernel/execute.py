@@ -473,9 +473,7 @@ async def _execute(
                 return executed
             granted += 1
             spent_replans = 0
-        planned = await _replan(
-            current, cause=cause, planner=planner, wiring=wiring, admitted=admitted, granted=granted
-        )
+        planned = await _replan(current, cause=cause, planner=planner, wiring=wiring, admitted=admitted)
         if planned is None:
             return _executed(current, run=run, view=view)
         spent_replans += 1
@@ -530,7 +528,6 @@ async def _replan(
     planner: NodeSpec,
     wiring: _Wiring,
     admitted: Mapping[str, NodeSpec],
-    granted: int = 0,
 ) -> Plan | None:
     """Re-dispatch ``planner`` with the cause, returning the plan it produced or None.
 
@@ -541,7 +538,7 @@ async def _replan(
     async with wiring.ctx.co.parallel_bound():
         planned = await dispatch_planner(
             spec=planner,
-            goal=_replan_goal(plan, cause, granted=granted),
+            goal=_replan_goal(plan, cause),
             evidence=dict(wiring.ctx.co.dispatcher.records),
             ctx=wiring.ctx,
             registry=wiring.registry,
@@ -553,40 +550,43 @@ async def _replan(
     return planned.plan if isinstance(planned, Planned) else None
 
 
-def _replan_goal(plan: Plan, cause: Cause, *, granted: int = 0) -> str:
+def _replan_goal(plan: Plan, cause: Cause) -> str:
     """Compose what the re-dispatched planner is asked for: the goal, and what stopped the last try.
 
     The values are rendered rather than summarised - a planner told only that something
     failed writes the next plan blind, and the whole point of :class:`Cause` is that it
     carries what the condition READ.
 
-    A GRANTED round is named. :func:`~agentdag.application.kernel.root._ask` names it one
-    ladder up because there it is load-bearing: that ladder re-asks with the same goal and
-    the same reasons, so without the round the brief is identical, the resumed launch serves
-    the dispatch from its replay index, and the grant buys nothing.
+    This brief carries NO granted-round counter, and that is a decided asymmetry with
+    :func:`~agentdag.application.kernel.root._ask` one ladder up rather than an oversight.
+    There a counter is load-bearing: that ladder re-asks with the same goal and the same
+    reasons, so without it the brief is identical, the resumed launch serves the dispatch
+    from its replay index, and the grant buys nothing.
 
-    That argument does NOT carry over here, and it was measured rather than assumed: this
-    brief renders ``cause.node_id``, node ids are allocated fresh for every accepted plan, so
-    consecutive rounds already differ and removing this line leaves the ordinary path
-    working. What it defends is the case where they do NOT differ - a refutation landing on
-    an ADMITTED node, whose id is stable across rounds, with the values it read unchanged.
-    Then the whole triple repeats, the re-dispatch is served, and the ladder asks again
-    having done nothing. One line to make the property hold outright rather than by an
-    incidental property of the id allocator.
+    Here the brief is already distinct every round, and TWO renderings make it so
+    independently - measured by mutation, because removing either one alone changes nothing:
 
-    It reaches the PLANNER only; design 4's payload carries no counter.
+    * this text renders ``cause.node_id``, which :func:`_refuted` takes from the LANDING
+      ENTRY, not from whatever node the condition referenced - so even a condition over an
+      admitted node reports an id from the current plan;
+    * :func:`~agentdag.application.kernel.planner._brief` appends the evidence block, which
+      grows by every record the round landed.
+
+    Both reduce to one fact: :class:`NodeIds` allocates fresh ids for every accepted plan and
+    never reuses one, so no two rounds can describe themselves the same way. A counter was
+    written into this brief first, on the assumption that the ids could repeat; it was
+    removed once measurement showed they cannot.
+    ``test_every_re_plan_brief_is_distinct_so_a_granted_round_is_a_real_dispatch`` pins the
+    property, since nothing else in this module enforces it.
     """
     read = ", ".join(f"{name}={value!r}" for name, value in sorted(cause.values.items())) or "(nothing had landed)"
-    asked = (
+    return (
         f"{plan.goal}\n\n"
         f"The previous plan for this goal was stopped: a condition over node {cause.node_id!r} "
         f"settled false. What the condition read: {read}. "
         f"Plan the REMAINING work. Entries that already completed keep their records and must "
         f"not be repeated."
     )
-    if not granted:
-        return asked
-    return f"{asked}\n\nA person read the refutation and granted planning round {granted + 1}."
 
 
 async def _one_pass(
