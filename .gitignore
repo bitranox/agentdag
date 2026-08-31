@@ -199,13 +199,16 @@ CLAUDE.local.md
 # Python virtual environments (managed by bmk)
 .venv*/
 
-# Autonomous-execution decision log (never committed)
+# Autonomous-execution decision log: never committed HERE, and since 2026-09-01 this path
+# is a symlink to its one real home in the private research repo. It stays private because
+# its spend figures are the subject of their own sentences, so redacting them would destroy
+# the entries rather than clean them.
 EXECUTION-USER-REVIEW.md
 
-# Session handover (scaffolding: one file, one moment, replaced wholesale each time)
-handover.md
+# Session handover: TRACKED since 2026-09-01, so it gets a history instead of being
+# rewritten wholesale into oblivion. Only its editor backups stay out.
 handover.md.bak-*
 
-# Build plans at three altitudes: local working documents beside the code, moved from
-# RESEARCH/workflow/plans on 2026-08-28; their history to that day is in the RESEARCH repo
-PLANS/
+# Build plans at three altitudes. TRACKED since 2026-09-01, after a read-through removed
+# the local-infrastructure detail; their history before that day is in the private research
+# repo they were moved from on 2026-08-28.
