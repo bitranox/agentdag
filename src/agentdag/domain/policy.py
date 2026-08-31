@@ -178,10 +178,23 @@ class RunLimits(BaseModel):
     unattended can, because the exhaustion approve defaults to abandoning.
     """
     max_nodes_per_run: int
-    """How many nodes a whole run may dispatch, across every plan it accepts.
+    """How many nodes ONE LAUNCH may dispatch, across every plan it accepts.
 
     Enforced by :class:`~agentdag.application.kernel.execute.NodeBudget`, which counts across
     a whole run rather than per plan - a nested sub-plan spends from the same total.
+
+    Per LAUNCH, not per run, and the difference is not pedantry: the charge is made before
+    the dispatch it pays for, so a record SERVED from the journal on a resumed launch costs
+    exactly what running it did. A resumed run therefore spends part of this on re-charging
+    its own history before it reaches anything new.
+
+    A RUNAWAY GUARD rather than a spending plan. Checkpoint A raised it from 200 for the
+    reason ``max_nodes_per_plan`` was raised - a ceiling calibrated on what planners produce
+    refuses legitimate wide work - so at this size it fires only on a run that has gone
+    wrong. Which is why exhausting it at the ROOT asks a person instead of failing the run
+    (:func:`~agentdag.application.kernel.root.with_budget_grants`): a grant buys another
+    whole allowance, applied at the START of the next launch, because by the time the
+    question is asked the launch that asked has already spent this.
     """
     max_nodes_per_plan: int
     """How many entries a single accepted :class:`~agentdag.domain.plan.Plan` may carry."""
