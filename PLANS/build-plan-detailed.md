@@ -6105,6 +6105,8 @@ Added 2026-08-30. **Why these exist:** agentdag's differentiators were establish
 against Claude Code's Workflow tool read at SOURCE level (binary 2.1.238) on 2026-08-20. A
 documentation re-read on 2026-08-30 against CLI 2.1.251 and SDK 0.2.148 found two of the four
 weakened, one already-ships entry refuted, and two surfaces that had never been assessed at all.
+That entry, and two beside it, now sit in the `### Partially ships` tier: each ships, but only
+under a condition the one-word list entry hid.
 Findings and every quote: `../../RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`.
 
 **These probes exist because DOC-READ is the weaker instrument.** The user decided on 2026-08-30 to
@@ -6185,5 +6187,11 @@ decision that follows is the user's.
       Documented: the large-workflow warning "is advisory: it doesn't pause or limit the run", and
       every hard cap is on agent count. Confirm at source in 2.1.251 that no token ceiling enforces,
       and record whether the SDK's `max_budget_usd` (dollars, covering subagent spend) is the only
-      hard cap. This is the one already-ships entry the docs refute outright, so it changes the cut
-      list rather than a differentiator. RESTORES the cut if: any enforced token ceiling exists.
+      hard cap.
+      **SETTLED 2026-09-01 by the user: neither claimed nor cut.** The pre-registered trigger read
+      "RESTORES the cut if: any enforced token ceiling exists", which `OPEN-WORK.md` had recorded
+      as "does P3 restore the cut item?" - opposite readings of the same sentence, and P3's result
+      fires both. So the wording was not arbitrated; the measurement was decided on instead. It
+      moved to the new `### Partially ships` tier in `build-plan-high.md`, whose rule is that a row
+      must name the MECHANISM and the CONDITION. Two other entries moved with it, which is what
+      justified a tier rather than a one-row exception.

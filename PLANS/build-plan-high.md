@@ -47,10 +47,11 @@ the hardest to keep cut, so it has its own section.
 
 Established 2026-08-20 by ELIMINATION against the closest shipping implementation (Claude Code's
 own Workflow tool, read at source level), not by assertion. Of the properties the corpus claimed,
-**these already ship there**: work nodes, parallel fan-out, no-barrier pipelining,
-reduce, schema-typed records, per-agent worktree isolation, a hard token budget, content-addressed
-journal with prefix replay, determinism by making the clock and RNG throw, and sub-graphs. Those
-are removed from the list below and must stay removed.
+**these already ship there**: work nodes, parallel fan-out, reduce, schema-typed records,
+content-addressed journal with prefix replay, determinism by making the clock and RNG throw, and
+sub-graphs. Those are removed from the list below and must stay removed. Three further properties
+turned out to ship only under a CONDITION, and are held in `### Partially ships` below: neither
+claimed as differentiators nor cut outright.
 
 **That elimination covered ONE surface, and a 2026-08-30 doc re-read found that it matters.**
 Claude Code documents four ways to run agents in parallel. Workflow was read at source level;
@@ -63,19 +64,29 @@ around handing work off and checking back later, which is the nearest thing in t
 this page's own opening sentence. Findings, all tier DOC-READ:
 `../../RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`.
 
-**Three entries in the already-ships list above need marking, same date, same tier.**
-- **"a hard token budget" is REFUTED for workflows**, in one sentence: the large-workflow
-  threshold "is advisory: it doesn't pause or limit the run", and every hard cap there is on
-  agent COUNT. The Agent SDK does ship a hard cap, but on DOLLARS (`max_budget_usd`, which
-  covers subagent spend) plus `max_turns`; no total-token ceiling is documented. Probe P3.
-  **P3 ran 2026-08-31** (`../../RESEARCH/workflow/design/probes/cli-surface-p2-p3.md`) and splits
-  this in two: the BADGE is advisory as read, but a token ceiling DOES enforce at batch dispatch,
-  counting OUTPUT tokens, whenever the session's turn budget is set - inert when it is not, which
-  is why the docs show only the agent cap. Evidence only; whether the cut stands is the user's call.
-- **"per-agent worktree isolation" ships on SUBAGENTS, not workflows** (`isolation: worktree`
-  frontmatter). The word does not occur in the workflows page at all.
-- **"no-barrier pipelining" ships in AGENT TEAMS, not workflows**, where completing a task
-  "unblocks the dependent tasks"; workflows' `parallel()` explicitly "waits for all of them".
+### Partially ships
+
+A third tier, added 2026-09-01. Three entries were put on the already-ships list in the 2026-08-20
+elimination and none of them survives as written: each ships, but only under a condition that the
+one-word entry hid. A binary list forced each to be either claimed or cut, and both answers are
+false, so they are held here instead.
+
+**The rule for this tier: a row must name the MECHANISM and the CONDITION under which it holds.**
+A row that cannot name both belongs in one of the two lists, not here. Without that rule a middle
+tier is where a claim goes to avoid being decided.
+
+- **a hard token budget.** Mechanism: `WorkflowBudgetExceededError`, raised at batch dispatch,
+  counting OUTPUT tokens. Condition: only when the session's turn budget is set; with no budget
+  the guard returns immediately and the only always-on backstop is the 1000-agent cap. The
+  "Large workflow" badge is advisory as documented and throws nothing, and the Agent SDK caps
+  DOLLARS (`max_budget_usd`, covering subagent spend) plus `max_turns`, never total tokens.
+  So "a hard token budget already ships" is true for an operator who set a turn budget and false
+  by default, which is the unattended case this project is built for.
+  Measured by probe P3, 2026-08-31: `../../RESEARCH/workflow/design/probes/cli-surface-p2-p3.md`.
+- **per-agent worktree isolation.** Mechanism: `isolation: worktree` frontmatter. Condition: on
+  SUBAGENTS only; the word does not occur in the workflows page at all.
+- **no-barrier pipelining.** Mechanism: completing a task "unblocks the dependent tasks".
+  Condition: in AGENT TEAMS only; workflows' `parallel()` explicitly "waits for all of them".
 
 The last two do not change WHETHER the property ships, only WHERE, which matters because the
 surfaces carry different limits. Every other entry stays cut: they were read at source, and a
