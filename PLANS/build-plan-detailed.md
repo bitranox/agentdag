@@ -1,9 +1,10 @@
 # agentdag Implementation Plan - DETAILED (M0, S0, M1, D2, M2, M3)
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents were written
-> beside a private research repository and cite it by relative path for the design documents,
-> probe scripts and measurement notes they were derived from. Those paths do not resolve in a
-> clone of this repo. They are kept rather than stripped because a claim that names its source
+> beside a private research repository and cite it by repo-qualified path for the design
+> documents, probe scripts and measurement notes they were derived from. The `RESEARCH/` prefix
+> names that repo; it is deliberately not a relative path, because no relative path from here
+> resolves to it. These citations do not resolve in a clone of this repo. They are kept rather than stripped because a claim that names its source
 > is evidence of where it came from even when the source is not public, and removing them would
 > leave the assertions here with no provenance at all.
 
