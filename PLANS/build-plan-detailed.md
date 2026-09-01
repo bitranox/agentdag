@@ -4369,6 +4369,15 @@ sits in `build-plan-mid.md` under `## Cut`, with the reason, rather than being d
 **M6 is the next milestone with tasks** (decided with the user 2026-08-21: M6 exists and is
 ungated). M5 follows it as its demonstration.
 
+**Four small items sit UNOWNED in the mid plan, and this is the note that stops them becoming a
+fifth workstream by accident.** The 2026-09-01 OpenClaw 2.0 source read produced four small gaps -
+a node-level lease with heartbeat and reclamation, a stuck-state taxonomy, a credential TTL bound
+to (run, node, attempt), and re-authorizing under the writer barrier - recorded in the mid plan
+under "Decided, not yet owned by any milestone". Two of them (the lease, and re-authorizing under
+the barrier) attach to seams M3 already owns, so they are CANDIDATES for M3's tail if the user
+wants them owned rather than unowned. No task is written for them here, deliberately: none is the
+next decision checkpoint, and the detailed plan is written only that far.
+
 **The per-repo selection rule that stood here is RETIRED.** It read: "Its chore must be one that
 genuinely needs per-repo judgement, measured at about 4 of 29 big sweeps." That is the demand
 argument the high plan removed on 2026-08-21 - the subject is ONE COMPLEX TASK broken down across

@@ -64,6 +64,13 @@ around handing work off and checking back later, which is the nearest thing in t
 this page's own opening sentence. Findings, all tier DOC-READ:
 `../../RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`.
 
+**A second SHIPPING implementation was read at source on 2026-09-01: OpenClaw 2.0**
+(`v2026.8.1`, MIT), whose `extensions/workboard/` is a genuine DAG scheduler - nine statuses, five
+link types, dependency-gated promotion enforced at `store-core.ts:1132-1153`, cycle detection,
+heartbeat leases, retry budgets. It was never in the 2026-08-20 elimination set, which covered
+Claude Code surfaces only. It eliminates nothing on the list below and strengthens rows 1, 2 and 3.
+Findings, tier SOURCE-READ: `../../RESEARCH/landscape/OPENCLAW-2.0.md`.
+
 ### Partially ships
 
 A third tier, added 2026-09-01. Three entries were put on the already-ships list in the 2026-08-20
@@ -105,7 +112,16 @@ does not cover is not a differentiator on its own either.
 | 1 | the run outlives the session                            | UNDER RE-VERIFICATION 2026-08-30, see below: the predecessor's resume is documented same-session only, in its own contract | BUILT, measured: kill at +9s, resume exact     | one crash test on a real chore               |
 | 2 | it stops and waits for a human decision, then resumes   | UNDER RE-VERIFICATION 2026-08-30, see below: a run that ends at the decision is not a run you walked away from             | BUILT on `main`, suspend-and-resume tested     | nothing; the deadline default merged         |
 | 3 | it cannot repeat an irreversible effect                 | replay safety for side effects, not just for compute                                                                       | BUILT; crash window DEMONSTRATED, not asserted | nothing; the negative test landed 2026-08-21 |
-| 4 | pass or fail is decided by something other than a model | this is what makes 1 to 3 SAFE to leave alone                                                                              | BUILT (non-AI gate, exit code)                 | nothing                                      |
+| 4 | pass or fail is decided by something other than a model | this is what makes 1 to 3 SAFE to leave alone                                                                              | BUILT (non-AI gate, exit code)                 | nothing; STRENGTHENED 2026-09-01             |
+
+**Row 4 is strengthened by the strongest evidence available for it, 2026-09-01.** OpenClaw's
+workboard declares `WORKBOARD_PROOF_STATUSES = [passed, failed, skipped, unknown]` and a
+`missing_proof` diagnostic - the data model for a mechanical gate. It does not enforce it.
+`missing_proof` is produced at `store-card-helpers.ts:498`, cleared in `store-workflow.ts` and
+`store-enrichment.ts`, and surfaced as a UI filter at `ui/src/pages/workboard/view.ts:131`; no
+transition anywhere blocks on it. A card reaches `done` on the say-so of whatever moved it. So the
+closest competitor built the field, named the diagnostic, and stopped short of making it decide.
+That converts row 4 from "we chose differently" into "someone else arrived here and did not cross."
 
 **Rows 1 and 2 are UNDER RE-VERIFICATION as of 2026-08-30, on DOC-READ evidence only.** The
 BUILT column is unaffected - what is in question is the middle column, whether the property is
@@ -121,6 +137,11 @@ instrument, so this is a reason to probe rather than a correction.
   **crash-durability at NODE granularity without redoing finished work**, rather than the run
   outliving the session. Agent view stops on machine shutdown and restarts in-flight subagents
   "from the beginning", which is the residue. Probes P1 and P4.
+  **Second data point, 2026-09-01.** OpenClaw persists cards in SQLite and drives them from cron,
+  so a run DOES outlive a session there - but recovery is reclaim-and-retry on lease expiry, not
+  resume-without-redoing-finished-work. That is the same residue as agent view's "restarts in-flight
+  subagents from the beginning", now found in a second, independent implementation. The narrowed
+  claim is what survives, and it survives against both.
 - **Row 2.** The Agent SDK ships exit-and-resume on human input: a `PreToolUse` hook returning
   the `defer` decision lets "the process ... exit and resume later from the persisted session".
   The residue is that this and agent view's pause are TOOL-level, not a gate the GRAPH declares
@@ -131,9 +152,15 @@ instrument, so this is a reason to probe rather than a correction.
   `PreToolUse` alone, no turn-end hook has an output channel, and it therefore intercepts a call on
   the way IN; a completed node's output cannot be gated through it without the model emitting a
   sentinel call. It is also refused for a call served to a cloud session.
+  **Second data point, 2026-09-01.** OpenClaw has approvals, but authority is scope- and
+  device-tiered with first-answer-wins across surfaces (`operator-approval-authorization.ts:73-79`,
+  with an explicit design comment), and it intercepts a TOOL CALL, not a node's declared output.
+  Identical residue shape to the `defer` finding. Two implementations, same gap.
 - **Rows 3 and 4 are STRENGTHENED** by the same pass and need no action. No surface offers
   side-effect idempotency, and workflows actively re-run completed agents after a mid-fan-out
-  failure ("runs B, C, and D again").
+  failure ("runs B, C, and D again"). **Row 3 again on 2026-09-01:** workboard has no general
+  side-effect idempotency either. OpenClaw has it only pointwise - a suggestion-accept key, and a
+  `turnId` plus request-hash fence on worker inference - with nothing equivalent to `stage`/`apply`.
 
 **The BUILT column was checked against the code, not against a previous plan.** All four have a
 consumer, not merely a definition, which matters here because three earlier mechanisms in this
@@ -392,6 +419,12 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    corpus establishes the SHAPE of such work (11 of 14 real tasks) but no RATE, and E1 measured
    emissions rather than executions. Test: M5, on a task that genuinely needs judgement. If the
    first real run has no judgement in it, it was not the right task.
+5. **The competitor is one commit from enforcing proof.** OpenClaw's contract field and the
+   `missing_proof` diagnostic already exist; making `done` require `proof.status == passed` is a
+   small change. If it lands, row 4 narrows from "a non-model decides pass/fail" to "and the
+   decision is replayable" - still ours, but a thinner claim. Test: at each openclaw release,
+   re-read the `done` transition in `store-core.ts` and the contract; a proof check appearing
+   there is the trigger to re-word row 4.
 
 ## Decisions this plan assumes
 
