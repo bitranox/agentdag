@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-01 ~00:10. Two things shipped, CI green. Nothing is owed.
+# Handover: agentdag, 2026-09-01 ~11:45. Two user decisions closed. CI UNRESOLVED, not failed.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents were written
 > beside a private research repository and cite it by relative path for the design documents,
@@ -10,129 +10,126 @@
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where the last session stopped.
 
-## CI
-
-Green on `ef59f7f`, which contains BOTH of this session's commits: `CodeQL=success CI=success`,
-CI_RC=0. The local gate was green before the push too (`make test`, GATE_RC=0 read from its own
-log, not from a pipe).
-
 ## In flight
 
-Nothing is part-done and nothing is uncommitted. The work tree is clean and `main` is level with
-origin.
+Nothing is part-done here and nothing is uncommitted. Work tree clean, `main` level with origin at
+`a45e871`. Two live conditions the next session inherits:
+
+**CI has no verdict and has not failed.** Five runs are stacked on `21ef31c`..`a45e871`, every one
+of them 9 of 12 cells GREEN with ZERO failures. The three macos cells on each sit at
+`status=queued, steps=0` - they have never executed a line. Three `ci_wait` runs all returned
+`CI_RC=2` (could not tell), never 1. This is external: the same macos cells ran clean in about
+three minutes at 2026-08-31T23:37Z, and the FIRST queued run this morning had no competition and
+still never started, so the queue my repeated pushes created is not the cause. Do not cancel to
+"free capacity" - I nearly did, and the measurement says it would gain nothing and destroy signal.
+Re-check with `ci_wait --sha $(git rev-parse HEAD)`.
+
+**Another session is writing in the RESEARCH repo.** `landscape/OPENCLAW-2.0.md`, untracked-then-
+staged, half-written (231 lines staged, 282 insertions unstaged on top). It is not ours. Commit
+there BY PATHSPEC only; a bare `git add -A` would ship someone's half-written file under your
+message.
 
 ## Shipped this session
 
-**Probes P1 and P4** (in RESEARCH, `66ac34b` and `7391f6f`, pushed), completing the plan's P1-P4
-block - all four boxes now ticked.
+**Rank 10, the three working files** (`25d6f8f`, `d011f1f`, `57f5ca2`, `976435c`). `PLANS/` and this
+file are TRACKED here now; `EXECUTION-USER-REVIEW.md` is a SYMLINK to its one real home in the
+private repo and is NOT published, because its spend figures are the SUBJECT of their own sentences
+so redaction would destroy the entries rather than clean them. A publication guard
+(`tests/test_repo_publishable.py`) now enforces what the read-through did by hand, and found three
+leaks older than itself.
 
-- **P1: not restored.** A background session outlives its terminal and genuinely progresses. The
-  supervisor is a session leader in its own session and process group with no controlling terminal,
-  re-parented to init, hosting the worker as its own child; the dispatching shell's pid survives
-  only as a label in its argv. Six model turns ran after the shell was gone. It exits ~5s after the
-  last session is removed.
-- **P4: the documented sentence did not reproduce on any route.** Graceful stop plus resume: the
-  in-flight subagent CONTINUES mid-task in the same dispatch, and the completed one is never
-  re-executed. Crash with no resumer: the supervisor respawns the worker (`attempt: 2`) but the
-  work HALTS. Crash plus resume: the in-flight unit ran TWICE concurrently, 22 steps and two ENDs,
-  25 distinct tool_use ids interleaved in ONE subagent transcript. So resume is FINER-grained than
-  documented, and the new finding is that resuming after a crash is neither exclusive nor
-  idempotent.
+**Rank 20, the token-budget cut** (`21ef31c`). A third tier, `### Partially ships`, in
+`PLANS/build-plan-high.md`. Three entries moved there.
 
-**Component 5, step 1: decision 4's validator rule** (`c7ed9a0`, pushed). `can_change_state` is
-retired. Each op declares the record it would carry in a run that accomplished nothing - gate
-`{"rc": 0}`, scan `{"stray": 0}`, reduce:count `{"count": 0}`, while `work`, `approve` and `plan`
-declare `None` because running one IS the accomplishment - and the rule settles `done_when` over
-those records with the SHIPPED evaluator. The judge itself is NOT built; that is `OPEN-WORK.md`
-rank 40.
+**Rank 30, held not decided** (`a45c9ac`), plus the rerank that followed.
 
-**Rank 10: the three working files, settled.** `PLANS/` and this file are now TRACKED here, after a
-read-through found 49 unpublishable lines in 10,091 and redacted the 35 that are in the plans (build
-hosts, absolute paths into the local tree, a borrowed venv, a private sibling project, the fleet key
-filename). `EXECUTION-USER-REVIEW.md` is NOT published: its 14 spend figures are the subject of their
-own sentences, so redacting them destroys the entries. It became a symlink to the private repo
-instead, which solves the staleness without publishing anything.
+**C1 added to the backlog and component 5 corrected** (`b73394e`, `a45e871`).
 
-**A publication guard, and the three pre-existing leaks it found** (`d011f1f`, CI green). The
-no-leak obligation on `PLANS/` and `handover.md` is now enforced by `tests/test_repo_publishable.py`
-rather than by whoever remembers. Structural rules ship; the private-name list cannot, because a
-shipped blocklist of hostnames publishes them, so it loads from a gitignored `.private-markers`
-that binds the local gate. It failed on first run against defects older than itself: the mount path
-in two graph_a tests, a build hostname in four docstrings, a private sibling project in two shipped
-JSON schemas plus a docstring and a comment. All prose, no API change.
+**In RESEARCH** (`2488991`, `5a2c625`): the planning-loop design's decision-4 rule and op table now
+describe the shipped mechanism instead of the retired `can_change_state` flag.
 
 ## Decided, do not reopen
 
-1. **Decision 4 is decided by running the real evaluator over synthetic worst-case records**, not by
-   re-walking the condition grammar. The user chose this over a per-field value beside the old flag.
-   A second hand-rolled walk is what allowed the defect, and the validator now cannot drift from the
-   semantics it guards.
-2. **A declared no-work record must cover its op's whole output contract**, enforced at registration.
-   A field left out is absent from the synthesized record, so its comparison goes undecided instead
-   of True and the rule silently stops guarding it.
-3. **One shipped test REVERSED, with the user's explicit decision on it.**
-   `test_root_done_when_whose_only_state_change_is_negated` now expects `Accepted`. Its old ground
-   ("`Not(w)` holds while the work entry never runs") is false: with no work record the condition
-   evaluates `None`, and `execute.py` completes only on `True`. Do not "restore" it.
-4. **`work` declares `None`, not a zeroed record.** The zeroed version was tried and backed out: it
-   made `work.status == "done"` refusable and broke 12 root tests on the shipped planner path.
-5. **Three P4 arms, not one.** Arm B alone reads as "a crash duplicates work" and does not show
-   that; the roster showed the supervisor had respawned the worker while the resume also ran.
-6. **Probe sessions are pinned to sonnet at low effort**, and no VARIADIC option ever precedes the
-   prompt: `--allowedTools <tools...>` swallowed it as a tool name, starting a session with nothing
-   submitted - which looks exactly like a session that ran and did no work.
+1. **`### Partially ships` exists, and its rule is load-bearing.** A row must name the MECHANISM and
+   the CONDITION; a row that cannot name both belongs in one of the two lists. Without that rule a
+   middle tier is where a claim goes to avoid being decided.
+2. **The rank-20 wording was NOT arbitrated.** The pre-registered trigger and the backlog recorded
+   one criterion two opposite ways and the result fired both. The user decided on the MEASUREMENT
+   instead. Do not go back and settle which reading was right; that is the post-hoc
+   re-interpretation the pre-registration existed to prevent.
+3. **No differentiator row for P4's non-idempotent resume, pending the mechanism.** The two
+   candidates point opposite ways, so the row is not written on an inference.
+4. **The macos queue is not to be cleared by cancelling runs.** See "In flight" for the measurement.
+5. **The structural leak rules deliberately skip `/home/` and `/Users/`.** A KNOWN, accepted gap
+   (user, 2026-09-01): the private-name list covers the real case on the local gate. Do NOT close it
+   by widening the pattern and allow-listing the placeholder lines - that option was put and
+   declined. The reason is in the test file itself.
+6. **The plans' Python fences are committed as ruff format leaves them** (user, 2026-09-01). A
+   tracked file not already in canonical form re-dirties after every gate run.
 
 ## Decided against, so it is not redone as an oversight
 
-- **The degenerate `turns == 0` case was NOT folded into decision 4.** That shape can still settle a
-  root plan on a `work` node that ran and reported zero turns. It is a real gap, but the node DID
-  run, so it is not decision 4's never-started question and wants its own rule. `OPEN-WORK.md`
-  rank 60.
-- **Arm B's mechanism was not chased to ground.** Which two executors ran is inferred, labelled as
-  such in the note. Rank 80.
-- **No P4 arm kills the SUPERVISOR or reboots the machine**, which the docs say ends sessions
-  outright. Stated as a limitation in the note rather than left to be discovered.
+- **The judge was NOT started.** Not blocked by Checkpoint B, which names component 5 as the
+  unblocker - blocked by C1, see the next action.
+- **The RESEARCH design doc's dated filename did not make it immutable.** `git log` showed three
+  amendments including a correction commit, so it was corrected. Do not re-open that as a style
+  question.
 
 ## Still open, untouched - one line each, detail in OPEN-WORK.md
 
-- Rank 20 USER: does P3 restore the cut item? Asked twice, unanswered.
-- Rank 30 USER: does the non-idempotent-resume finding deserve a differentiator row?
-- Rank 40 FOUND: build the judge op and the completion ladder.
+- Rank 25 USER: score checkpoint C1, the six-pair control packet.
+- Rank 30 USER: does P4's resume finding deserve a differentiator row? Held on rank 35.
+- Rank 35 FOUND: which two executors ran concurrently in P4's arm B.
+- Rank 40 FOUND: build component 5's judge op and the completion ladder.
 - Rank 50 FOUND: 167 unframed memory bodies.
-- Rank 60 FOUND: the degenerate-dispatch rule.
+- Rank 60 FOUND: decide the degenerate-dispatch rule.
 - Rank 70 FOUND: the ragged-table check's placement in `repo-gate`.
-- Rank 80 FOUND: which two executors ran in P4's arm B.
+- Rank 75 FOUND: no P4 arm kills the supervisor or reboots the machine.
 
 ## The exact next action
 
-**`OPEN-WORK.md` rank 40, the judge op and the completion ladder.** Ranks 20 and 30 outrank it but
-both are blocked on the user and have been asked three times; they cannot be worked, only answered.
-Rank 40 is what this session's decision-4 validator leads into: the validator half shipped, the
-judge itself is untouched. Set its `facts_if_no_work` by READING the emitter it writes, because for
-a judge, what a verdict reads on a run that achieved nothing IS the question.
+**`OPEN-WORK.md` rank 25, score checkpoint C1.** It is the top-ranked open item and it needs the
+USER, roughly ten minutes, no code: score six pairs cold from
+`../RESEARCH/workflow/probes/e1_control_packet.md` - a preference per pair, a 1-5 executability
+score per plan, one line of why - and only then open
+`../RESEARCH/workflow/probes/e1_control_key.json`. Agreement on >= 5 of 6, or the panel's other 24
+verdicts are DISCARDED, not caveated.
+
+It gates two things, which is why it outranks the build. C2's arms are collected and deliberately
+record `"judged": false`. And the planning-loop design makes a judge op a REAL model dispatch
+(`judge:<lens>` -> `Coordinator.work`); what keeps that off the decided-by-a-model path is a
+stake-free fresh node, lenses COUNTED BY CODE, and a panel whose trustworthiness is MEASURED - and
+C1 is that measurement, cited by name. Building rank 40 first builds against an unvalidated
+instrument.
+
+If the user declines C1, rank 35 is the fallback: one probe run, re-running P4 arm B with the
+respawned worker stopped first so exactly one executor remains. It SPENDS live dispatches, so it
+needs their go.
 
 ## Files that matter
 
     OPEN-WORK.md                                                    read before this file
-    PLANS/build-plan-detailed.md                                    P1-P4 block, all four ticked
-    src/agentdag/application/kernel/plan_validate.py                the rewritten decision-4 rule
-    src/agentdag/application/kernel/registry.py                     OpSpec.facts_if_no_work
-    src/agentdag/composition/kernel.py                              the six declarations
-    ../RESEARCH/workflow/design/probes/bg-session-p1-p4.md          the P1/P4 note
-    ../RESEARCH/workflow/probes/probe_bg_session_p1_p4.py           re-runnable, four arms
+    tests/test_repo_publishable.py                                  the publication guard, and why it skips /home/
+    .private-markers                                                gitignored; the guard is inert without it
+    PLANS/build-plan-high.md                                        `### Partially ships`, the new tier
+    PLANS/build-plan-detailed.md                                    P1-P4 block; the P3 and P4 entries carry the decisions
+    PLANS/build-plan-mid.md                                         component 5, corrected
+    src/agentdag/composition/kernel.py                              the spec left for whoever builds the judge
+    ../RESEARCH/workflow/design/2026-08-28-planning-loop-design.md  how a judge produces a verdict
+    ../RESEARCH/workflow/probes/e1_control_packet.md                C1's input
 
 ## How to verify this still stands
 
-    git -C . log -1 --format=%h && git -C . status --porcelain    # ef59f7f, clean, level with origin
-    readlink EXECUTION-USER-REVIEW.md                              # points into ../RESEARCH, not a copy
-    git ls-files PLANS handover.md | wc -l                         # 4, tracked here now
-    grep -c "^- \[ \] \*\*P[1-4]" PLANS/build-plan-detailed.md     # 0, all four ticked
-    .venv/bin/python -m pytest tests/ -q                           # 1021 passed
+    git -C . log -1 --format=%h && git -C . status --porcelain    # a45e871, clean, level with origin
+    .venv/bin/python -m pytest tests/ -q                          # 1024 passed
+    .venv/bin/python -m pytest tests/test_repo_publishable.py -q  # 4 passed, guard live
+    grep -c '^- \[ \]' OPEN-WORK.md                               # 8 open
+    grep -n 'Partially ships' PLANS/build-plan-high.md            # the tier exists
+    gh run list --limit 3 --json headSha,status,conclusion        # macos still queued?
 
-`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here as of 2026-09-01.
-`EXECUTION-USER-REVIEW.md` is a SYMLINK to its one real home in the private research repo, so
-editing it through this path versions it there; it is still gitignored here. Nothing is a
-hand-refreshed copy any more, which is what used to go stale.
+`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here. `EXECUTION-USER-REVIEW.md` is a SYMLINK
+into the private research repo, so editing it through this path versions it there; it is still
+gitignored here. Nothing is a hand-refreshed copy any more, which is what used to go stale.
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not delete
 it - if this session ends badly it is the only record of where things stood.
