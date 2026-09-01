@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-01 ~11:45. Two user decisions closed. CI UNRESOLVED, not failed.
+# Handover: agentdag, 2026-09-01 ~13:50. Two user decisions closed. CI green on HEAD. Nothing owed.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents were written
 > beside a private research repository and cite it by relative path for the design documents,
@@ -15,14 +15,14 @@ where the last session stopped.
 Nothing is part-done here and nothing is uncommitted. Work tree clean and `main` level with origin;
 HEAD is the commit that wrote this file. Two live conditions the next session inherits:
 
-**CI has no verdict and has not failed.** Five runs are stacked on `21ef31c`..`a45e871`, every one
-of them 9 of 12 cells GREEN with ZERO failures. The three macos cells on each sit at
-`status=queued, steps=0` - they have never executed a line. Three `ci_wait` runs all returned
-`CI_RC=2` (could not tell), never 1. This is external: the same macos cells ran clean in about
-three minutes at 2026-08-31T23:37Z, and the FIRST queued run this morning had no competition and
-still never started, so the queue my repeated pushes created is not the cause. Do not cancel to
-"free capacity" - I nearly did, and the measurement says it would gain nothing and destroy signal.
-Re-check with `ci_wait --sha $(git rev-parse HEAD)`.
+**CI is GREEN on HEAD** (`CI=success CodeQL=success`, `CI_RC=0`), and the macos cells ran with
+28 steps each. For about four hours this morning they sat at `status=queued, steps=0` across five
+stacked runs, every run 9 of 12 green with ZERO failures, and three `ci_wait` calls returned
+`CI_RC=2` (could not tell), never 1. It cleared on its own, which confirms the read taken at the
+time: the block was external, so cancelling runs to "free capacity" would have gained nothing and
+destroyed signal. Worth keeping only as the diagnosis: `steps=0` means a cell never executed a
+line, and the FIRST run that morning had no competition and still never started, so a queue you
+made yourself is not evidence you caused the wait.
 
 **Another session is writing in the RESEARCH repo.** `landscape/OPENCLAW-2.0.md`, untracked-then-
 staged, half-written (231 lines staged, 282 insertions unstaged on top). It is not ours. Commit
@@ -125,7 +125,7 @@ needs their go.
     .venv/bin/python -m pytest tests/test_repo_publishable.py -q  # 4 passed, guard live
     grep -c '^- \[ \]' OPEN-WORK.md                               # 8 open
     grep -n 'Partially ships' PLANS/build-plan-high.md            # the tier exists
-    gh run list --limit 3 --json headSha,status,conclusion        # macos still queued?
+    gh run list --limit 3 --json headSha,status,conclusion        # expect CI + CodeQL success
 
 `PLANS/`, `OPEN-WORK.md` and this file are TRACKED here. `EXECUTION-USER-REVIEW.md` is a SYMLINK
 into the private research repo, so editing it through this path versions it there; it is still
