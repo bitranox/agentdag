@@ -632,9 +632,13 @@ worktree isolation, records rather than prose, content in the store rather than 
    entries. Completed nodes are left alone; a sibling subtree is affected only through a premise
    its PARENT declared.
 5. **Completion ladder and the decision-4 validator rule.** `done_when` may reference mechanical
-   fields, a `judge` op's typed verdict, or an `approve`; a root `done_when` over only
-   `can_change_state=False` fields (a gate rc alone) is refused unless a judge or a before/after
-   measurement is referenced. Above the plan-approval threshold `approve` is appended regardless.
+   fields, a `judge` op's typed verdict, or an `approve`; a root `done_when` that still settles
+   TRUE over the records each op declares for a run that accomplished nothing (a gate rc alone) is
+   refused unless a judge or a before/after measurement is referenced. The validator half of this
+   shipped 2026-08-31 (`c7ed9a0`), which RETIRED the `can_change_state` boolean this paragraph used
+   to name: a per-op flag cannot answer a per-COMPARISON question, since the same op and field is
+   evidence at `>= 1` and vacuous at `== 0`. Each op now declares `facts_if_no_work` and the rule
+   settles the condition over those records with the SHIPPED evaluator. Above the plan-approval threshold `approve` is appended regardless.
    The judge is never the planner and never a worker.
 6. **The human paths** (decision 5). `run start` takes a GOAL (today: a workflow name only,
    `run.py:266`); an ambiguous goal is PLANNED as a first entry `approve{question}` and the
