@@ -1185,7 +1185,7 @@ Expected: two worktrees, two tallies with tokens filled, ONE approve prompt; aft
 
 ## M2 - the kernel (Tasks 8-18), decided REBUILD
 
-Written 2026-08-17 night against the design (`../../RESEARCH/workflow/design/2026-08-17-agentdag-design.md` sections
+Written 2026-08-17 night against the design (`RESEARCH/workflow/design/2026-08-17-agentdag-design.md` sections
 2-4, 7, 9), the mid plan's M2 section, the M1 code as merged on `agentdag` `main` (`478c579`) and
 the M2 input list in `DECISIONS.md` item 6. Every task runs in the `agentdag` repo on ONE feature
 branch `feat/kernel` off `main` (bmk gate per task, PR at the end as M1 did), except Task 8 and
@@ -4176,7 +4176,7 @@ journal is append-only and a design change is a decision, not an implementation 
 - [x] **CLOSED 2026-08-22, but under a DIFFERENT VERB than the one specified above.** Recorded here
   2026-08-27. The need this task names is met; `resume --from <node>` is not what shipped, and the
   Files and Interfaces blocks above still describe it, so read them as the plan's proposal rather
-  than as the code. Design: `../../RESEARCH/workflow/design/2026-08-22-retry-grant.md`. Decisions: `DECISIONS.md` items
+  than as the code. Design: `RESEARCH/workflow/design/2026-08-22-retry-grant.md`. Decisions: `DECISIONS.md` items
   11 and 13.
 
   **Two mechanisms shipped in place of one flag.**
@@ -4202,7 +4202,7 @@ journal is append-only and a design change is a decision, not an implementation 
   **Why `resume --retry` / `resume --from` LOST** (`DECISIONS.md` item 13, and the reason to record
   this rather than quietly renaming the task): a red gate does not FAIL the run - graph A routes it
   into a tally row and the run reaches `done` - so the verb has to relaunch a DONE run, and
-  `../../RESEARCH/workflow/design/mcp-surface.md` states two of `resume`'s own properties in terms of refusing exactly
+  `RESEARCH/workflow/design/mcp-surface.md` states two of `resume`'s own properties in terms of refusing exactly
   that. A flag would make both of them conditional; `approve.py` had already rejected that shape for
   deadlines ("two triggers with different semantics is two policies to reason about").
 
@@ -4239,7 +4239,7 @@ fails `test_on_replay_each_twin_is_served_its_own_record`.
 `key_collisions` lands on the run summary line and in `journal-line.schema.json` as an OPTIONAL
 property, so a run_summary line written before the signal existed stays valid. A key with several
 records from ONE node (a retry, a crash-window redispatch) is not reported. The behaviour matches
-what `../../RESEARCH/workflow/design/2026-08-21-insertion-mechanism.md` already assumed of it, including the name.
+what `RESEARCH/workflow/design/2026-08-21-insertion-mechanism.md` already assumed of it, including the name.
 
 ---
 
@@ -4341,7 +4341,7 @@ What landed: the handover nudge, `needs_continuation`, the successor dispatched 
 `continuation + 1`, `max_continuations`, the grace after the notice, and the coordinator's identity
 stamp - in order, `95297ca`, `65eb765`, `804ad36`, `044016a`, `ede998a`, `b449cae`, `949f87c`,
 `8927277`, `4cb3c5e`. Decisions 14, 15 and 16 in `DECISIONS.md` cover the choices. Three probe
-write-ups sit under `../../RESEARCH/workflow/design/probes/`: `handover-nudge-inject.md`, `handover-grace-expiry.md`, and
+write-ups sit under `RESEARCH/workflow/design/probes/`: `handover-nudge-inject.md`, `handover-grace-expiry.md`, and
 `live-handover.md`, which is the one live run against agentdag's own executor - a node complied 6 of
 6, wrote a handover, the coordinator stamped it, and every record validated against the shipped
 schema. Read that document's own qualification with it: 6 of 6 is 3 launches of ONE brief at a
@@ -4356,9 +4356,9 @@ documented as "the coordinator's only read of `handover.json`" (`context.py:1106
 identity keys and nothing else. So the record a node hands over is written, stamped, schema-valid,
 and read by nobody: `b449cae` is titled "Say what reads the handover record, which is nothing yet".
 A producer with no consumer is a shape this document set has caught before and named at source -
-`spec.isolation` with zero behavioural readers (`../../RESEARCH/workflow/design/2026-08-21-dispatchability.md`) and
+`spec.isolation` with zero behavioural readers (`RESEARCH/workflow/design/2026-08-21-dispatchability.md`) and
 `brief_ref` with a validator rule and neither reader nor writer
-(`../../RESEARCH/workflow/design/2026-08-22-dispatch-seam.md`) - and whatever consumes the handover is unbuilt work that
+(`RESEARCH/workflow/design/2026-08-22-dispatch-seam.md`) - and whatever consumes the handover is unbuilt work that
 no task here owned until 2026-08-28: it is M6 component 7 in the mid plan now.
 
 **The Codex arm is CUT** (`build-plan-high.md`, 2026-08-21). A second executor proves a
@@ -4396,7 +4396,7 @@ granularity, whether briefs and a cost model earn their cost) and no longer gate
 because they compare a structured graph against prose while M6's justification is durable
 execution across a crash outside a session. Different axis.
 
-**M6 is DESIGNED (2026-08-28): `../../RESEARCH/workflow/design/2026-08-28-planning-loop-design.md`, six user decisions.**
+**M6 is DESIGNED (2026-08-28): `RESEARCH/workflow/design/2026-08-28-planning-loop-design.md`, six user decisions.**
 The paragraph that stood here said the first M6 task was to design dispatchability. That design
 now exists - it is the op registry, decision 3 - and the three seam documents it replaces stay dead.
 The tasks below are Checkpoint A of the mid plan's M6 section: the double-load probe, the schema,
@@ -4860,7 +4860,7 @@ composition root registered, or is refused".
 
 ### Task 31: M6 probe - graph A as a plan over the registry, no dispatch
 
-**Why.** This is the design's first contact with a real graph. `../../RESEARCH/workflow/design/graphs/A-fleet-migration.md`
+**Why.** This is the design's first contact with a real graph. `RESEARCH/workflow/design/graphs/A-fleet-migration.md`
 and `application/workflows/graph_a.py` are the one workflow that runs; if it cannot be written as a
 `Plan` that `validate_plan` accepts, either an op is missing (the registry grows) or a CONSTRUCT is
 missing (the design is wrong). Either answer is the checkpoint's output.
@@ -6116,7 +6116,7 @@ documentation re-read on 2026-08-30 against CLI 2.1.251 and SDK 0.2.148 found tw
 weakened, one already-ships entry refuted, and two surfaces that had never been assessed at all.
 That entry, and two beside it, now sit in the `### Partially ships` tier: each ships, but only
 under a condition the one-word list entry hid.
-Findings and every quote: `../../RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`.
+Findings and every quote: `RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`.
 
 **These probes exist because DOC-READ is the weaker instrument.** The user decided on 2026-08-30 to
 SUSPEND the affected rows rather than correct them, precisely so that a documentation read does not
@@ -6133,7 +6133,7 @@ answer. None of these probes may change a plan's scope text; they produce eviden
 decision that follows is the user's.
 
 - [x] **P2: does the SDK's `defer` decision really let the process exit and resume?**
-      ANSWERED 2026-08-31, `../../RESEARCH/workflow/design/probes/cli-surface-p2-p3.md`. Yes, and
+      ANSWERED 2026-08-31, `RESEARCH/workflow/design/probes/cli-surface-p2-p3.md`. Yes, and
       exactly as documented: a deferred Write ended the run with `stop_reason: tool_deferred`, the
       tool did not run, and a resume in a fresh process re-fired the SAME `tool_use` id under a
       prompt that never asked for a write. So the resume machinery does not restore the
@@ -6150,7 +6150,7 @@ decision that follows is the user's.
       anything downstream runs", or the resume loses the graph position.
 
 - [x] **P1: does a background session outlive the terminal, and what ends it?**
-      ANSWERED 2026-08-31, `../../RESEARCH/workflow/design/probes/bg-session-p1-p4.md`. Yes on every
+      ANSWERED 2026-08-31, `RESEARCH/workflow/design/probes/bg-session-p1-p4.md`. Yes on every
       leg, so the differentiator is NOT restored here. The supervisor is a real detached daemon: a
       session leader in its own session and process group, no controlling terminal, re-parented to
       init, hosting the worker as its own child, with the dispatching shell's pid kept only as a

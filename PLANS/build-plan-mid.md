@@ -9,8 +9,8 @@
 
 Written 2026-08-17, revised 2026-08-21. Checked against the **2026-08-21 rewrite of
 `build-plan-high.md`, commit `fa069c8`** (the one subtitled "the picture, the slice, the cuts",
-written against `../../RESEARCH/workflow/design/2026-08-21-decomposition-design.md` and the E1 measurements in
-`../../RESEARCH/workflow/probes/`). The body of this revision was written against `6881e74`; that page has since moved
+written against `RESEARCH/workflow/design/2026-08-21-decomposition-design.md` and the E1 measurements in
+`RESEARCH/workflow/probes/`). The body of this revision was written against `6881e74`; that page has since moved
 three commits (`80c8f03`, `d3164f4`, `fa069c8`) and this page was re-checked against the result
 rather than left claiming a pin it no longer matched. If
 anything here widens the slice that page drew, that page wins and this one is wrong. The detailed
@@ -51,7 +51,7 @@ composition, import-linter enforced), Python 3.12+, `uv`. Package `agentdag`, CL
 | milestone                   | state                                     | judged by                                                                                                                     |
 |-----------------------------|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
 | M0 design fixes             | DONE                                      | schemas validate against their examples; no C-id's old text survives a grep                                                   |
-| S0 slice-0 probes           | DONE                                      | each probe has a written result under `../../RESEARCH/workflow/design/probes/`                                                |
+| S0 slice-0 probes           | DONE                                      | each probe has a written result under `RESEARCH/workflow/design/probes/`                                                |
 | M1 graph A baseline         | DONE                                      | the baseline ran attended on scratch clones; see the caveat in that section                                                   |
 | D2 adopt versus rebuild     | DONE, REBUILD stands                      | a decision, recorded, with its re-open trigger ruled on                                                                       |
 | M2 the kernel               | DONE                                      | the section-9 rows M2 owns, each with its positive control                                                                    |
@@ -141,7 +141,7 @@ milestone`), and the mcp-surface fixes belong to a surface that is now cut.
 
 ---
 
-## S0 - slice-0 probes (results into `../../RESEARCH/workflow/design/probes/`)
+## S0 - slice-0 probes (results into `RESEARCH/workflow/design/probes/`)
 
 State: DONE. Each row below has a written result. Two of them fed work that is now cut and
 therefore feed nothing: the Codex rollout probe (`s0-codex-rollout.md`) was M4's input, and the
@@ -159,13 +159,13 @@ measurement does not stop being true when the work it was for is dropped.
 
 The dispatch-cost row's number was later superseded: `m2-kernel.md` measured about 26,000 first-turn
 tokens against S0's 170, which is why `min_node_minutes` is re-derived rather than reused
-(`../../RESEARCH/workflow/design/min-node-minutes-derivation.md`).
+(`RESEARCH/workflow/design/min-node-minutes-derivation.md`).
 
 ---
 
 ## M1 - the baseline of graph A, in Python, on scratch clones
 
-State: DONE, attended, written up in `../../RESEARCH/workflow/design/probes/m1-baseline.md`. **Read that write-up with
+State: DONE, attended, written up in `RESEARCH/workflow/design/probes/m1-baseline.md`. **Read that write-up with
 its caveat**: it names no artifact by path, and most of its evidence is gone (run 1's store and the
 RET commits were destroyed by M2's own `git clone --mirror --refresh`), so its numbers are not
 checkable. The high plan no longer rests the whole-build criterion on beating M1's interaction
@@ -211,7 +211,7 @@ was retired once bmk 3.17.0 began guarding its own tool environment; the gate no
 
 ## D2 - adopt versus rebuild (a document)
 
-State: DONE and SETTLED. `../../RESEARCH/workflow/design/D2-adopt-vs-rebuild.md`: for replay, cap and approve, it
+State: DONE and SETTLED. `RESEARCH/workflow/design/D2-adopt-vs-rebuild.md`: for replay, cap and approve, it
 compares (a) the hand-rolled kernel of M2-M3 with (b) a DBOS-backed coordinator
 (Postgres-checkpointed steps, exactly-once side effects) and (c) Temporal, against the SAME
 section-9 negative tests, the operational requirements of T3-T4 (single writer, scopes, secrets),
@@ -292,11 +292,11 @@ deleted; one has moved half-way. Where this page and the code disagreed, the cod
 
 | #   | what                                                                                       | state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |-----|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 24  | the retry path                                                                             | **CLOSED 2026-08-22, under a different verb than this page named.** The 2026-08-21 text read "the retry path, `resume --from <node>` - not started; no `--from` in the CLI", and it is corrected rather than deleted because `--from` was not built late: it was DECLINED (`DECISIONS.md` item 13 - a red gate does not fail the run, graph A routes it into a tally row and the run reaches `done`, so the verb would have to relaunch a DONE run, which two of `resume`'s stated properties refuse). What shipped is TWO mechanisms, not one. Automatic: a code-kind node whose failure was TRANSIENT is re-dispatched by the coordinator, `Coordinator._auto_retries` at `application/kernel/context.py:1216`, capped by `policy.max_attempts` (2 in the shipped table, so one retry) - item 11. Operator: `agentdag run retry RUN_ID NODE_ID` at `adapters/cli/commands/run.py:387`, bound to the (node id, journal KEY) of the failed attempt, so the granted attempt runs under `attempt + 1` and the grant can never match twice - item 13. Design: `../../RESEARCH/workflow/design/2026-08-22-retry-grant.md`. Item 13 records what stays open inside it: **nothing withdraws a grant, and nothing lists a run's grants short of reading its journal** |
+| 24  | the retry path                                                                             | **CLOSED 2026-08-22, under a different verb than this page named.** The 2026-08-21 text read "the retry path, `resume --from <node>` - not started; no `--from` in the CLI", and it is corrected rather than deleted because `--from` was not built late: it was DECLINED (`DECISIONS.md` item 13 - a red gate does not fail the run, graph A routes it into a tally row and the run reaches `done`, so the verb would have to relaunch a DONE run, which two of `resume`'s stated properties refuse). What shipped is TWO mechanisms, not one. Automatic: a code-kind node whose failure was TRANSIENT is re-dispatched by the coordinator, `Coordinator._auto_retries` at `application/kernel/context.py:1216`, capped by `policy.max_attempts` (2 in the shipped table, so one retry) - item 11. Operator: `agentdag run retry RUN_ID NODE_ID` at `adapters/cli/commands/run.py:387`, bound to the (node id, journal KEY) of the failed attempt, so the granted attempt runs under `attempt + 1` and the grant can never match twice - item 13. Design: `RESEARCH/workflow/design/2026-08-22-retry-grant.md`. Item 13 records what stays open inside it: **nothing withdraws a grant, and nothing lists a run's grants short of reading its journal** |
 | 25  | serve a stored record only to the node it belongs to, plus a `key_collisions` drift signal | not started - and this is a LIVE DEFECT, not just unbuilt scope. RE-VERIFIED at source 2026-08-27: `node_id` is absent from `_IDENTITY_FIELDS` (`domain/keys.py:29-43`), the serve path matches on `call.key` alone with no node check (`application/kernel/dispatch.py:177-180`), and `key_collisions` has ZERO occurrences in `src/` and in `tests/`. So two nodes with the same brief, inputs and spec fields genuinely collide and the second is handed the first's record. Rare in a hand-authored graph, ordinary in a model-emitted one, which makes it an M6 prerequisite. Worth recording beside it: the dispatcher's own docstring (`dispatch.py:63-70`, written 2026-08-18 in `de5b0e4`) still calls this "deliberate dedup ... not a collision". It predates the user's 2026-08-20 ruling that it is a defect, so the code and its own docstring now disagree about what this is, and closing 25 means editing both                                                                                                                                                                                                                                                                                                                                |
 | 26  | the carried Minors                                                                         | one of five was done at the 2026-08-21 revision (the approve refusal branches); a SECOND has since moved HALF-WAY, off-plan. `StrEnum` for `TierRow.billing`/`Escalation.*`: `Escalation.on_auth_failure` and `Escalation.on_rate_limit` are now typed `FailureAction`, shipped with the auth and rate-limit work rather than as this Minor, while `TierRow.billing` (`domain/policy.py:67`), `Escalation.then` and `Escalation.no_higher_row` are still bare `str`. Fully open: `--parallel`/`--policy` persisted in `state.json` (`RunState` carries `policy_version` and neither of these); the scanner-vs-live-executor vanish race; the alias-rebinding evasion of `workflow_check` (`t = time; t.time()` is invisible to `_alias_map`, `application/kernel/workflow_check.py:176`, which walks only `Import`/`ImportFrom`)                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 26a | gate-lock retirement                                                                       | unchanged. Lock removed; the concurrency test proves two gates run at once, but the half this plan itself calls "the half that actually matters" - a genuinely failing branch still fails while another gate runs beside it - is untested                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 27  | the attended M3 run, its measured note, the PR                                             | not started. Re-checked 2026-08-27: there is still no `../../RESEARCH/workflow/design/probes/m3-kernel.md`, and `bitranox/agentdag` still carries only PR #1 (the graph A baseline) and PR #2 (the M2 kernel), both merged                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 27  | the attended M3 run, its measured note, the PR                                             | not started. Re-checked 2026-08-27: there is still no `RESEARCH/workflow/design/probes/m3-kernel.md`, and `bitranox/agentdag` still carries only PR #1 (the graph A baseline) and PR #2 (the M2 kernel), both merged                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | -   | the `bmk-tool-env` resource decision                                                       | open, and the USER's; the two-concurrent-runs test follows it. It has since acquired a contradiction in shipped CONFIG rather than in prose - see "Shipped off-plan, after this page was last written" below - and the row-to-milestone table further down records what the decision leaves conditional                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 Components and where each stands:
 
@@ -386,7 +386,7 @@ positive control, since a negative test whose input can never reach the mechanis
 
 The design points HERE for this list: "the list is the acceptance contract of the build plan; which
 rows belong to which milestone is in `./build-plan-mid.md`"
-(`../../RESEARCH/workflow/design/2026-08-17-agentdag-design.md:970-971`). So does the high plan's M3 exit criterion:
+(`RESEARCH/workflow/design/2026-08-17-agentdag-design.md:970-971`). So does the high plan's M3 exit criterion:
 "the section-9 rows THIS MILESTONE OWNS pass with their positive controls (see the mid plan's
 assignment; four section-9 rows are unreachable under the current cuts and are not M3's)"
 (`build-plan-high.md:209`). **No such table has ever existed on this page**, and neither document
@@ -492,9 +492,9 @@ State: OPEN, needs the user, roughly ten minutes of their time. **C1 comes befor
 The panel that would score C2 is the instrument under test here, and running an unvalidated
 instrument on a second experiment produces two results to discard instead of one.
 
-Inputs: E1's 14 task pairs and the panel's 42 verdicts (`../../RESEARCH/workflow/probes/probe_e1_panel.result.json`);
-the packet `../../RESEARCH/workflow/probes/e1_control_packet.md`, six pairs drawn by seed with the arm labels stripped
-and the order seeded; the sealed key `../../RESEARCH/workflow/probes/e1_control_key.json`, which carries the mapping and
+Inputs: E1's 14 task pairs and the panel's 42 verdicts (`RESEARCH/workflow/probes/probe_e1_panel.result.json`);
+the packet `RESEARCH/workflow/probes/e1_control_packet.md`, six pairs drawn by seed with the arm labels stripped
+and the order seeded; the sealed key `RESEARCH/workflow/probes/e1_control_key.json`, which carries the mapping and
 the pre-registered falsifier and is not opened until the packet is scored.
 
 Components: no code and no build. The instrument is the three-lens panel (coverage, executability,
@@ -523,7 +523,7 @@ reason this checkpoint exists at all.
 ## C2 - arm C/D: does a graph that carries its instructions beat prose
 
 State: COLLECTED. Both arms are complete in
-`../../RESEARCH/workflow/probes/probe_decomposition_briefs.result.json` (arm C 14/14 parsed, schema-clean and acyclic;
+`RESEARCH/workflow/probes/probe_decomposition_briefs.result.json` (arm C 14/14 parsed, schema-clean and acyclic;
 arm D 13/14, one `parse_error` on `ci-crossplat`), and the file records `"judged": false` on
 purpose - judging before C1 passes would only produce a second set of verdicts to discard. The
 older `armC.partial.json` filename this section used to cite was superseded at `15825ea` and no
@@ -550,7 +550,7 @@ session. **The high plan therefore marks M6's gating conclusion UNDER REVIEW**: 
 the false premise, and whether the narrower capability justifies a milestone is a scope decision
 rather than a further measurement.
 
-The remaining component is `../../RESEARCH/workflow/probes/probe_decomposition_briefs.py`, one variable per step.
+The remaining component is `RESEARCH/workflow/probes/probe_decomposition_briefs.py`, one variable per step.
 
 | arm | what it emits                                | what the step isolates         |
 |-----|----------------------------------------------|--------------------------------|
@@ -580,10 +580,10 @@ independent of the prompt it was given.
 
 ## M6 - decomposition (a milestone; UNGATED as of 2026-08-21; DESIGNED 2026-08-28)
 
-State: DESIGNED, NOT STARTED. Governing design: `../../RESEARCH/workflow/design/2026-08-28-planning-loop-design.md`,
+State: DESIGNED, NOT STARTED. Governing design: `RESEARCH/workflow/design/2026-08-28-planning-loop-design.md`,
 six decisions taken with the user on 2026-08-28, each asked one at a time against its alternatives
 (recorded in agentdag's gitignored `EXECUTION-USER-REVIEW.md` under that date). Sections 1, 2, 5
-and 6 of `../../RESEARCH/workflow/design/2026-08-21-decomposition-design.md` still hold (the entry fields, the goal on
+and 6 of `RESEARCH/workflow/design/2026-08-21-decomposition-design.md` still hold (the entry fields, the goal on
 the run, what a node knows, plan approval by threshold); its section 3 flat loop is AMENDED by
 decision 1. The three dispatch-seam designs of 2026-08-21/22 stay DEAD; decision 3 is the successor
 their reviewers converged on.
@@ -659,7 +659,7 @@ worktree isolation, records rather than prose, content in the store rather than 
    since no port offers a cwd-preparation seam today and graph A hand-rolls its own
    (`_ensure_worktree`). **Two SHIPPED Claude Code mechanisms are adopt candidates for exactly
    this, recorded 2026-08-30, tier DOC-READ, not adopted here**
-   (`../../RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`):
+   (`RESEARCH/workflow/design/2026-08-30-claude-code-surface-re-read.md`):
    `isolation: worktree` on a subagent, giving "an isolated copy of the repository branched by
    default from your default branch rather than the parent session's HEAD", auto-cleaned when
    the subagent changes nothing; and `.worktreeinclude`, which copies gitignored files into a
@@ -673,7 +673,7 @@ worktree isolation, records rather than prose, content in the store rather than 
    `/var/lib/agentdag` loads none of them); the credential-bearing home stays under
    `/var/lib/agentdag`. This relaxes Task 11/13's cwd-inside-run-root invariant (`context.py:262`)
    to cwd-inside-project-or-run-root; the isolation scan follows. **Task 28 ANSWERED 2026-08-28**
-   (`../../RESEARCH/workflow/design/probes/cascade-worktree.md`, fifteen arms): the repo's
+   (`RESEARCH/workflow/design/probes/cascade-worktree.md`, fifteen arms): the repo's
    `CLAUDE.md` loads ONCE from the worktree's checkout (the parent checkout's copy is skipped even
    when it differs), everything above the repo is walked, and the parent's untracked
    `CLAUDE.local.md` reaches the node. Three things the probe added to this component:
@@ -770,7 +770,7 @@ worktree isolation, records rather than prose, content in the store rather than 
     machine-originated and de-privilege it explicitly, the way `input-provenance.ts:29-30` does
     ("treat it as inter-session data, not a direct end-user instruction"), re-hoisted idempotently.
     **It is prompt-level and therefore ADVISORY** - pair it with the tool-policy floor, never let
-    it stand alone as the defence. Findings: `../../RESEARCH/landscape/OPENCLAW-2.0.md`.
+    it stand alone as the defence. Findings: `RESEARCH/landscape/OPENCLAW-2.0.md`.
 
 ### Sequencing, and the two checkpoints
 
@@ -791,7 +791,7 @@ worktree isolation, records rather than prose, content in the store rather than 
 section 1 once read as if per-node briefs would pay the startup in full every time. They do not: the
 brief sits LATE in the prefix, so rewriting every paragraph of it re-created 3,743 of 26,860 tokens
 (13.9 percent), and under a loaded cascade the delta is 375 tokens
-(`../../RESEARCH/workflow/design/probes/prefix-order.md`). Design the brief for self-sufficiency and do not trim it for
+(`RESEARCH/workflow/design/probes/prefix-order.md`). Design the brief for self-sufficiency and do not trim it for
 cache reasons.
 
 **Node sizing keeps its asymmetry:** too-small is knowable at PLAN time only and is handled by a
@@ -834,7 +834,7 @@ look like under the cap"). It was built anyway, 2026-08-22 to 2026-08-24: the ha
 in the brief, the PreToolUse STOP NOTICE, the grace, `needs_continuation`, the successor dispatched
 at `continuation + 1`, `max_continuations`, and the coordinator's identity stamp on the record
 (`DECISIONS.md` items 14, 15 and 16). Three probe write-ups back it -
-`../../RESEARCH/workflow/design/probes/handover-nudge-inject.md` (2026-08-22), `handover-grace-expiry.md` (2026-08-23),
+`RESEARCH/workflow/design/probes/handover-nudge-inject.md` (2026-08-22), `handover-grace-expiry.md` (2026-08-23),
 and `live-handover.md` (2026-08-24), the last of which is one live run against agentdag's own
 executor at 6 of 6 compliance, with its own caveat that 6 of 6 on one brief is not a rate. Task 27,
 whose measurements this was to wait for, is still not started.
@@ -897,7 +897,7 @@ hooks and CLAUDE.md, reversing `setting_sources=[]`. Decided with the user 2026-
 lists it under the decisions it assumes and marks it decided and NOT yet built; no milestone on this
 page owns it, and this section exists so that fact is visible rather than lost between sections.
 The mechanism is `setting_sources=["user", "project", "local"]` - MEASURED 2026-08-28
-(`../../RESEARCH/workflow/design/probes/cascade-worktree.md`): the self-learning memory lives in
+(`RESEARCH/workflow/design/probes/cascade-worktree.md`): the self-learning memory lives in
 `CLAUDE.local.md`, which loads only with `local`, and `local` also loads the project's
 `.claude/settings.local.json` (from a worktree node: the parent's and its own).
 
@@ -924,7 +924,7 @@ bitranox in, the browser/IDE/desktop MCP plugins out. Component 8 of M6 owns it,
 items listed there.
 
 **Requirement 5 is NOT satisfied by requirement 2, measured 2026-08-27**
-(`../../RESEARCH/workflow/design/probes/cascade-cacheable.md`). The hypothesis worth testing was that excluding
+(`RESEARCH/workflow/design/probes/cascade-cacheable.md`). The hypothesis worth testing was that excluding
 SessionStart hooks - already mandatory under requirement 2 - removes the injection that produced the
 49.7 percent arm, making requirement 5 free. It does not. Four back-to-back dispatches with an
 identical prompt, cwd and model row read 0, 56.4, 56.4 and only then 100 percent: a full cache read
@@ -935,7 +935,7 @@ index and elapsed time are perfectly collinear in a back-to-back sequence, and a
 back confounded), and whether the nudge fired at all (the prompt GREW by 268 tokens where the nudge
 account predicts a shrink, so the size change is something else).
 
-**A separating arm ruled TIME out** (`../../RESEARCH/workflow/design/probes/cascade-separator.md`, same day). Three
+**A separating arm ruled TIME out** (`RESEARCH/workflow/design/probes/cascade-separator.md`, same day). Three
 sequences, fresh cwd each: a second dispatch reads 56.4 percent whether it follows immediately or
 after 180 seconds, to within four tokens, and two back-to-back controls differing only in cwd agree
 exactly - so the cwd is inert and the wait is what C varies. Dispatch count survives as the
@@ -985,7 +985,7 @@ cosmetically less.
 ### The measurement the risk asked for has been taken (2026-08-27)
 
 The high plan's risk 3 called for ONE measurement of the new configuration. It is
-`../../RESEARCH/workflow/design/probes/prefix-order.md`, two runs on the shipped SDK. Token counts, not prices: the tier
+`RESEARCH/workflow/design/probes/prefix-order.md`, two runs on the shipped SDK. Token counts, not prices: the tier
 table carries a `cache_read` rate and no cache-write rate, and writes land in the `ephemeral_1h`
 tier, so any price stated here would hide an assumed multiplier inside a number.
 
@@ -1039,7 +1039,7 @@ dispatches with an identical brief and working directory, and reproduced that ex
 later. Run 2 measured 100 percent on the same arm. What separates them is visible in the totals: in
 run 1 the prompt GREW by 120 tokens between the two dispatches; in run 2 both sent the same count.
 
-**Those 120 tokens are now identified** (`../../RESEARCH/workflow/design/probes/prompt-drift.md`): 227 characters of
+**Those 120 tokens are now identified** (`RESEARCH/workflow/design/probes/prompt-drift.md`): 227 characters of
 `<BITRANOX-NEW-PROJECT>`, injected by this machine's own bitranox SessionStart hook, which fires
 once per fresh project directory and self-silences. Captured by proxying the real request bodies and
 diffing them, with the mechanism read at source. It is not the Claude CLI. It also does not break
@@ -1080,7 +1080,7 @@ and that is the user's call. Recorded here, not decided here.
 
 ### Four small items from the OpenClaw 2.0 source read (2026-09-01)
 
-Findings: `../../RESEARCH/landscape/OPENCLAW-2.0.md`. Each is a gap a second shipping
+Findings: `RESEARCH/landscape/OPENCLAW-2.0.md`. Each is a gap a second shipping
 implementation covers and agentdag does not. They are recorded unowned rather than pushed into M3,
 whose tail is already carrying work; the detailed plan notes them as candidates for that tail if
 the user would rather they were owned.
