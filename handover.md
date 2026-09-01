@@ -1,9 +1,10 @@
 # Handover: agentdag, 2026-09-01 ~13:55. Two user decisions closed. The macos CI block cleared.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents were written
-> beside a private research repository and cite it by relative path for the design documents,
-> probe scripts and measurement notes they were derived from. Those paths do not resolve in a
-> clone of this repo. They are kept rather than stripped because a claim that names its source
+> beside a private research repository and cite it by repo-qualified path for the design
+> documents, probe scripts and measurement notes they were derived from. The `RESEARCH/` prefix
+> names that repo; it is deliberately not a relative path, because no relative path from here
+> resolves to it. These citations do not resolve in a clone of this repo. They are kept rather than stripped because a claim that names its source
 > is evidence of where it came from even when the source is not public, and removing them would
 > leave the assertions here with no provenance at all.
 
@@ -93,9 +94,9 @@ describe the shipped mechanism instead of the retired `can_change_state` flag.
 
 **`OPEN-WORK.md` rank 25, score checkpoint C1.** It is the top-ranked open item and it needs the
 USER, roughly ten minutes, no code: score six pairs cold from
-`../RESEARCH/workflow/probes/e1_control_packet.md` - a preference per pair, a 1-5 executability
+`RESEARCH/workflow/probes/e1_control_packet.md` - a preference per pair, a 1-5 executability
 score per plan, one line of why - and only then open
-`../RESEARCH/workflow/probes/e1_control_key.json`. Agreement on >= 5 of 6, or the panel's other 24
+`RESEARCH/workflow/probes/e1_control_key.json`. Agreement on >= 5 of 6, or the panel's other 24
 verdicts are DISCARDED, not caveated.
 
 It gates two things, which is why it outranks the build. C2's arms are collected and deliberately
@@ -118,8 +119,8 @@ needs their go.
     PLANS/build-plan-detailed.md                                    P1-P4 block; the P3 and P4 entries carry the decisions
     PLANS/build-plan-mid.md                                         component 5, corrected
     src/agentdag/composition/kernel.py                              the spec left for whoever builds the judge
-    ../RESEARCH/workflow/design/2026-08-28-planning-loop-design.md  how a judge produces a verdict
-    ../RESEARCH/workflow/probes/e1_control_packet.md                C1's input
+    RESEARCH/workflow/design/2026-08-28-planning-loop-design.md  how a judge produces a verdict
+    RESEARCH/workflow/probes/e1_control_packet.md                C1's input
 
 ## How to verify this still stands
 
