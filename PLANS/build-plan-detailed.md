@@ -6169,6 +6169,13 @@ decision that follows is the user's.
       resuming a unit exclusive or idempotent, which is the differentiator-3 side-effect concern by
       another route. Which two executors ran in B is inferred, not measured. The scope call is the
       user's.
+      **HELD 2026-09-01 by the user: no differentiator row yet, pending the mechanism.** The two
+      candidate mechanisms carry OPPOSITE implications - if resume itself is non-exclusive the
+      hazard earns a row, and if it was the respawned worker racing the resumer it is an artifact
+      of this arm and earns none - so the row is not written on an inference. `OPEN-WORK.md`
+      rank 35 (reranked from 80, because it now gates a USER item) re-runs arm B with the
+      respawned worker stopped first, leaving exactly one executor. The differentiator list is
+      untouched until it reports.
       Documented: completed subagents return saved results; in-flight ones "start over from the
       beginning, so the tokens they used so far are spent again"; and in workflows a failure mid
       fan-out reruns agents that had already completed. This is the residue differentiator 1 now
