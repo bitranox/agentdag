@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-01 ~13:50. Two user decisions closed. CI green on HEAD. Nothing owed.
+# Handover: agentdag, 2026-09-01 ~13:55. Two user decisions closed. The macos CI block cleared.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents were written
 > beside a private research repository and cite it by relative path for the design documents,
@@ -15,8 +15,11 @@ where the last session stopped.
 Nothing is part-done here and nothing is uncommitted. Work tree clean and `main` level with origin;
 HEAD is the commit that wrote this file. Two live conditions the next session inherits:
 
-**CI is GREEN on HEAD** (`CI=success CodeQL=success`, `CI_RC=0`), and the macos cells ran with
-28 steps each. For about four hours this morning they sat at `status=queued, steps=0` across five
+**The macos CI block cleared; verify HEAD yourself rather than trusting this line.** A handover
+cannot state its own commit's CI result, because writing the line is what creates the commit the
+line is about - so run `ci_wait --sha $(git rev-parse HEAD)`. What IS settled: `8f18568` came back
+`CI=success CodeQL=success`, `CI_RC=0`, with the macos cells running 28 steps each. For about four
+hours this morning they sat at `status=queued, steps=0` across five
 stacked runs, every run 9 of 12 green with ZERO failures, and three `ci_wait` calls returned
 `CI_RC=2` (could not tell), never 1. It cleared on its own, which confirms the read taken at the
 time: the block was external, so cancelling runs to "free capacity" would have gained nothing and
