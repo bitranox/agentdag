@@ -12,8 +12,8 @@ where the last session stopped.
 
 ## In flight
 
-Nothing is part-done here and nothing is uncommitted. Work tree clean, `main` level with origin at
-`a45e871`. Two live conditions the next session inherits:
+Nothing is part-done here and nothing is uncommitted. Work tree clean and `main` level with origin;
+HEAD is the commit that wrote this file. Two live conditions the next session inherits:
 
 **CI has no verdict and has not failed.** Five runs are stacked on `21ef31c`..`a45e871`, every one
 of them 9 of 12 cells GREEN with ZERO failures. The three macos cells on each sit at
@@ -120,7 +120,7 @@ needs their go.
 
 ## How to verify this still stands
 
-    git -C . log -1 --format=%h && git -C . status --porcelain    # a45e871, clean, level with origin
+    git -C . status --porcelain && git -C . log -1 --oneline       # clean; HEAD is the handover commit itself
     .venv/bin/python -m pytest tests/ -q                          # 1024 passed
     .venv/bin/python -m pytest tests/test_repo_publishable.py -q  # 4 passed, guard live
     grep -c '^- \[ \]' OPEN-WORK.md                               # 8 open
