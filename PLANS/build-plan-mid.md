@@ -772,11 +772,6 @@ worktree isolation, records rather than prose, content in the store rather than 
     **It is prompt-level and therefore ADVISORY** - pair it with the tool-policy floor, never let
     it stand alone as the defence. Findings: `../../RESEARCH/landscape/OPENCLAW-2.0.md`.
 
-    **Not adopted alongside it, deliberately: the tool-authority fingerprint.** It guards mid-flight
-    injection into a RUNNING node, and nothing in agentdag can steer a running node - the insertion
-    mechanism was designed away on 2026-08-28 (component 10). It is recorded as a PRECONDITION on
-    any future steering design, not as work.
-
 ### Sequencing, and the two checkpoints
 
 - **Checkpoint A** - detailed Tasks 28 to 31: the double-load probe (28, DONE 2026-08-28: loaded
@@ -1101,6 +1096,11 @@ isolation (`executor_claude.py` mints a per-node credential from a private owner
 | stuck-state taxonomy (stranded / no-heartbeat / blocked-too-long / repeated) | `ErrorType` says how a node FAILED, nothing says why one is NOT MOVING                  | small | kernel; cheap, high diagnostic value |
 | credential TTL, bound to (run, node, attempt)                                | the per-node credential exists but is not execution-scoped                              | small | `executor_claude`                    |
 | re-authorize under the writer barrier                                        | `approve` resolves authority before an await; the write lands later                     | small | the approve path (M3 owns approve)   |
+
+**A precondition, not an item: the tool-authority fingerprint.** It guards mid-flight injection into
+a RUNNING node, and nothing here can steer a running node - the insertion mechanism was designed
+away on 2026-08-28. It binds any FUTURE steering design, and is deliberately not work in any
+milestone.
 
 ---
 
