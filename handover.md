@@ -71,8 +71,9 @@ and the comparison only prices overhead. That is why `OPEN-WORK.md` rank 05 exis
   read set is not decidable from its text. Work nodes are deliberately NOT confined.
 - `3db1ea1` `scripts/runsum.py`, tracked.
 - `4755d10` the port's read-confinement rule held as a check rather than a sentence.
-- bitranox-skills **5.306.0**: `block-masked-gate-exit` now BLOCKS a backgrounded gate that does
-  not go through `gate.py`.
+- bitranox-skills **6.0.0**: `block-masked-gate-exit` now BLOCKS a backgrounded gate that does not
+  go through `gate.py`. Shipped first as 5.306.0 and re-cut as a MAJOR, because what it adds is a
+  refusal of commands that worked before, and the tier is the only warning an installer gets.
 
 ## Decided this session, with the reason
 
