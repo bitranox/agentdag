@@ -100,6 +100,13 @@ trade rests on this claim; putting an unverified finding to the user as the basi
 decision is the failure this repo has recorded twice. Rank 25 does not depend on it and stays
 available if the user would rather spend the ten minutes there.
 
+**This ordering is contested and the user may simply reverse it.** Putting 36 first overrides this
+backlog's own first rule - a USER item outranks every FOUND item, and no count changes that - on a
+GATING argument. The same argument put 36 above 38. There is precedent (rank 35 was reranked that
+way on 2026-09-01), but the user had just declined an importance axis in favour of honest sizing,
+and this is that axis under another name. If the ordering is wrong, the fix is one edit and the
+next action becomes rank 15 or 25.
+
 In the 2.1.258 binary, confirm three things. Extract printable byte-runs with a Python regex over
 the raw bytes and prove the method on a control first; `strings` lands in the atom table and finds
 the token without the code.
