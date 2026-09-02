@@ -205,20 +205,32 @@ exact thing" is actually cashed out.
 
 ## 8. The primitives
 
-| Primitive | What it is                                                | Status              |
-|-----------|-----------------------------------------------------------|---------------------|
-| `work`    | fresh context, one contained task, returns a record       | built               |
-| `gate`    | non-AI check, exit code, failure stops the branch         | built               |
-| `map`     | fan out over N items, one isolation each                  | built               |
-| `reduce`  | deterministic fold over records                           | built               |
-| `stage`   | write an intent for an external effect                    | built               |
-| `apply`   | perform intents, idempotent on replay                     | built               |
-| `approve` | suspend with a typed payload, resume by decision          | built               |
-| `synth`   | fresh context reading the store, forms a judgement        | specified           |
-| `planner` | a synth whose output is the next node specifications      | specified, deferred |
-| `wait`    | poll external state with a bound                          | specified           |
-| `batch`   | fold N small items into one dispatch                      | specified           |
-| `compact` | an executor compresses its own history, a field on `work` | specified           |
+A primitive can be reachable two ways, and the difference matters as soon as a model is the one
+choosing. **From Python** means a workflow module calls it as a `Coordinator` method. **From a
+plan** means it is a registered op, so a planner may name it in an emitted plan; a plan naming
+anything else is refused by absence. The two sets are not the same, and the second is the smaller.
+
+| Primitive | What it is                                                | From Python | From a plan           |
+|-----------|-----------------------------------------------------------|-------------|-----------------------|
+| `work`    | fresh context, one contained task, returns a record       | yes         | yes, `work`           |
+| `gate`    | non-AI check, exit code, failure stops the branch         | yes         | yes, `gate:make-test` |
+| `reduce`  | deterministic fold over records                           | yes         | yes, `reduce:count`   |
+| `approve` | suspend with a typed payload, resume by decision          | yes         | yes, `approve`        |
+| `map`     | fan out over N items, one isolation each                  | yes         | no                    |
+| `stage`   | write an intent for an external effect                    | yes         | no                    |
+| `apply`   | perform intents, idempotent on replay                     | yes         | no                    |
+| `synth`   | fresh context reading the store, forms a judgement        | no          | no                    |
+| `planner` | a synth whose output is the next node specifications      | no          | no                    |
+| `wait`    | poll external state with a bound                          | no          | no                    |
+| `batch`   | fold N small items into one dispatch                      | no          | no                    |
+| `compact` | an executor compresses its own history, a field on `work` | no          | no                    |
+
+The registered set is `work`, `gate:make-test`, `reduce:count`, `approve`, `plan` and `scan`; the
+last two have no row above because they are plan-machinery rather than primitives. `map`, `stage`
+and `apply` are built and called by the shipped workflows, and a planner cannot reach them, so a
+model-emitted plan today has no fan-out and no staged effect. `wait` and `batch` are members of the
+node-kind vocabulary with no primitive behind them, which is why a spec can name a kind nothing can
+execute.
 
 Some patterns deliberately are not primitives, because they are control flow in the workflow program
 and inventing a node kind for them would buy nothing: repeat until a gate passes, repeat until a

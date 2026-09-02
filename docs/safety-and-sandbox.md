@@ -122,15 +122,18 @@ credential copy.
 ## 7. There is no sandbox
 
 A node runs as the coordinator's own operating system user, in the coordinator's own filesystem and
-network namespace. There is no boundary of any kind, and the record a node produces does not say so:
-nothing in it describes what isolation the work ran under. You have to know it from this document,
-which is the weakest possible way to carry a safety-relevant fact.
+network namespace. There is no boundary of any kind.
 
-A sandbox port that would at least make the absence explicit, by declaring three false booleans on
-every record, is written and reviewed on the milestone branch. It is not on the default branch and
-nothing above describes it. When it lands, the honest statement becomes a journaled one, which is
-worth something even before any boundary exists: an isolation claim that travels with the work
-cannot quietly go stale the way a sentence in a document can.
+The absence is at least explicit rather than assumed. A `Sandbox` port declares what it enforces,
+the coordinator stamps that declaration onto every record it writes
+(`context.py` passes `sandbox=self.sandbox.guarantees()` into the dispatch that builds the record),
+and the shipped adapter is `NoSandbox`, whose guarantees are false. So an isolation claim travels
+with the work instead of living only in this sentence, and a record cannot quietly go stale the way
+a document can. A replayed record keeps the declaration it was written with.
+
+What the port does NOT do is act. Its `prepare` method has no caller, so nothing on the dispatch
+path ever asks the sandbox to change a request before it runs. The stamp is an honest label on an
+absent boundary, which is worth having and is not a boundary.
 
 ## 8. What a boundary would take
 

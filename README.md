@@ -242,7 +242,7 @@ A run never writes to a real repository.
 - The bare clones under `<scratch>/origin/` are the only push targets a run accepts. A target anywhere else stops the run before the first node is dispatched, and the same check guards the push step itself.
 - Neither clone keeps a remote: the mirror does not point back at the real repository and the worktree does not point at the mirror, so a node's reflex `git push` has nowhere to go. This is not containment. A node with unrestricted Bash can still push to any path it can name, and that needs a sandbox, which the baseline does not have.
 
-### The gate runs one at a time
+### The gate is a separate process, and gates are not serialised
 
 The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
 
