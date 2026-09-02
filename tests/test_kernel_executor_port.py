@@ -77,6 +77,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agentdag.application.kernel.ports import Executor, ExecutorRequest
+from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.models import NodeOutcome, NodeStatus, Tokens
 
 if TYPE_CHECKING:
@@ -103,7 +104,19 @@ class NonSdkExecutor:
         Returns:
             A done outcome whose model and charge are the ALIAS the request named, so a
             vendor's own model identifiers never have to reach the record.
+
+        Raises:
+            KernelError: the request confines reads and this adapter cannot honour that.
+                It has no sandbox and no permission layer, so the only alternative is to
+                run the node unconfined, which is the one thing the field exists to
+                prevent. Refusing is what the port requires of such an adapter, and this
+                is where that requirement stops being prose.
         """
+        if request.read_roots is not None:
+            raise KernelError(
+                "this executor cannot confine reads; refusing a request that declares "
+                f"read_roots={request.read_roots!r} rather than running the node unconfined"
+            )
         self.seen.append(request)
         return NodeOutcome(
             status=NodeStatus.DONE,
@@ -179,3 +192,27 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "handover_at_tokens",
         "is_stopping",
     }
+
+
+@pytest.mark.os_agnostic
+def test_an_adapter_that_cannot_confine_reads_refuses_rather_than_running_unconfined(tmp_path: Path) -> None:
+    """The port's read-confinement rule, held as a check instead of as a sentence.
+
+    ``read_roots`` is unlike the port's other optional fields: an adapter that ignores
+    ``token_cap`` or ``handover_at_tokens`` loses a convenience, while one that ignores this
+    loses the guarantee the field exists for, and it loses it SILENTLY - the node runs, the
+    record looks ordinary, and nothing anywhere says it was unconfined. So the rule cannot
+    live only in the module docstring above.
+
+    The control is the line under it: the same adapter, the same request shape, ``None``
+    instead of roots, runs fine. Without that a test asserting a raise would also pass
+    against an adapter that refused everything.
+    """
+    executor = NonSdkExecutor()
+    confined = dataclasses.replace(_request(tmp_path), read_roots=(tmp_path / "wt" / "a",))
+
+    with pytest.raises(KernelError, match="cannot confine reads"):
+        asyncio.run(executor.run(confined))
+    assert executor.seen == []
+
+    assert asyncio.run(executor.run(_request(tmp_path / "second"))).status is NodeStatus.DONE
