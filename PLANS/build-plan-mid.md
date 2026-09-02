@@ -235,7 +235,11 @@ gap between the project's two comparisons. Do not cite REBUILD as settling it; i
 is open structurally rather than by oversight, because no comparison ever had that arm. The
 evidence to close it is the agent-teams source read (high plan, risks 6 and 7), and what it must
 establish is whether the steering seams can DECIDE or only OBSERVE. If they can only observe, the
-question closes itself.
+question closes itself. **ANSWERED and CLOSED 2026-09-02.** The seams CAN decide, so the question
+did not close itself and went to the user, who decided KEEP REBUILDING. What settled it was not the
+seams but the topology: the durable gated layer is exactly one level deep by explicit refusal, so a
+graph cannot be expressed there as gated work. REBUILD now stands on two independent grounds - D2's
+own arithmetic against DBOS and Temporal, and this. See `build-plan-high.md` risk 7.
 
 ---
 

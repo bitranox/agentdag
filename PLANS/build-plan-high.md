@@ -548,12 +548,22 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    boundary, because nothing outside a live session reads a task file or an inbox, so the wake-up is
    the coordinator's; a human answer that outlives the process; side-effect discipline, which does
    not exist there at all; any topology deeper than one level, since the roster is flat by explicit
-   refusal; and a gate that cannot fail open. **The honest trade: adopting buys a scheduler, a
+   refusal - RE-VERIFIED at source 2026-09-02, byte 184,267,263, which throws
+   `subagent_nested_teammate` with the text "Teammates cannot spawn other teammates - the team
+   roster is flat", and note a teammate may still spawn a plain SUBAGENT (omit `name`) but only
+   synchronously and with none of the machinery: no task row, no inbox, no `TaskCompleted` gate;
+   and a gate that cannot fail open. **The honest trade: adopting buys a scheduler, a
    queue, a store and a supervisor, and costs a runtime-authored graph, a one-level roster, and a
    gate whose default failure direction is open.** Backlog item 15. The gate half of that trade was
    re-read at source on 2026-09-02 rather than left on one pass, and it survived with one route
    ADDED to the fail-open side (delete-instead-of-complete) and one route REMOVED from it
    (`script`-type hooks are not covered by the missing-script downgrade).
+   **DECIDED 2026-09-02 by the user: KEEP REBUILDING, adopt nothing.** The reason given is
+   representational rather than economic - a graph deeper than one level cannot exist there as
+   GATED work, so the substrate cannot express the thing the project is for, and the four things
+   adopting buys are the four already built and tested. This does NOT retire risk 8: Routines
+   remains NOT ASSESSED, so the decision was taken on two of three surfaces, and a Routines read
+   that moves a row RE-OPENS this rather than being absorbed into it.
 8. **The differentiator list was assembled against the surfaces somebody happened to read.** Raised
    2026-09-02, generalising risks 5 and 6 rather than repeating them. Twice now a row has been
    moved by reading a surface that was always available: agent view on 2026-08-30 (row 1), agent
