@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from ...domain.models import NodeSpec, ResultRecord
     from ...domain.policy import RunLimits
-    from .registry import OpRegistry, PlanContext
+    from .registry import OpRegistry, OpSpec, PlanContext
 
 __all__ = ["PLANNER_PROMPT", "NotPlanned", "Planned", "dispatch_planner"]
 
@@ -41,9 +41,15 @@ Your plan must validate against this schema:
 
 {schema}
 
-Every entry's "op" must be one of these registered names:
+Every entry's "op" must be one of these registered ops. "args" lists what that op's \
+"args" object takes; "emits" lists the key_facts field names a condition may name for an \
+entry using it, and there are no others:
 
 {ops}
+
+Everything you need to write the plan is in this prompt and in your brief. Do not search \
+the filesystem for the ops, their fields or the schema - they are above, and a plan is the \
+only thing you are asked to produce.
 
 Notes that will save you a refused plan:
 
@@ -214,8 +220,27 @@ def _schema_text() -> str:
 
 
 def _ops_text(registry: OpRegistry) -> str:
-    """Render the registered op names, one per line, for the prompt."""
-    return "\n".join(f"- {name}" for name in sorted(registry.names()))
+    """Render each registered op with the args it takes and the fields it may emit.
+
+    Names alone are not enough, and the gap is not cosmetic. The prompt tells the planner
+    that a condition may only name fields the entry's op declares in its output contract,
+    so a prompt that withholds those fields states a rule the planner cannot read - and a
+    planner holding Bash goes and looks for them. Measured on the first real ``plan-goal``
+    run, 2026-09-02: it spent its whole first six minutes grepping the filesystem, out of
+    its worktree and into unrelated projects, for exactly the contracts this now prints.
+    """
+    return "\n".join(_one_op(registry.get(name)) for name in sorted(registry.names()))
+
+
+def _one_op(op: OpSpec) -> str:
+    """Render one op as its name, its args field names, and its output contract."""
+    args = sorted(op.args_model.model_fields)
+    emits = sorted(op.output_contract)
+    return (
+        f"- {op.name}\n"
+        f"    args: {', '.join(args) if args else '(none)'}\n"
+        f"    emits: {', '.join(emits) if emits else '(nothing a condition can name)'}"
+    )
 
 
 def _brief(goal: str, evidence: Mapping[str, ResultRecord]) -> str:
