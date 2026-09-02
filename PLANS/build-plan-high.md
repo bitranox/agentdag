@@ -544,7 +544,19 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    shipping a script to every machine. Four things exist that agentdag currently builds itself: a
    durable lock-disciplined task store with a declared `blocks`/`blockedBy` graph and an enforced
    claim predicate; point-to-point durable inboxes; the `TaskCompleted` gate; and a reboot-surviving
-   daemon with per-job state. Five things it would still own: anything unattended past the session
+   daemon with per-job state - **all four RE-VERIFIED at source 2026-09-02 after the decision, and
+   the fourth is REFUTED for this build.** The store holds a lockfile and its claim predicate really
+   refuses, with reasons `already_claimed`, `already_resolved` and `blocked` (blockedBy filtered
+   against ids that are not yet completed), plus an `agent_busy` variant enforcing one open task per
+   agent (byte 180,520,900); it was UNDERSTATED, and it also unassigns a dead teammate's open tasks
+   back to `pending` with a notification, a recovery path this list never mentioned. The inboxes are
+   one JSON file per agent under `<team>/inboxes/`, atomically written under a per-file lock with
+   retries and per-entry schema validation (byte 180,525,900); also UNDERSTATED. But `claude daemon`
+   does NOT survive a reboot in 2.1.258: the launchctl/systemd install path exists in the binary and
+   is gated off, and the help this build renders says service install is disabled in this version
+   and the daemon runs on demand and exits when the last client disconnects. So it does not outlive
+   the last client, let alone a reboot. That REINFORCES the fifth item below rather than weakening
+   it - the daemon that might have owned unattended continuation is the one that is not there. Five things it would still own: anything unattended past the session
    boundary, because nothing outside a live session reads a task file or an inbox, so the wake-up is
    the coordinator's; a human answer that outlives the process; side-effect discipline, which does
    not exist there at all; any topology deeper than one level, since the roster is flat by explicit
