@@ -54,7 +54,13 @@ models:
     # cost_class is not pinned by the design for this row; mid is a placeholder
     # matching its rank sitting between sonnet and opus.
     cost_class: mid
-    available: true
+    # available: false because NOTHING WIRES "mcp:codex/codex". The Codex executor was the
+    # old M4 and it is CUT; this row outlived the arm it belonged to. Left at true it is
+    # offered to the planner, resolves for any standard or deep node, and dies at dispatch
+    # after the planner has already been paid - measured 2026-09-02, three nodes in one run.
+    # Set it back to true in the same change that wires the executor, never before:
+    # wire_kernel refuses a table advertising a row it cannot dispatch.
+    available: false
     roles:
       - standard
       - deep

@@ -450,6 +450,14 @@ def input_total(usage: Mapping[str, Any]) -> int:
     )
 
 
+_MAX_TURNS_SUBTYPE = "error_max_turns"
+"""``ResultMessage.subtype`` when the dispatch used every turn ``max_turns`` allowed.
+
+Read from a real failed dispatch's transcript, 2026-09-02, not from documentation: six work
+nodes on the first `spec`-scale run each ended with this subtype at ``num_turns`` one past the
+configured ceiling. The SDK names the same constant in its own error mapping."""
+
+
 def outcome_from_usage(
     *,
     model: str,
@@ -459,6 +467,7 @@ def outcome_from_usage(
     usage: Mapping[str, Any],
     first_turn_input: int,
     cwd_rel: str,
+    subtype: str = "",
 ) -> NodeOutcome:
     """Translate one dispatch's terminal usage into the outcome the coordinator branches on.
 
@@ -485,8 +494,12 @@ def outcome_from_usage(
         cwd_rel: The node's working directory, relative to the isolation root - the
             sole ``artefact_refs`` entry on success, since a work node's artefact IS
             the tree it changed.
+        subtype: ``ResultMessage.subtype``. Only one value is read, and it is read
+            BEFORE ``is_error``: ``error_max_turns`` means the dispatch used every turn
+            it was allowed, which is a CEILING being reached rather than a fault.
 
     Returns:
+        ``status=NEEDS_CONTINUATION`` when the turn ceiling was reached;
         ``status=DONE`` unless ``is_error``; on error, ``error.type=AUTH_FAILURE``
         (not transient) when ``text`` names the CLI's login failure, else
         ``EXECUTOR_ERROR`` (transient).
@@ -504,18 +517,32 @@ def outcome_from_usage(
     out_tokens = int(usage.get("output_tokens", 0))
     cache_read = int(usage.get("cache_read_input_tokens", 0))
     tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
-    status = NodeStatus.FAILED if is_error else NodeStatus.DONE
+    # The turn ceiling is read BEFORE is_error, because the CLI reports it AS an error
+    # (is_error true, subtype "error_max_turns") and it is not one. It is the same class of
+    # event as crossing `handover_at_tokens`: a bound the operator set, reached. Treating it
+    # as EXECUTOR_ERROR - which is TRANSIENT, so the retry path re-dispatches into the same
+    # wall - is what made six work nodes die identically and namelessly on the first real
+    # run of this path, 2026-09-02, each after spending its whole budget.
+    turns_exhausted = subtype == _MAX_TURNS_SUBTYPE
+    status = NodeStatus.NEEDS_CONTINUATION if turns_exhausted else (NodeStatus.FAILED if is_error else NodeStatus.DONE)
+    keeps_tree = turns_exhausted or not is_error
     return NodeOutcome(
         status=status,
-        artefact_refs=[] if is_error else [cwd_rel],
-        key_facts={"turns": num_turns, "first_turn_input_tokens": first_turn_input},
-        typed_fields=["turns"],
+        artefact_refs=[cwd_rel] if keeps_tree else [],
+        key_facts={
+            "turns": num_turns,
+            "first_turn_input_tokens": first_turn_input,
+            "turns_exhausted": turns_exhausted,
+        },
+        # `turns_exhausted` is TYPED for the same reason `grace_expired` is on a handover:
+        # it is this outcome's decisive fact and a condition may branch only on a typed key.
+        typed_fields=["turns", "turns_exhausted"],
         tokens=tokens,
         charged_tokens={model: in_tokens + out_tokens},
         executor_used="claude",
         model_used=model,
         effort_used=_NO_VALUE,
-        error=_classify_error(text) if is_error else None,
+        error=None if turns_exhausted else (_classify_error(text) if is_error else None),
     )
 
 
@@ -1238,6 +1265,7 @@ class ClaudeExecutor:
             usage=message.usage or {},
             first_turn_input=first_turn_input,
             cwd_rel=cwd_rel,
+            subtype=message.subtype or "",
         )
         if request.effort:
             # Safe to stamp the REQUESTED value here specifically: _options_for already

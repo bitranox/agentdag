@@ -48,6 +48,7 @@ from agentdag.adapters.kernel.hooks_claude import (
 from agentdag.application.kernel.ports import ExecutorRequest
 from agentdag.domain.handover import HANDOVER_FILENAME
 from agentdag.domain.kernel_errors import KernelError
+from agentdag.domain.models import NodeStatus
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -1680,3 +1681,63 @@ def test_read_roots_switches_the_bash_matcher_from_a_denylist_to_a_refusal(tmp_p
     assert fire(bash_confined, "Bash", {"command": "ls"}) == "deny"
     reads = _only_hook(confined, "Read|Grep|Glob")
     assert fire(reads, "Read", {"file_path": "/etc/passwd"}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_the_turn_ceiling_is_a_continuation_not_a_fault() -> None:
+    """`error_max_turns` is a bound being reached, and the CLI reports it AS an error.
+
+    Measured 2026-09-02 on the first `spec`-scale run: six work nodes ended
+    `subtype="error_max_turns"` at one turn past the ceiling and every one was recorded
+    FAILED with a transient EXECUTOR_ERROR. Transient means the retry path re-dispatches
+    into the identical wall, and the record named no cause - so the whole run died namelessly
+    after spending its budget. It is the same class of event as crossing `handover_at_tokens`,
+    which has always ended NEEDS_CONTINUATION and kept its tree.
+    """
+    usage = {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 900, "output_tokens": 7}
+    hit = outcome_from_usage(
+        model="sonnet",
+        num_turns=26,
+        is_error=True,
+        text="",
+        usage=usage,
+        first_turn_input=21,
+        cwd_rel="wt/root",
+        subtype="error_max_turns",
+    )
+    assert hit.status is NodeStatus.NEEDS_CONTINUATION
+    assert hit.error is None, "a ceiling reached is not a fault, and a caller branches on error"
+    assert hit.key_facts["turns_exhausted"] is True
+    assert "turns_exhausted" in hit.typed_fields, "a condition may branch only on a typed key"
+    assert hit.artefact_refs == ["wt/root"], "the successor continues from exactly this tree"
+
+    # The control: a genuine error with the same is_error flag must still be a failure, or the
+    # branch above would be swallowing every error rather than reclassifying one.
+    genuine = outcome_from_usage(
+        model="sonnet",
+        num_turns=3,
+        is_error=True,
+        text="boom",
+        usage=usage,
+        first_turn_input=21,
+        cwd_rel="wt/root",
+        subtype="error_during_execution",
+    )
+    assert genuine.status is NodeStatus.FAILED
+    assert genuine.error is not None
+    assert genuine.key_facts["turns_exhausted"] is False
+    assert genuine.artefact_refs == []
+
+    # And the ordinary success path is untouched.
+    ok = outcome_from_usage(
+        model="sonnet",
+        num_turns=3,
+        is_error=False,
+        text="ok",
+        usage=usage,
+        first_turn_input=21,
+        cwd_rel="wt/root",
+        subtype="success",
+    )
+    assert ok.status is NodeStatus.DONE
+    assert ok.key_facts["turns_exhausted"] is False

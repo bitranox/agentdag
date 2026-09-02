@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from ..application.kernel.registry import Body, PlanContext
     from ..domain.models import Decision, ResultRecord
     from ..domain.plan import Entry
+    from ..domain.policy import PolicyTable
 
 __all__ = ["build_op_registry", "manager_state_is_live", "wire_kernel"]
 
@@ -93,31 +94,70 @@ def wire_kernel(
         The wiring for one launch (or relaunch) of the coordinator.
     """
     clock = UtcClock()
+    executors = {
+        "claude": ClaudeExecutor(
+            credentials=credential,
+            deny_bash=tuple(deny_bash),
+            clock=clock,
+            # Reads the token from the SAME credential source the dispatch used, so the
+            # probe asks about exactly the credential that was refused - a probe pointed
+            # at any other one answers a question nobody asked.
+            credential_probe=ApiCredentialProbe(read_token=credential.bearer_token),
+        )
+    }
+    policy = load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash)
+    # Both halves are still CONCRETE here, which is why the check lives at this line rather
+    # than over the finished wiring: `KernelWiring.policy` is the narrow `Policy` PORT, and the
+    # rows are a property of the loaded table, not of the port. Reaching back through the port
+    # for them would be an adapters-detail read from composition and would not type.
+    _refuse_a_policy_offering_an_unwired_executor(policy.table, wired=set(executors))
     return KernelWiring(
         journal_factory=JsonlJournal,
         lock=FileRunLock(),
         clock=clock,
-        executors={
-            "claude": ClaudeExecutor(
-                credentials=credential,
-                deny_bash=tuple(deny_bash),
-                clock=clock,
-                # Reads the token from the SAME credential source the dispatch used, so the
-                # probe asks about exactly the credential that was refused - a probe pointed
-                # at any other one answers a question nobody asked.
-                credential_probe=ApiCredentialProbe(read_token=credential.bearer_token),
-            )
-        },
+        executors=executors,
         gate_port=MakeTestGate(),
         git=GitCli(),
         scanner=IsolationScanner(),
-        policy=load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash),
+        policy=policy,
         registry=build_op_registry(),
         scope=_choose_scope(),
         sandbox=NoSandbox(),
         notifier=notifier,
         parallel=parallel,
     )
+
+
+def _refuse_a_policy_offering_an_unwired_executor(table: PolicyTable, *, wired: set[str]) -> None:
+    """Refuse a policy table offering a row this composition cannot dispatch.
+
+    The policy table and the executor map are two halves of one decision and nothing compared
+    them. Measured 2026-09-02 on the first real ``plan-goal`` run at scale: the shipped table
+    still carried the ``codex`` row at ``available: true`` with ``executor: "mcp:codex/codex"``,
+    left behind when the Codex arm (old M4) was CUT, and three nodes resolved to it and died at
+    dispatch - each AFTER a planner had been paid to produce the plan naming them.
+
+    Refusing here rather than at dispatch is the point. A row that cannot run is a property of
+    the WIRING, knowable before a run starts and before any spend; the alternative is
+    discovering it once per node that happens to resolve there.
+
+    Args:
+        table: The loaded policy table; only its ``available`` rows are checked.
+        wired: The executor names this composition actually built.
+
+    Raises:
+        KernelError: at least one available row names an executor nothing wired.
+    """
+    unwired = {row.alias: row.executor for row in table.models if row.available and row.executor not in wired}
+    if not unwired:
+        return
+    named = ", ".join(f"{alias!r} -> {executor!r}" for alias, executor in sorted(unwired.items()))
+    msg = (
+        f"the policy offers {len(unwired)} available row(s) whose executor is not wired: {named}; "
+        f"wired: {sorted(wired)}. Wire the executor, or set the row 'available: false' "
+        f"- a row that cannot be dispatched must not be offered to a planner."
+    )
+    raise KernelError(msg)
 
 
 def _choose_scope() -> Scope:
