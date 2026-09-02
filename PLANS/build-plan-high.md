@@ -127,12 +127,12 @@ though the first already records row 1 as WEAKENED at tier MEASURED. A prose cav
 is skippable in a way a cell inside the row is not. **A row whose column does not name a surface
 has not been eliminated against it**, however settled the other cells read.
 
-| # | differentiator                                          | eliminated against                                                                             | why it survives elimination                                                                                                | state                                                 | what it still needs                                                                |
-|---|---------------------------------------------------------|------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------|------------------------------------------------------------------------------------|
-| 1 | the run outlives the session                            | Workflow (source). Agent view: DOC-READ, already WEAKENED. Agent teams, routines: NOT ASSESSED | UNDER RE-VERIFICATION 2026-08-30, see below: the predecessor's resume is documented same-session only, in its own contract | BUILT, measured: kill at +9s, resume exact            | one crash test on a real chore                                                     |
-| 2 | it stops and waits for a human decision, then resumes   | Workflow (source). `defer` measured P2. Agent teams, routines: NOT ASSESSED                    | UNDER RE-VERIFICATION 2026-08-30, see below: a run that ends at the decision is not a run you walked away from             | BUILT on `main`, suspend-and-resume tested            | nothing; the deadline default merged                                               |
-| 3 | it cannot repeat an irreversible effect                 | Workflow (source), OpenClaw workboard (source). Agent teams, routines: NOT ASSESSED            | replay safety for side effects, not just for compute                                                                       | kernel mechanism built; NOTHING DECIDES on it         | a consumer that branches on `may_have_landed`; a durability answer for the markers |
-| 4 | pass or fail is decided by something other than a model | Workflow (source), OpenClaw workboard (source). Agent teams `TaskCompleted`: UNREAD            | this is what makes 1 to 3 SAFE to leave alone                                                                              | BUILT (non-AI gate, exit code), narrower than claimed | the agent-teams read; then three caveats below folded in or answered               |
+| # | differentiator                                          | eliminated against                                                                                                                               | why it survives elimination                                                                                                | state                                                 | what it still needs                                                                |
+|---|---------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------|------------------------------------------------------------------------------------|
+| 1 | the run outlives the session                            | Workflow (source). Agent view: DOC-READ, already WEAKENED. Agent teams: SOURCE 2026-09-02, survives with a named residue. Routines: NOT ASSESSED | UNDER RE-VERIFICATION 2026-08-30, see below: the predecessor's resume is documented same-session only, in its own contract | BUILT, measured: kill at +9s, resume exact            | one crash test on a real chore                                                     |
+| 2 | it stops and waits for a human decision, then resumes   | Workflow (source). `defer` measured P2. Agent teams: SOURCE 2026-09-02, survives narrowed. Routines: NOT ASSESSED                                | UNDER RE-VERIFICATION 2026-08-30, see below: a run that ends at the decision is not a run you walked away from             | BUILT on `main`, suspend-and-resume tested            | nothing; the deadline default merged                                               |
+| 3 | it cannot repeat an irreversible effect                 | Workflow (source), OpenClaw workboard (source). Agent teams: SOURCE 2026-09-02, STRENGTHENED. Routines: NOT ASSESSED                             | replay safety for side effects, not just for compute                                                                       | kernel mechanism built; NOTHING DECIDES on it         | a consumer that branches on `may_have_landed`; a durability answer for the markers |
+| 4 | pass or fail is decided by something other than a model | Workflow (source), OpenClaw workboard (source). Agent teams `TaskCompleted`: SOURCE 2026-09-02, ROW NARROWS                                      | this is what makes 1 to 3 SAFE to leave alone                                                                              | BUILT (non-AI gate, exit code), narrower than claimed | re-word: the mechanism ships elsewhere; only the failure DIRECTION is ours         |
 
 **Row 4 is strengthened by the strongest evidence available for it, 2026-09-01.** OpenClaw's
 workboard declares `WORKBOARD_PROOF_STATUSES = [passed, failed, skipped, unknown]` and a
@@ -185,6 +185,38 @@ instrument, so this is a reason to probe rather than a correction.
   equivalent to `stage`/`apply`. All of that is about whether anyone ELSE has it. None of it is
   evidence that OURS is finished, and on 2026-09-02 it turned out not to be: see the corrected
   row 3 below. **Strengthened on elimination, unfinished in build, is the state to hold both in.**
+
+**AGENT TEAMS, READ AT SOURCE 2026-09-02** (CLI 2.1.258, byte-run extraction with a version-string
+control at 176,743,511). It was never an arm in the 2026-08-20 elimination and it moves three rows.
+
+- **Row 4 NARROWS, and this is the finding that costs the most.** `TaskCompleted` is a real
+  non-model gate on COMPLETED work, verified at two dispatch sites: inside `TaskUpdate.call` the
+  hooks run BEFORE the status assignment and a block returns `success:false`, so the transition to
+  `completed` never happens; and at a teammate's turn end the hooks fire for every in-progress task
+  it owns, feeding stderr back as context rather than letting it stop. Exit 2 blocks. So "a
+  non-model decides pass/fail" is NOT ours alone - it ships in the product this page eliminates
+  against. Two qualifications keep the row alive in narrowed form: the gate refuses the task RECORD
+  and the idle, never the artifacts, so nothing is rolled back; and `exitTwoMeansMissingScript`
+  downgrades an exit-2 to NON-BLOCKING for exactly this event when the script is missing, so the
+  gate FAILS OPEN. Ours fails closed and gates the effect, not the bookkeeping. **Re-word row 4
+  from "a non-model decides pass/fail" to the failure direction and what is gated.**
+- **Row 3 is STRENGTHENED, on the strongest evidence yet.** Agent teams has no idempotency,
+  staging or once-only mechanism for external effects at all: a sweep for the concept found only
+  the HTTP SDK's own `idempotencyKey` request header. A resumed teammate re-enters its loop with
+  its transcript as context, so if it already pushed or released, nothing knows. That is the third
+  independent implementation with the same hole, and it is the one closest to us in shape.
+- **Row 1 survives with a residue that must be stated, not assumed.** A team's STATE is durable -
+  roster, per-agent inboxes, the task graph with `blocks`/`blockedBy`, and every teammate
+  transcript, all lock-disciplined JSON under `~/.claude/`. What is NOT durable is anything that
+  acts on it: no process outside a live Claude session reads a team inbox or a task file. So the
+  state outlives the session and the RUN does not; whoever wants unattended continuation owns the
+  wake-up. Row 1's claim is therefore about the executing loop, not about persistence, and saying
+  it the other way would be refuted by the first person who looks.
+- **Row 2 survives narrowed.** A pause does not need a human click - `PreToolUse` and
+  `PermissionRequest` hooks return machine verdicts, and the permission and plan-approval round
+  trips are durable JSON frames in inboxes. But resumption needs a live lead session, so an
+  approval answered tomorrow has nobody to deliver it. Ours exits the process and resumes from the
+  journal, which is the difference; "it needs a human click" is the wrong way to state it.
 
 **The BUILT column was checked against the code, not against a previous plan** - and on 2026-09-02
 that check was found to have stopped one level too high. `stage`/`apply` are called from
@@ -481,15 +513,38 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    replayable verdict) rather than to the gate itself. If instead it fires on the way IN, like
    `defer` does, it is the same near-miss measured twice already and row 4 stands unchanged.
    Note the asymmetry with risk 5: that one watches a competitor for a change that has not
-   happened, this one asks whether something already shipped and nobody read it. Test: the
-   agent-teams source read, in flight 2026-09-02. Cheap, and it gates row 4 either way.
+   happened, this one asks whether something already shipped and nobody read it.
+   **ANSWERED 2026-09-02 and the risk FIRED.** It gates COMPLETED work, at two dispatch sites. The
+   row survives only on the two qualifications in the agent-teams block above - the gate covers
+   the task record rather than the artifacts, and it fails OPEN on a missing script. Re-wording
+   row 4 is now owed work, not a watch item. Risk retired into that.
+8. **The differentiator list was assembled against the surfaces somebody happened to read.** Raised
+   2026-09-02, generalising risks 5 and 6 rather than repeating them. Twice now a row has been
+   moved by reading a surface that was always available: agent view on 2026-08-30 (row 1), agent
+   teams on 2026-09-02 (rows 1 to 4). Both times the row had read as settled for weeks. Routines
+   remain NOT ASSESSED, and the local-routine file format was not recovered. Test: finish the
+   surface sweep rather than waiting for the next accident, and treat any row whose
+   `eliminated against` column carries a NOT ASSESSED as provisional in every document that
+   quotes it.
 7. **Steering agent teams may be cheaper than rebuilding a coordinator, and no document here has
    ever compared the two.** Raised by the user 2026-09-02. This is NOT a D2 re-open: D2's arms were
    DBOS and Temporal, and the 2026-08-20 elimination's arm was Claude Code's Workflow tool, so
    agent teams falls in the gap between the two comparisons and neither rules on it. D2's 7.1 still
    supplies the arithmetic that would apply - the saving it priced has been spent, so adopting now
    costs deleting working, tested code and re-earning its tests, at an amount marked UNKNOWN.
-   Test: the same source read, plus whether the seams it finds can DECIDE or only OBSERVE.
+   **EVIDENCE IN 2026-09-02; the decision is the user's and is OPEN.** The seams can DECIDE, which
+   was the question. A hook handler may be an `http` endpoint or an `mcp_tool`, and hooks are
+   attachable per agent definition, so an external coordinator can BE the gate over a wire without
+   shipping a script to every machine. Four things exist that agentdag currently builds itself: a
+   durable lock-disciplined task store with a declared `blocks`/`blockedBy` graph and an enforced
+   claim predicate; point-to-point durable inboxes; the `TaskCompleted` gate; and a reboot-surviving
+   daemon with per-job state. Five things it would still own: anything unattended past the session
+   boundary, because nothing outside a live session reads a task file or an inbox, so the wake-up is
+   the coordinator's; a human answer that outlives the process; side-effect discipline, which does
+   not exist there at all; any topology deeper than one level, since the roster is flat by explicit
+   refusal; and a gate that cannot fail open. **The honest trade: adopting buys a scheduler, a
+   queue, a store and a supervisor, and costs a runtime-authored graph, a one-level roster, and a
+   gate whose default failure direction is open.** Backlog item 15.
 
 ## Decisions this plan assumes
 

@@ -1117,17 +1117,23 @@ milestone.
 
 ### The unattended-safety chain (found 2026-09-02, no milestone owns it)
 
-Five defects, verified at source with controls, that COMPOSE into one chain. They are listed
-together because fixing any one of them alone leaves the chain intact, and because no milestone
-owns them: M3 owns the three properties, and none of these is one of the three.
+Five defects that COMPOSE into one chain. They are listed together because fixing any one of them
+alone leaves the chain intact, and because no milestone owns them: M3 owns the three properties and
+none of these is one of the three.
 
-| link                                                                     | evidence                                                                                              | size  |
-|--------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|-------|
-| `CredentialCopy` is the SHIPPED default, not the "non-default" it claims | `60-kernel.toml:47` is empty, so `run.py:785`'s guard is False; docstring at `executor_claude.py:345` | small |
-| Bash is always granted and `allowed_tools` does not bound it             | `DEFAULT_TOOLS` at `executor_claude.py:102`; measured under `dontAsk`, 8 of 24 dispatches             | -     |
-| the Bash guard fails OPEN on an empty env var                            | `run.py:839-852` splits a str and filters empties; measured `()` against a control's six patterns     | small |
-| the documented backstop cannot fire                                      | `context.py:437` passes `isolation_root=self.run_dir.root`, and the scan walks `run_dir.root`         | med   |
-| nothing denies `WebFetch`, `WebSearch` or `Task`                         | the only PreToolUse denials match file-edit tools and Bash                                            | med   |
+**Provenance is per row, because four of the five were re-verified here on 2026-09-02 and one was
+not.** VERIFIED-HERE means run or read in this repository with a control where the check could have
+answered either way. RELAYED means a subagent's finding that nobody re-opened. A RELAYED row is not
+wrong; it is unchecked, and this page tiers provenance so that an unchecked row cannot be quoted
+later as a measurement.
+
+| link                                                                                    | evidence                                                                                              | size  |
+|-----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|-------|
+| VERIFIED-HERE. `CredentialCopy` is the SHIPPED default, not the "non-default" it claims | `60-kernel.toml:47` is empty, so `run.py:785`'s guard is False; docstring at `executor_claude.py:345` | small |
+| RELAYED. Bash is always granted and `allowed_tools` does not bound it                   | `DEFAULT_TOOLS` at `executor_claude.py:102`; measured under `dontAsk`, 8 of 24 dispatches             | -     |
+| VERIFIED-HERE. The Bash guard fails OPEN on an empty env var                            | `run.py:839-852` splits a str and filters empties; measured `()` against a control's six patterns     | small |
+| VERIFIED-HERE. The documented backstop cannot fire                                      | `context.py:437` passes `isolation_root=self.run_dir.root`, and the scan walks `run_dir.root`         | med   |
+| VERIFIED-HERE. Nothing denies `WebFetch`, `WebSearch` or `Task`                         | the only PreToolUse denials match file-edit tools and Bash                                            | med   |
 
 Read as one chain: a node runs with Bash it cannot be denied, guarded by a substring denylist one
 empty environment variable silently empties, its writes outside the run root invisible to the scan
@@ -1136,6 +1142,13 @@ credentials in its home. **The product statement is "a job you can walk away fro
 list of reasons not to.** Two of the five are also false STATEMENTS rather than only gaps - the
 docstring and the `60-kernel.toml` comment - and those two are the cheapest, because they are one
 line each and they are what a reader trusts instead of checking.
+
+**SIZE: LARGE** (corrected 2026-09-02 with the user). It was first filed as "two one-liners, one
+guard fix, one decision", which undersold the fourth link: deciding what containment agentdag
+offers is a design question the project has deferred since "There is no sandbox" was written, not a
+guard fix. Sized honestly it outranks the judge op on this backlog's existing origin-then-size rule,
+with no new ranking axis and no ad-hoc override - which is the point, because the alternative was
+arguing importance into a list that deliberately does not sort on it.
 
 Deliberately NOT sized as one item: the first and third are a line each, the fourth and fifth need
 a decision about what the boundary IS before anyone writes code, and bundling those hides the
