@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-02 ~11:10. Agent teams read at source; row 4 narrows. Two commits unpushed.
+# Handover: agentdag, 2026-09-02 ~17:40. C1's cold control is spent; nothing else is in flight.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
 > repo-qualified path for the design documents, probe scripts and measurement notes they were
@@ -12,79 +12,70 @@ where the last session stopped.
 
 ## In flight
 
-**Two commits are UNPUSHED on `main`:** `ad9212c` and `79ca93b`, both documentation and planning
-only, no `src/` change. The tree is clean. Nothing is part-done.
+**Nothing is part-done.** No half-written file, no uncommitted edit of mine, no background job of
+mine still running.
 
-Pushing needs `make test` first per this repo's policy even though nothing under `src/` moved, and
-that gate MUTATES the working tree (regenerates the Makefile, bumps dependency floors, reformats).
-Expect churn that is not yours and commit it rather than carving it out.
+**One anomaly that is NOT mine:** `CLAUDE.md.bak` is staged-added-and-deleted in the index (`AD` in
+`git status --porcelain`). Another session created, staged and removed it; `CLAUDE.md` itself also
+changed on disk during the session. I left the index entry alone rather than unstaging it, because
+its content exists only in the index and destroying another session's staged state is not mine to
+do. Commit by pathspec until it clears, or a bare `git commit` sweeps it in.
 
-**Another session may still be writing in the RESEARCH repo.** As of 11:10 it showed
-`OPEN-WORK.md`, `handover.md` and `agentdag-working/EXECUTION-USER-REVIEW.md` modified. The last of
-those is ours (this repo's `EXECUTION-USER-REVIEW.md` is a SYMLINK into that repo, so writing it
-here versions it there). The other two are NOT. Commit in that repo BY PATHSPEC only.
+## Committed, or not
 
-## Shipped this session
+Everything this session produced is committed AND pushed. The invariant to check, rather than a
+sha that this file cannot state about its own commit:
 
-**A six-dimension source-level comparison against Claude Code's Workflow tool and ultracode**, 13
-agents, 3.86M subagent tokens, 905 tool uses. 83 falls-short rows against 38 better rows. The
-finding that matters is not the ratio: four of six adversarial verifiers independently reported
-that the BETTER bucket was probed with weaker instruments, one of them finding a fabricated
-quotation in a better row's evidence. The bucket that justifies the project is the weaker-evidenced
-half. Raw material is in the workflow journal under this session's `subagents/workflows/` directory
-and dies with the session; nothing was written to `RESEARCH/`.
+    git status --porcelain          # only the foreign CLAUDE.md.bak entry
+    git log --oneline @{u}..HEAD    # empty, once this handover's own commit is pushed
 
-**Agent teams read at source** (CLI 2.1.258, byte-run extraction, version-string control at
-176,743,511). It was never an arm in D2 nor in the 2026-08-20 elimination. It moved three
-differentiator rows; the detail is in `PLANS/build-plan-high.md` under the agent-teams block and
-risks 6 to 8.
-
-**Two commits**, both plan and doc corrections. `ad9212c` corrected three claims measurement
-falsified; `79ca93b` folded in the agent-teams read plus the decision-review actions.
-
-**One memory fact:** `feedback-a-caveat-binds-only-inside-the-unit-it-qualifies`.
+The last CI watch was armed on `1373557` and had not reported when this was written.
 
 ## Decided this session, with the reason
 
-1. **The differentiator table gains an `eliminated against` column** (mine). The one-surface caveat
-   had sat in prose above the table since 2026-08-30 and did not bind: six readers with the file
-   open reproduced the error it warns about across 169 rows. A cell in the row is not skippable the
-   way a paragraph is.
-2. **The "one crash test and one real run" figure is WITHDRAWN, not replaced** (mine). No basis for
-   a new number, and that page tiers provenance so a guess cannot be quoted later as a figure.
-3. **Provenance is per row in the safety chain, and four of five links were re-verified here rather
-   than labelled** (user chose tiering; the verification was the cheaper honest option once found).
-4. **The safety chain moved 45 -> 38 by correcting its SIZE, not by adding an importance axis**
-   (user, 2026-09-02). The first filing undersold the boundary decision as a guard fix. Sized
-   honestly it outranks the judge op on the existing origin-then-size rule. The alternative -
-   a third ranking key - was put and declined.
-5. **`docs/` corrections state what IS; the dated correction narrative went into the plans.** Docs
-   describe current code; the plans are where this project records how a claim moved.
+1. **Rank 15: keep rebuilding, adopt nothing from Claude Code's agent teams** (user). The reason is
+   representational, not economic: the durable gated layer there is exactly ONE level deep by
+   explicit refusal, so a graph cannot exist there as gated work, and the four capabilities adopting
+   would buy are the four already built and tested. Recorded in `OPEN-WORK.md` 15,
+   `PLANS/build-plan-high.md` risk 7, and `PLANS/build-plan-mid.md`'s D2 gap paragraph.
+   **It did NOT retire risk 8** - Routines is still NOT ASSESSED, so this was decided on two of
+   three surfaces, and a Routines read that moves a differentiator row RE-OPENS it.
+2. **A green `make test` on a clean tree is standing authority to push this repo** (user). Push
+   only: not a tag, not `make release`, and it does not touch the openvmm confirmation rule.
+   Captured as `feedback-a-green-gate-is-authority-to-push-agentdag`.
+3. **Peer contact with the `agentswarm` session stays open** (user): answer direct questions from
+   source, send corrections owed, and the volunteered cautions are included.
+4. **Their measured figures are NOT written into any agentdag document** (mine). n=1 per round,
+   rounds varying more than one variable, and a cross-repo citation would dangle for any reader not
+   on this machine. Their findings entered only as design constraints in `OPEN-WORK.md` 65 and 77,
+   in our own words.
 
 ## Decided against, so it is not redone as an oversight
 
-- **The two `src/` truth fixes were NOT applied** (`executor_claude.py:345`'s "non-default"
-  docstring, `60-kernel.toml:102-104`'s unfireable-backstop comment). They belong with the safety
-  work at backlog 38, and touching `src/` pulls the bmk gate into a documentation commit. Cost
-  accepted: two false statements stay in the tree until 38 is worked. This is the FIRST item of
-  38's `next:` field.
-- **The agent-teams findings were NOT re-verified before committing.** Surfaced by me in the
-  decision review and carried to backlog 36 rather than fixed, because context had reached the
-  handover threshold. Do not read the row-4 narrowing as settled.
-- **Nothing was pushed**, and no `make test` was run.
+- **The two `src/` truth fixes are still NOT applied** (`executor_claude.py:345`'s false
+  "non-default" docstring, `60-kernel.toml:102-104`'s unfireable-backstop comment). They belong with
+  the safety work at backlog 38 and are the FIRST item of its `next:` field. Third session running.
+- **`why-agentdag.md:98`'s refutation narrative was NOT removed.** Grepped: the refuted claim lives
+  in that doc and nowhere else, so deleting the sentence loses the correction rather than relocating
+  it. Filed as backlog 68 with "write it into the plans first" as the next action.
+- **My six model scores were not filed beside the packet.** They sit in the session scratchpad at
+  `/tmp/claude-1000/-media-srv-main-softdev-projects-public-KI-agentdag/e9edbdde-e018-407d-9788-6984c8f4e804/scratchpad/e1_model_scores_SEALED.md`
+  (sha256 `f98e2250...0743d294`), because a file of model scores in that directory is one mislabel
+  away from being read later as the human control. That path dies with the scratchpad; the scores
+  themselves are reproduced in `OPEN-WORK.md` 25.
 
 ## Still open, untouched - one line each, detail in OPEN-WORK.md
 
-- Rank 15 USER: adopt or steer Claude Code's agent teams? Evidence in; the decision is the user's.
-- Rank 25 USER: score checkpoint C1, the six-pair control packet.
-- Rank 30 USER: does P4's resume finding deserve a differentiator row?
-- Rank 36 FOUND: verify the agent-teams row-4 narrowing. Gates rank 15.
+- Rank 25 USER: C1. Its state CHANGED today; read the line before acting on it.
+- Rank 30 USER: does the non-idempotent-resume finding earn a differentiator row, and in whose words.
 - Rank 38 FOUND: the unattended-safety chain, five composing defects.
 - Rank 40 FOUND: build component 5's judge op and the completion ladder.
 - Rank 50 FOUND: 167 unframed memory bodies.
 - Rank 55 FOUND: nothing bounds an unattended run.
-- Rank 60 FOUND: decide the degenerate-dispatch rule.
+- Rank 58 FOUND: a judgement has a durable slot in the record and neither producer nor consumer.
+- Rank 60 FOUND: the degenerate-dispatch rule.
 - Rank 65 FOUND: three scheduler defects that make `--parallel` mean less than it says.
+- Rank 68 FOUND: a refuted claim's obituary living in a doc and nowhere else.
 - Rank 70 FOUND: the ragged-table check's placement in `repo-gate`.
 - Rank 75 FOUND: no P4 arm kills the supervisor or reboots the machine.
 - Rank 77 FOUND: an unattended run cannot be watched, listed or costed.
@@ -94,60 +85,51 @@ falsified; `79ca93b` folded in the agent-teams read plus the decision-review act
 
 ## The exact next action
 
-**`OPEN-WORK.md` rank 36, verify the agent-teams row-4 narrowing** - about ten minutes, and it goes
-before the two USER items above it deliberately. Rank 15 is the top-ranked open item and its whole
-trade rests on this claim; putting an unverified finding to the user as the basis for a scope
-decision is the failure this repo has recorded twice. Rank 25 does not depend on it and stays
-available if the user would rather spend the ten minutes there.
+**`OPEN-WORK.md` rank 25, and it is a question to the USER, not work to start.** It is the
+top-ranked open item and it is blocked on them, which per this backlog's own rule is a reason to go
+and ask rather than to skip it.
 
-**This ordering is contested and the user may simply reverse it.** Putting 36 first overrides this
-backlog's own first rule - a USER item outranks every FOUND item, and no count changes that - on a
-GATING argument. The same argument put 36 above 38. There is precedent (rank 35 was reranked that
-way on 2026-09-01), but the user had just declined an importance axis in favour of honest sizing,
-and this is that axis under another name. If the ordering is wrong, the fix is one edit and the
-next action becomes rank 15 or 25.
+Ask which of three C1 becomes, and do not begin any FOUND item until it is answered, because (b)
+and (c) change whether rank 40's judge op is worth building at all:
 
-In the 2.1.258 binary, confirm three things. Extract printable byte-runs with a Python regex over
-the raw bytes and prove the method on a control first; `strings` lands in the atom table and finds
-the token without the code.
+    (a) a DIFFERENT human scores the packet cold and C1 runs as designed;
+    (b) C1 is recorded NOT-RUN, and the panel's other 24 verdicts stay unvalidated - which is
+        exactly the state C2's already-collected arms are parked in;
+    (c) the checkpoint is redefined around the zero-variance observation, a weaker claim than
+        the one it was built to make.
 
-1. Inside `TaskUpdate.call`, the `TaskCompleted` hooks run BEFORE the status assignment and a block
-   returns `success:false`. **If this is wrong, row 4 does not narrow and rank 15's trade changes.**
-2. The teammate turn-end dispatch fires per in-progress task the teammate owns.
-3. `exitTwoMeansMissingScript` downgrades exit-2 to non-blocking for `TaskCompleted`, which is the
-   fail-open half that keeps row 4 alive in narrowed form.
-
-Then push the two commits and watch CI.
+The evidence that makes this live: the sealed key's own falsifier says the panel scored arm A at
+exactly 2.00 six times with ZERO VARIANCE across six unrelated tasks. A model read of the same six
+gave 2,2,3,2,2,3, the two 3s for a nameable property two flat-scored graphs lack. That indicts the
+panel's discrimination but CANNOT fire the falsifier, which is written about a human's scores.
 
 ## Files that matter
 
-    OPEN-WORK.md                                          read before this file
-    PLANS/build-plan-high.md                              the differentiator table, its new `eliminated against`
-                                                          column, the agent-teams block, risks 6 to 8
-    PLANS/build-plan-mid.md                               D2's scope line; the unattended-safety chain with
-                                                          per-row provenance
-    docs/safety-and-sandbox.md                            section 7, rewritten to what is true
-    docs/execution-model.md                               section 8, split from-Python vs from-a-plan
-    src/agentdag/adapters/kernel/executor_claude.py:345   the false "non-default" docstring, backlog 38
+    OPEN-WORK.md                                          read before this file; rank 25 changed today
+    PLANS/build-plan-high.md                              differentiator table; agent-teams block with
+                                                          byte offsets; risks 6, 7, 8 (order restored)
+    PLANS/build-plan-mid.md                               D2's gap paragraph, now answered and closed
+    docs/why-agentdag.md                                  section 2: both halves of the inversion now
+                                                          provenance-marked; line 98 is backlog 68
+    docs/architecture-overview.md                         section 3 now says the sentence describes the
+                                                          mechanism rather than arguing for it
+    RESEARCH/workflow/probes/e1_control_packet.md         the six pairs; key beside it, now OPENED
+    src/agentdag/adapters/kernel/executor_claude.py:345   false "non-default" docstring, backlog 38
     src/agentdag/adapters/config/defaultconfig.d/60-kernel.toml:102-104
-                                                          the unfireable-backstop comment, backlog 38
+                                                          unfireable-backstop comment, backlog 38
     src/agentdag/application/kernel/context.py:562        the budget fail-open, backlog 55
-    EXECUTION-USER-REVIEW.md                              symlink into the private repo; this session's
-                                                          decisions are the newest entry
+    src/agentdag/application/kernel/execute.py:26         "every entry runs in ctx.cwd", backlog 65
 
 ## How to verify this still stands
 
-    git status --porcelain && git log --oneline @{u}..HEAD   # clean; two commits unpushed
-    grep -c '^- \[ \]' OPEN-WORK.md                          # 16 open
-    .venv/bin/python -m pytest tests/ -q                     # no src/ change this session
-    .venv/bin/python -c "from agentdag.composition.kernel import build_op_registry; \
-      print(sorted(build_op_registry().names()))"
-    # ['approve', 'gate:make-test', 'plan', 'reduce:count', 'scan', 'work'] - the set docs/execution-model
-    # section 8 now splits from the Coordinator primitives
+    git status --porcelain                     # only the foreign CLAUDE.md.bak entry
+    grep -c '^- \[ \]' OPEN-WORK.md            # 16 open
+    .venv/bin/python -m pytest tests/ -q       # no src/ change this session
+    grep -c 'skills/toolbox/tools' PLANS/ -r   # 0; the jigs ship in bitranox:compuse-toolbox >= 5.301.0
 
-`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here - verified 2026-09-02 with
-`git ls-files --error-unmatch`, so an overwritten handover is recoverable from git.
-`EXECUTION-USER-REVIEW.md` is a SYMLINK into the private research repo and is gitignored here.
+`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here, so an overwritten handover is recoverable
+from git. `EXECUTION-USER-REVIEW.md` is a SYMLINK into the private research repo and is gitignored
+here; this session's decisions are its newest entry.
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not delete
 it - if this session ends badly it is the only record of where things stood.
