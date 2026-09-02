@@ -552,10 +552,14 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    back to `pending` with a notification, a recovery path this list never mentioned. The inboxes are
    one JSON file per agent under `<team>/inboxes/`, atomically written under a per-file lock with
    retries and per-entry schema validation (byte 180,525,900); also UNDERSTATED. But `claude daemon`
-   does NOT survive a reboot in 2.1.258: the launchctl/systemd install path exists in the binary and
-   is gated off, and the help this build renders says service install is disabled in this version
-   and the daemon runs on demand and exits when the last client disconnects. So it does not outlive
-   the last client, let alone a reboot. That REINFORCES the fifth item below rather than weakening
+   did NOT survive a reboot as observed here: the launchctl/systemd install path exists in the binary
+   and its `install` case is guarded by a FEATURE FLAG, `L("tengu_amber_anchor", false)`, which
+   defaults off and is off on this machine, so the help this build renders says service install is
+   disabled in this version and the daemon runs on demand and exits when the last client
+   disconnects. Stated precisely, because the distinction decides how durable the finding is: the
+   capability is flag-gated rather than absent, so an account with the flag ON would have it, and
+   this is one machine's observation plus the default, not a property of 2.1.258. As it stands the
+   daemon does not outlive the last client, let alone a reboot. That REINFORCES the fifth item below rather than weakening
    it - the daemon that might have owned unattended continuation is the one that is not there. Five things it would still own: anything unattended past the session
    boundary, because nothing outside a live session reads a task file or an inbox, so the wake-up is
    the coordinator's; a human answer that outlives the process; side-effect discipline, which does
