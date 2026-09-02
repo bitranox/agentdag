@@ -5411,7 +5411,7 @@ this same plan say otherwise:
   twenty naming a different worktree, ACCEPTED). Enforcing `spec.isolation` as dispatch placement
   here would stand up a SECOND mechanism competing with the one that probe validated.
 
-Re-checked at ground truth 2026-08-30: `uv run ~/.claude/skills/toolbox/tools/enforced.py isolation
+Re-checked at ground truth 2026-08-30: `uv run <bitranox:compuse-toolbox base>/scripts/enforced.py isolation
 --root src/` still exits 1 (declared at `models.py:260`, in the journal key, read by nothing).
 Design section 3.3's scheduler has no placement step, and section 10's cwd row is the isolation
 SCAN (`context.py:262`), a different mechanism.
