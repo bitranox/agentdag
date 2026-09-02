@@ -75,7 +75,13 @@ from ...domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcom
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
 from .credential_probe import NoCredentialProbe
-from .hooks_claude import deny_bash_commands, deny_outside_write_set, inject_stop_notice
+from .hooks_claude import (
+    deny_bash_commands,
+    deny_every_bash_command,
+    deny_outside_write_set,
+    deny_reads_outside,
+    inject_stop_notice,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -1160,9 +1166,7 @@ class ClaudeExecutor:
                             deny_outside_write_set(request.isolation_root, allowed=allowed_writes(request))
                         ),
                     ),
-                    HookMatcher(
-                        matcher="Bash", hooks=_as_sdk_hooks(deny_bash_commands(request.deny_bash or self.deny_bash))
-                    ),
+                    *self._read_confinement(request),
                     # The third hook is not a guard: it decides nothing and blocks nothing,
                     # it puts the stop notice in front of the model once armed. Matched
                     # broadly so the notice reaches a node whatever tool it reaches for.
@@ -1175,6 +1179,46 @@ class ClaudeExecutor:
                 ]
             },
             env=env,
+        )
+
+    def _read_confinement(self, request: ExecutorRequest) -> tuple[HookMatcher, ...]:
+        """Return the Bash and read matchers for this request, confined or not.
+
+        Two shapes, and which one applies is decided by ``request.read_roots`` alone:
+
+        * ``None`` - reads are unconfined and Bash is filtered by the denylist, which is
+          what every node had before confinement existed and what a work node still needs.
+        * a tuple - reads are allowlisted to those roots, and Bash is denied OUTRIGHT
+          rather than filtered. That pairing is not belt-and-braces: what a shell command
+          reads cannot be decided from its text, so leaving Bash on the denylist would
+          leave the allowlist meaning nothing. The first real ``plan-goal`` run made every
+          one of its excursions through Bash and never touched a path-carrying read tool.
+
+        Args:
+            request: The dispatch to build matchers for.
+
+        Returns:
+            The matchers to splice into ``PreToolUse``.
+        """
+        if request.read_roots is None:
+            return (
+                HookMatcher(
+                    matcher="Bash", hooks=_as_sdk_hooks(deny_bash_commands(request.deny_bash or self.deny_bash))
+                ),
+            )
+        return (
+            HookMatcher(
+                matcher="Bash",
+                hooks=_as_sdk_hooks(
+                    deny_every_bash_command(
+                        "this node's reads are confined to its own directory and working directory, "
+                        "and a shell command's reads cannot be checked against that, so Bash is refused. "
+                        "Everything you need is in your prompt and your brief; write your output file "
+                        "with Write, and read your own directory with Read, Grep or Glob."
+                    )
+                ),
+            ),
+            HookMatcher(matcher="Read|Grep|Glob", hooks=_as_sdk_hooks(deny_reads_outside(request.read_roots))),
         )
 
     def _outcome_for(

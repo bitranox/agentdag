@@ -40,7 +40,9 @@ from agentdag.adapters.kernel.executor_claude import (
 from agentdag.adapters.kernel.hooks_claude import (
     HookCallback,
     deny_bash_commands,
+    deny_every_bash_command,
     deny_outside_write_set,
+    deny_reads_outside,
     inject_stop_notice,
 )
 from agentdag.application.kernel.ports import ExecutorRequest
@@ -48,7 +50,7 @@ from agentdag.domain.handover import HANDOVER_FILENAME
 from agentdag.domain.kernel_errors import KernelError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
 
 def decision(result: dict[str, Any]) -> str | None:
@@ -68,6 +70,20 @@ async def _await_hook(hook: HookCallback, tool_name: str, tool_input: dict[str, 
 def fire(hook: HookCallback, tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """Run one hook call the way the SDK would, and return its permission decision."""
     return decision(asyncio.run(_await_hook(hook, tool_name, tool_input)))
+
+
+def _only_hook(matchers: Sequence[HookMatcher], matcher: str) -> HookCallback:
+    """Return the single hook wired to ``matcher``, so a test can fire it.
+
+    Selecting by matcher string and requiring exactly one keeps the assertion about what
+    a matcher DOES: a test that indexed positionally would keep passing if two matchers
+    swapped, which is the mistake worth catching here.
+    """
+    found = [m for m in matchers if m.matcher == matcher]
+    assert len(found) == 1, f"expected one {matcher!r} matcher, got {len(found)}"
+    hooks = found[0].hooks
+    assert len(hooks) == 1, f"expected one hook on {matcher!r}, got {len(hooks)}"
+    return cast("HookCallback", hooks[0])
 
 
 def _request(tmp_path: Path, **overrides: Any) -> ExecutorRequest:
@@ -1579,3 +1595,88 @@ def test_stopped_by_subtree_is_typed_so_a_re_plan_may_branch_on_it(
     outcome = asyncio.run(executor.run(_request(tmp_path, handover_at_tokens=None, is_stopping=lambda: True)))
 
     assert "stopped_by_subtree" in outcome.typed_fields
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink_to needs elevated privileges on Windows")
+def test_read_hook_denies_a_target_outside_every_root_after_realpath(tmp_path: Path) -> None:
+    """The bound the first real plan-goal run went without.
+
+    Both routes out are closed the same way a literal outside path is, because the
+    comparison happens after realpath: a symlink planted inside a root, and a `..` segment.
+    """
+    node_dir = tmp_path / "run" / "nodes" / "p_root"
+    cwd = tmp_path / "run" / "wt" / "root"
+    node_dir.mkdir(parents=True)
+    cwd.mkdir(parents=True)
+    (cwd / "out").symlink_to(tmp_path)  # the symlink route out
+    hook = deny_reads_outside((node_dir, cwd))
+
+    assert fire(hook, "Read", {"file_path": str(cwd / "a.py")}) is None
+    assert fire(hook, "Read", {"file_path": str(node_dir / "brief.md")}) is None
+    assert fire(hook, "Read", {"file_path": str(tmp_path / "elsewhere.txt")}) == "deny"
+    assert fire(hook, "Read", {"file_path": "/etc/passwd"}) == "deny"
+    assert fire(hook, "Read", {"file_path": str(cwd / "out" / "x")}) == "deny"
+    assert fire(hook, "Grep", {"path": str(cwd / ".." / ".." / "..")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_read_hook_decides_the_absent_path_per_tool_rather_than_uniformly(tmp_path: Path) -> None:
+    """The absent case is two different answers, and guessing one for both is wrong.
+
+    `Grep` and `Glob` take an OPTIONAL path that means the dispatch cwd, which is a root by
+    construction, so absence there is a legitimate in-bounds call. `Read` has no such
+    default, so an input carrying no path is a shape the hook cannot classify and it fails
+    closed - the same reading `deny_outside_write_set` gives a write with no path.
+    """
+    cwd = tmp_path / "wt"
+    cwd.mkdir()
+    hook = deny_reads_outside((cwd,))
+
+    assert fire(hook, "Grep", {"pattern": "x"}) is None
+    assert fire(hook, "Glob", {"pattern": "**/*.py"}) is None
+    assert fire(hook, "Read", {}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_read_hook_with_no_roots_denies_every_read(tmp_path: Path) -> None:
+    """Empty means confined to nothing, never unconfined - the failure direction that matters."""
+    hook = deny_reads_outside(())
+
+    assert fire(hook, "Read", {"file_path": str(tmp_path / "anything")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_confined_bash_is_refused_whatever_the_command_says() -> None:
+    """A denylist cannot bound a read set, so a confined node gets no shell at all."""
+    hook = deny_every_bash_command("everything you need is in your prompt")
+
+    assert fire(hook, "Bash", {"command": "ls"}) == "deny"
+    assert fire(hook, "Bash", {"command": "grep -r x /"}) == "deny"
+    assert fire(hook, "Bash", {"command": ""}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_read_roots_switches_the_bash_matcher_from_a_denylist_to_a_refusal(tmp_path: Path) -> None:
+    """The pairing is the point: confinement that left Bash filtered would confine nothing.
+
+    Asserts on what the matchers DO, not on how many there are - a count passes against a
+    matcher wired to the wrong hook.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=("git push",))
+    unconfined = executor._read_confinement(_request(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    confined = executor._read_confinement(  # pyright: ignore[reportPrivateUsage]
+        _request(tmp_path, read_roots=(tmp_path / "run" / "nodes" / "n1",))
+    )
+
+    bash_unconfined = _only_hook(unconfined, "Bash")
+    assert fire(bash_unconfined, "Bash", {"command": "git push"}) == "deny"
+    assert fire(bash_unconfined, "Bash", {"command": "ls"}) is None
+    assert not [m for m in unconfined if m.matcher == "Read|Grep|Glob"]
+
+    bash_confined = _only_hook(confined, "Bash")
+    assert fire(bash_confined, "Bash", {"command": "ls"}) == "deny"
+    reads = _only_hook(confined, "Read|Grep|Glob")
+    assert fire(reads, "Read", {"file_path": "/etc/passwd"}) == "deny"

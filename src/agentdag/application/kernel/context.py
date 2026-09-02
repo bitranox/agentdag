@@ -316,7 +316,16 @@ class Coordinator:
     ) -> ResultRecord:
         """Dispatch a planner node and surface the ``plan.json`` it wrote, if it wrote one.
 
-        Identical to :meth:`work` in every respect except one: after the executor returns,
+        It differs from :meth:`work` in exactly two respects. The second is that a planner
+        node's reads are CONFINED to its own node directory and ``cwd``
+        (``confine_reads=True``), which also refuses it Bash. A planner receives its whole
+        input in its prompt and its brief and produces one file, so it has no business
+        outside those two directories - and the first real ``plan-goal`` run, 2026-09-02,
+        measured what happens without the bound: it read an unrelated project's scratch
+        files and then ran ``find /`` over the machine. A work node is NOT confined, because
+        working on a real tree is what it is for.
+
+        The first is that after the executor returns,
         this reads the node's own artefact dir for :data:`~agentdag.domain.plan.PLAN_FILENAME`
         and adds its run-relative path to ``artefact_refs``. That read is the whole reason the
         primitive exists. ``node_dir`` is created by the dispatcher and never leaves
@@ -342,7 +351,7 @@ class Coordinator:
             The planner node's record, carrying the plan's path when there is one.
         """
         dispatched, input_obj, body = self._executor_call(
-            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping
+            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping, confine_reads=True
         )
         return await self._dispatch(
             dispatched, brief=brief, input_obj=input_obj, body=self._also_surfacing_the_plan(body)
@@ -366,7 +375,14 @@ class Coordinator:
         return surfacing
 
     def _executor_call(
-        self, spec: NodeSpec, *, brief: str, cwd: Path, prompt: str, is_stopping: Callable[[], bool] | None = None
+        self,
+        spec: NodeSpec,
+        *,
+        brief: str,
+        cwd: Path,
+        prompt: str,
+        is_stopping: Callable[[], bool] | None = None,
+        confine_reads: bool = False,
     ) -> tuple[NodeSpec, dict[str, Any], Body]:
         """Resolve the row and build the dispatched spec, the input object and the body.
 
@@ -380,6 +396,11 @@ class Coordinator:
             brief: The node's brief; its content hash is part of the journal key.
             cwd: The working directory the executor runs in.
             prompt: What the executor is told to do with the brief.
+            confine_reads: Whether this node may only read inside its own node directory
+                and ``cwd``. False for a node that has to work on a real tree; true for a
+                node whose whole input arrives in its prompt, where an unconfined read is
+                only ever an excursion. The roots are built inside the body because
+                ``node_dir`` does not exist until then.
 
         Returns:
             The spec as dispatched (row and executor written back), the input object, and
@@ -437,6 +458,7 @@ class Coordinator:
                 isolation_root=self.run_dir.root,
                 write_set=tuple(spec.write_set),
                 deny_bash=self.policy.deny_bash,
+                read_roots=(node_dir, cwd) if confine_reads else None,
                 token_cap=node_cap,
                 deadline_s=node_deadline_s,
                 handover_at_tokens=row.handover_at_tokens,

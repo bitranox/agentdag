@@ -364,6 +364,16 @@ class ExecutorRequest:
     isolation_root: Path
     write_set: tuple[str, ...]
     deny_bash: tuple[str, ...]
+    read_roots: tuple[Path, ...] | None = None
+    """The directories this node may READ inside, or ``None`` to leave reads unconfined.
+
+    ``None`` and an empty tuple are different answers and both are reachable: ``None`` is
+    "this call site does not confine reads", the behaviour every node had before this field
+    existed, while ``()`` is "confined to nothing", which denies every read. A caller that
+    means to confine a node passes the directories it may see, and an executor that
+    supports confinement must also refuse the tools whose reads it cannot attribute - a
+    shell command's read set is not decidable from its text."""
+
     token_cap: int | None = None
     """This node's own token cap for its resolved row (``NodeSpec.budget.tokens[row]``),
     or ``None`` when the node declares no cap for this row - nothing for the executor to

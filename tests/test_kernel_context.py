@@ -909,3 +909,28 @@ def test_plan_node_surfaces_no_ref_when_the_node_wrote_no_plan(tmp_path: Path) -
     record = asyncio.run(coordinator.plan_node(work_spec(), brief="plan it", cwd=run_dir.worktree("a")))
 
     assert not [r for r in record.artefact_refs if r.endswith(PLAN_FILENAME)]
+
+
+@pytest.mark.os_agnostic
+def test_plan_node_confines_reads_while_work_leaves_them_open(tmp_path: Path) -> None:
+    """The two primitives must differ here, and neither answer is right for both.
+
+    A planner receives its whole input in its prompt and writes one file, so a read outside
+    its own two directories is only ever an excursion - measured on the first real
+    plan-goal run, which read another project's scratch files and then ran `find /`. A work
+    node is the opposite case: operating on a real tree is what it is for, so confining it
+    would break the primitive rather than guard it.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+    cwd = run_dir.worktree("a")
+
+    asyncio.run(coordinator.plan_node(work_spec(), brief="plan it", cwd=cwd))
+    asyncio.run(coordinator.work(work_spec().model_copy(update={"node_id": "w2"}), brief="do it", cwd=cwd))
+
+    planner_request, work_request = executor.requests
+    assert planner_request.read_roots is not None
+    assert cwd in planner_request.read_roots
+    assert planner_request.node_dir in planner_request.read_roots
+    assert work_request.read_roots is None

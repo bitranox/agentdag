@@ -19,6 +19,7 @@ Reading the request field by field, asking what a SECOND vendor would pass for e
 | `max_turns`                  | its agent loop's turn bound                                     |
 | `write_set`                  | glob strings; enforced by our scan, not by the vendor           |
 | `deny_bash`                  | command patterns to refuse - see below                          |
+| `read_roots`                 | directories the node may read inside, or None - see below       |
 | `token_cap`, `deadline_s`    | counts and seconds, checked at its own turn seam                |
 | `handover_at_tokens`         | a context-window size in tokens - see below                     |
 | `is_stopping`                | a plain zero-argument predicate - see below                     |
@@ -27,6 +28,17 @@ Two fields carry an assumption rather than a neutral value. ``deny_bash`` presum
 agent has a shell tool to deny. That is a bound on the KIND of executor (a tool-using
 agent), not on the vendor, and it is stated here so the next reading starts from it
 rather than rediscovering it.
+
+``read_roots`` (2026-09-02) is a neutral VALUE - directories, naming no tool and no vendor
+concept - and is the same shape as ``write_set`` pointed the other way, so a second vendor
+supplies it as easily. It is less vendor-coupled than ``deny_bash``, which names a shell.
+Its assumption is elsewhere: unlike ``token_cap`` and ``deadline_s``, an adapter that
+ignores it loses CORRECTNESS rather than a convenience, because the field exists to bound
+what a node may see. So the tolerance rule that covers the other optional fields does not
+extend here - an adapter that cannot confine reads must REFUSE a request carrying a
+non-``None`` ``read_roots`` rather than run it unconfined. ``None`` is the honest value for
+such an adapter's callers to pass, and it is what this file's own ``NonSdkExecutor`` is
+handed.
 
 ``handover_at_tokens`` (design 3.8) presumes two things a second vendor might not offer:
 that the adapter can observe its own context size PER TURN while the dispatch is running,
@@ -121,6 +133,7 @@ def _request(tmp_path: Path) -> ExecutorRequest:
         isolation_root=tmp_path,
         write_set=("wt/a/**",),
         deny_bash=("rm -rf /",),
+        read_roots=None,  # this adapter cannot confine reads, so None is its only honest value
         token_cap=1000,
         deadline_s=30.0,
     )
@@ -144,7 +157,11 @@ def test_the_executor_port_is_satisfiable_without_the_claude_sdk(tmp_path: Path)
 
 @pytest.mark.os_agnostic
 def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply() -> None:
-    """Fail when the port grows a field, because that is when the reading must be redone."""
+    """Fail when the port grows a field, because that is when the reading must be redone.
+
+    ``read_roots`` was added 2026-09-02 and its reading is in this module's docstring,
+    beside the others, rather than here - this test is the tripwire, not the record.
+    """
     assert {field.name for field in dataclasses.fields(ExecutorRequest)} == {
         "node_dir",
         "cwd",
@@ -156,6 +173,7 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "isolation_root",
         "write_set",
         "deny_bash",
+        "read_roots",
         "token_cap",
         "deadline_s",
         "handover_at_tokens",

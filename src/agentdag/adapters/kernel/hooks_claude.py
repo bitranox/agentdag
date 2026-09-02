@@ -47,6 +47,11 @@ Contents:
       whose target resolves outside a root, or inside it but outside the node's write set.
     * :func:`deny_bash_commands` - factory: denies a Bash command matching a denylist
       substring.
+    * :func:`deny_reads_outside` - factory: denies a path-carrying READ whose target
+      resolves outside every allowed root.
+    * :func:`deny_every_bash_command` - factory: denies Bash outright, for a node whose
+      reads are confined; a shell command's read set cannot be decided from its text, so
+      an allowlist that left Bash open would not be one.
 """
 
 from __future__ import annotations
@@ -59,7 +64,23 @@ from typing import Any
 from ...domain.handover import stop_notice
 from ...domain.scan import is_covered
 
-__all__ = ["HookCallback", "HookResult", "deny_bash_commands", "deny_outside_write_set", "inject_stop_notice"]
+__all__ = [
+    "HookCallback",
+    "HookResult",
+    "deny_bash_commands",
+    "deny_every_bash_command",
+    "deny_outside_write_set",
+    "deny_reads_outside",
+    "inject_stop_notice",
+]
+
+_PATHLESS_READ_TOOLS = frozenset({"Grep", "Glob"})
+"""Read tools whose path argument is OPTIONAL, defaulting to the node's own cwd.
+
+The absent case is decided here rather than left to fall through: for these two, no path
+means the dispatch cwd, which :func:`deny_reads_outside`'s caller includes among the roots,
+so absence is ALLOWED. For every other matched tool an absent path is a shape this hook
+cannot classify, and it is denied."""
 
 HookResult = dict[str, Any]
 """What a hook returns: ``{}`` to allow, or a ``hookSpecificOutput`` deny payload."""
@@ -161,6 +182,78 @@ def deny_bash_commands(patterns: tuple[str, ...]) -> HookCallback:
             if pattern in command:
                 return _deny(f"command matches denylist pattern {pattern!r}")
         return {}
+
+    return hook
+
+
+def deny_reads_outside(roots: Sequence[Path]) -> HookCallback:
+    """Build a ``PreToolUse`` hook denying a read whose target resolves outside every root.
+
+    Matched (by the caller's ``HookMatcher``) against the path-carrying read tools -
+    ``Read``, ``Grep``, ``Glob``. ``Read`` names its target in ``tool_input["file_path"]``;
+    ``Grep`` and ``Glob`` name an OPTIONAL ``tool_input["path"]`` that defaults to the
+    dispatch cwd. Targets are compared after ``os.path.realpath``, so a symlink out and a
+    ``..`` segment are caught the same way a literal outside path is, exactly as
+    :func:`deny_outside_write_set` treats a write.
+
+    A root is permitted along with everything beneath it: the roots a caller passes are the
+    node's own directory and its working directory, and a node that may read its worktree
+    may read the files in it.
+
+    This exists because the first real ``plan-goal`` run measured what an unconfined node
+    does when the prompt withholds something it needs: it read the run directory, then an
+    unrelated project's scratch files, then ran ``find /`` across the machine. Fixing the
+    prompt removes the MOTIVE, and a motive is not a bound.
+
+    Args:
+        roots: The directories this node may read inside. Empty denies every matched read,
+            which is the same reading :func:`deny_outside_write_set` gives an empty write
+            set: a node confined to nothing may read nothing, never "unconfined".
+
+    Returns:
+        The hook callback, closed over the resolved roots.
+    """
+    permitted = tuple(Path(os.path.realpath(root)) for root in roots)
+
+    async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
+        del tool_use_id, context  # unused: the decision depends only on the tool input
+        tool_input: dict[str, Any] = input_data.get("tool_input") or {}
+        raw = tool_input.get("file_path") or tool_input.get("path")
+        if not raw:
+            if str(input_data.get("tool_name", "")) in _PATHLESS_READ_TOOLS:
+                return {}
+            return _deny("no path in tool input; refusing")
+        target = Path(os.path.realpath(raw))
+        if any(target == root or root in target.parents for root in permitted):
+            return {}
+        allowed = ", ".join(str(root) for root in permitted) or "(nothing)"
+        return _deny(f"{raw} resolves to {target}, outside this node's readable roots: {allowed}")
+
+    return hook
+
+
+def deny_every_bash_command(reason: str) -> HookCallback:
+    """Build a ``PreToolUse`` hook denying Bash outright, whatever the command says.
+
+    Matched (by the caller's ``HookMatcher``) against ``Bash``, and used INSTEAD of
+    :func:`deny_bash_commands` for a node whose reads are confined by
+    :func:`deny_reads_outside`. The two belong together: what a shell command reads cannot
+    be decided from its text, so a read allowlist that left Bash open would allowlist
+    nothing - every excursion the first real ``plan-goal`` run made went through Bash while
+    the path-carrying tools sat unused.
+
+    Args:
+        reason: What the node is told instead, surfaced as the deny reason. It should say
+            where the information it wants actually is, because a node that is refused
+            without being redirected simply tries another route.
+
+    Returns:
+        The hook callback, closed over ``reason``.
+    """
+
+    async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
+        del input_data, tool_use_id, context  # unused: this denies unconditionally
+        return _deny(reason)
 
     return hook
 
