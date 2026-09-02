@@ -35,6 +35,14 @@ rationing something that is nearly free and again for spending freely on the thi
 The human figures are the ordinary ones from general knowledge rather than anything measured here,
 and nothing turns on the exact number. What matters is which way each row runs.
 
+The two sides of the inversion are not equally established, and the difference is worth stating.
+The COST side is measured: the per-node startup on a given model row, and the roughly one-tenth of
+it that a later node on that same row pays. The TALKING side is not. That peers exchanging messages
+would cost more than each reading what it needs is an inference from those figures, not a result
+from running it, and no measurement here has put N talking agents on one task and counted what it
+came to. Read the inversion as the reasoning the design was built on rather than as a finding, and
+treat anything that actually runs that arm as able to move it.
+
 Five constraints do the work in that table. None of them is the one an org chart is designed around.
 
 **A finite context window whose attention degrades before it fills.** This is the constraint that

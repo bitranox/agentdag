@@ -115,7 +115,10 @@ That "nothing else" is stronger than it sounds, and what it costs is section 11.
 ## 3. How information passes between nodes
 
 Not by talking. Nodes never message each other, and there is no shared conversation they all append
-to.
+to. That sentence DESCRIBES the mechanism rather than arguing for it: it is true of agentdag by
+construction, so nothing about running peers differently can contradict it. The argument that this
+is the right mechanism is in [why agentdag exists](why-agentdag.md) section 2, and the half of it
+about what talking costs a model is reasoned rather than measured.
 
 A node returns a typed record: a status from a closed vocabulary, references to artefacts it wrote,
 a small map of key facts, and the names of the fields in that map a caller is allowed to trust. The
