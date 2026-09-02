@@ -1,144 +1,146 @@
-# Handover: agentdag, 2026-09-01 ~22:35. Rank 35 closed by measurement. C1 still unscored.
+# Handover: agentdag, 2026-09-02 ~11:10. Agent teams read at source; row 4 narrows. Two commits unpushed.
 
-> **The `RESEARCH/` paths point into a private companion repo.** These documents were written
-> beside a private research repository and cite it by repo-qualified path for the design
-> documents, probe scripts and measurement notes they were derived from. The `RESEARCH/` prefix
-> names that repo; it is deliberately not a relative path, because no relative path from here
-> resolves to it. These citations do not resolve in a clone of this repo. They are kept rather
-> than stripped because a claim that names its source is evidence of where it came from even when
-> the source is not public, and removing them would leave the assertions here with no provenance
-> at all.
+> **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
+> repo-qualified path for the design documents, probe scripts and measurement notes they were
+> derived from. The `RESEARCH/` prefix names that repo; it is deliberately not a relative path,
+> because no relative path from here resolves to it. These citations do not resolve in a clone of
+> this repo. They are kept rather than stripped because a claim that names its source is evidence
+> of where it came from even when the source is not public.
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where the last session stopped.
 
 ## In flight
 
-Nothing is part-done and nothing of mine is uncommitted. Both repos are level with origin.
+**Two commits are UNPUSHED on `main`:** `ad9212c` and `79ca93b`, both documentation and planning
+only, no `src/` change. The tree is clean. Nothing is part-done.
 
-**Verify HEAD's CI yourself rather than trusting a line here.** A handover cannot state its own
-commit's CI result: writing the line creates the commit the line describes. What IS settled is one
-commit back - `52b5ab6` returned `CI=success CodeQL=success`, exit 0, confirmed twice.
+Pushing needs `make test` first per this repo's policy even though nothing under `src/` moved, and
+that gate MUTATES the working tree (regenerates the Makefile, bumps dependency floors, reformats).
+Expect churn that is not yours and commit it rather than carving it out.
 
-**Another session is still writing in the RESEARCH repo.** `landscape/OPENCLAW-2.0.md` and
-`workflow/design/probes/always-loaded-cost.md` are staged-and-modified there and are NOT ours.
-Commit in that repo BY PATHSPEC only; a bare `git add -A` would ship someone's half-written file
-under your message. Every commit this session did so.
+**Another session may still be writing in the RESEARCH repo.** As of 11:10 it showed
+`OPEN-WORK.md`, `handover.md` and `agentdag-working/EXECUTION-USER-REVIEW.md` modified. The last of
+those is ours (this repo's `EXECUTION-USER-REVIEW.md` is a SYMLINK into that repo, so writing it
+here versions it there). The other two are NOT. Commit in that repo BY PATHSPEC only.
 
 ## Shipped this session
 
-**Rank 35, closed by measurement.** P4's second executor is the worker the supervisor respawns
-after a crash. Arm D (arm B with the respawn waited for as an EVENT, SIGKILLed, and no replacement
-asserted) ran interleaved against arm B, D B D B D B, twice.
+**A six-dimension source-level comparison against Claude Code's Workflow tool and ultracode**, 13
+agents, 3.86M subagent tokens, 905 tool uses. 83 falls-short rows against 38 better rows. The
+finding that matters is not the ratio: four of six adversarial verifiers independently reported
+that the BETTER bucket was probed with weaker instruments, one of them finding a fabricated
+quotation in a better row's evidence. The bucket that justifies the project is the weaker-evidenced
+half. Raw material is in the workflow journal under this session's `subagents/workflows/` directory
+and dies with the session; nothing was written to `RESEARCH/`.
 
-    arm                              counted  duplicated  clean
-    D  respawned worker SIGKILLed       3          0        3
-    B  respawned worker left alive      2          2        0
+**Agent teams read at source** (CLI 2.1.258, byte-run extraction, version-string control at
+176,743,511). It was never an arm in D2 nor in the 2026-08-20 elimination. It moved three
+differentiator rows; the detail is in `PLANS/build-plan-high.md` under the agent-teams block and
+risks 6 to 8.
 
-In RESEARCH: `c475a02` (arm D, the step-shape detector, its S5 controls), `7349851` (the SIGKILL
-route, restart-vs-race in the verdict, the interleaved runner), `edd8e33` (clear the roster between
-runs), `fcfce61` (the note and the uniform-gate tally), `03684ec` + `3d2fd5c` (both corrections
-below). In agentdag: `e46bd59` + `52b5ab6` (backlog).
+**Two commits**, both plan and doc corrections. `ad9212c` corrected three claims measurement
+falsified; `79ca93b` folded in the agent-teams read plus the decision-review actions.
 
-**Four memory facts written** (one updated to recurrence 3, three new) covering the removal-route
-confound, gate asymmetry between arms, the quiescence deadlock, and a self-updating tool.
+**One memory fact:** `feedback-a-caveat-binds-only-inside-the-unit-it-qualifies`.
 
-## Decided, do not reopen
+## Decided this session, with the reason
 
-1. **Arm D removes the respawn by SIGKILL, never `claude stop`** (user, 2026-09-01). Arm A had
-   already measured stop-then-resume as clean, so a graceful stop makes a clean arm D predicted by
-   two mechanisms. The confounded first run is kept unread as
-   `RESEARCH/workflow/probes/probe_bg_session_p1_p4.p4-isolation-graceful-stop.json`.
-2. **A run counts only if the resume carried the leg to an END, and that gate applies to BOTH
-   arms.** Applied to one arm it inverts the result: the sweep's own first tally read arm B as 2 of
-   3 clean by counting legs that wrote one and two steps.
-3. **Three of each arm, interleaved, not blocked** (user, 2026-09-01). A sequential sweep confounds
-   the arm with the wall clock.
-4. **A third worker VOIDS the arm; it is not killed in turn.** A kill-until-quiet loop changes the
-   route again and need never terminate.
-5. **`### Partially ships` exists, and its rule is load-bearing.** A row must name the MECHANISM and
-   the CONDITION; a row that cannot name both belongs in one of the two lists.
-6. **The rank-20 wording was NOT arbitrated.** The user decided on the MEASUREMENT. Do not go back
-   and settle which reading was right.
-7. **The structural leak rules deliberately skip `/home/` and `/Users/`** (user, 2026-09-01). A
-   KNOWN, accepted gap; the option to close it was put and declined. The reason is in
-   `tests/test_repo_publishable.py` itself.
-8. **The plans' Python fences are committed as ruff format leaves them** (user, 2026-09-01).
+1. **The differentiator table gains an `eliminated against` column** (mine). The one-surface caveat
+   had sat in prose above the table since 2026-08-30 and did not bind: six readers with the file
+   open reproduced the error it warns about across 169 rows. A cell in the row is not skippable the
+   way a paragraph is.
+2. **The "one crash test and one real run" figure is WITHDRAWN, not replaced** (mine). No basis for
+   a new number, and that page tiers provenance so a guess cannot be quoted later as a figure.
+3. **Provenance is per row in the safety chain, and four of five links were re-verified here rather
+   than labelled** (user chose tiering; the verification was the cheaper honest option once found).
+4. **The safety chain moved 45 -> 38 by correcting its SIZE, not by adding an importance axis**
+   (user, 2026-09-02). The first filing undersold the boundary decision as a guard fix. Sized
+   honestly it outranks the judge op on the existing origin-then-size rule. The alternative -
+   a third ranking key - was put and declined.
+5. **`docs/` corrections state what IS; the dated correction narrative went into the plans.** Docs
+   describe current code; the plans are where this project records how a claim moved.
 
 ## Decided against, so it is not redone as an oversight
 
-- **The P4 probe was NOT made session-scoped.** It takes `worker_pids_before` from the WHOLE roster
-  and SIGKILLs every pid in it, which is how arms A, B and C were always measured; changing it
-  mid-sweep would have made the new runs incomparable with them. Consequence to respect: while that
-  probe runs, do not start a background Claude session on this machine.
-- **The claim "nothing a caller does prevents the respawn" was retracted, not softened.** Read at
-  source instead: `scheduleRespawn` is capped at 20 attempts with a 10s backoff and is suppressed
-  only when the session already settled on disk or an interactive-lineage session was stopped by an
-  external signal. Neither covers a `--bg` worker killed mid-turn. No caller-facing switch was found
-  by seven guessed tokens NOR by enumerating the settings object, so both documents say "none
-  found", not "none exists".
-- **The judge was NOT started.** Blocked by C1, not by Checkpoint B.
+- **The two `src/` truth fixes were NOT applied** (`executor_claude.py:345`'s "non-default"
+  docstring, `60-kernel.toml:102-104`'s unfireable-backstop comment). They belong with the safety
+  work at backlog 38, and touching `src/` pulls the bmk gate into a documentation commit. Cost
+  accepted: two false statements stay in the tree until 38 is worked. This is the FIRST item of
+  38's `next:` field.
+- **The agent-teams findings were NOT re-verified before committing.** Surfaced by me in the
+  decision review and carried to backlog 36 rather than fixed, because context had reached the
+  handover threshold. Do not read the row-4 narrowing as settled.
+- **Nothing was pushed**, and no `make test` was run.
 
 ## Still open, untouched - one line each, detail in OPEN-WORK.md
 
+- Rank 15 USER: adopt or steer Claude Code's agent teams? Evidence in; the decision is the user's.
 - Rank 25 USER: score checkpoint C1, the six-pair control packet.
-- Rank 30 USER: does P4's resume finding deserve a differentiator row? No longer blocked.
+- Rank 30 USER: does P4's resume finding deserve a differentiator row?
+- Rank 36 FOUND: verify the agent-teams row-4 narrowing. Gates rank 15.
+- Rank 38 FOUND: the unattended-safety chain, five composing defects.
 - Rank 40 FOUND: build component 5's judge op and the completion ladder.
 - Rank 50 FOUND: 167 unframed memory bodies.
+- Rank 55 FOUND: nothing bounds an unattended run.
 - Rank 60 FOUND: decide the degenerate-dispatch rule.
+- Rank 65 FOUND: three scheduler defects that make `--parallel` mean less than it says.
 - Rank 70 FOUND: the ragged-table check's placement in `repo-gate`.
 - Rank 75 FOUND: no P4 arm kills the supervisor or reboots the machine.
+- Rank 77 FOUND: an unattended run cannot be watched, listed or costed.
 - Rank 80 FOUND: 3 of 8 P4 resume runs never reached an END, unexplained.
 - Rank 85 FOUND: the confound jig exists and was not reached for.
+- Rank 87 FOUND: no verb for the edit-and-re-run loop; a config-fix resume is served a stale failure.
 
 ## The exact next action
 
-**`OPEN-WORK.md` rank 25, score checkpoint C1.** Top-ranked, needs the USER, roughly ten minutes,
-no code: score six pairs cold from `RESEARCH/workflow/probes/e1_control_packet.md` - a preference
-per pair, a 1-5 executability score per plan, one line of why - and only then open
-`RESEARCH/workflow/probes/e1_control_key.json`. Agreement on >= 5 of 6, or the panel's other 24
-verdicts are DISCARDED, not caveated.
+**`OPEN-WORK.md` rank 36, verify the agent-teams row-4 narrowing** - about ten minutes, and it goes
+before the two USER items above it deliberately. Rank 15 is the top-ranked open item and its whole
+trade rests on this claim; putting an unverified finding to the user as the basis for a scope
+decision is the failure this repo has recorded twice. Rank 25 does not depend on it and stays
+available if the user would rather spend the ten minutes there.
 
-It gates two things, which is why it outranks the build. C2's arms are collected and deliberately
-record `"judged": false`. And the planning-loop design makes a judge op a REAL model dispatch
-(`judge:<lens>` -> `Coordinator.work`); what keeps that off the decided-by-a-model path is a
-stake-free fresh node, lenses COUNTED BY CODE, and a panel whose trustworthiness is MEASURED - and
-C1 is that measurement, cited by name. Building rank 40 first builds against an unvalidated
-instrument.
+In the 2.1.258 binary, confirm three things. Extract printable byte-runs with a Python regex over
+the raw bytes and prove the method on a control first; `strings` lands in the atom table and finds
+the token without the code.
 
-If the user declines C1, rank 30 is now the fallback rather than rank 35: it is a USER decision
-that costs no dispatches, and the mechanism it was waiting on is measured.
+1. Inside `TaskUpdate.call`, the `TaskCompleted` hooks run BEFORE the status assignment and a block
+   returns `success:false`. **If this is wrong, row 4 does not narrow and rank 15's trade changes.**
+2. The teammate turn-end dispatch fires per in-progress task the teammate owns.
+3. `exitTwoMeansMissingScript` downgrades exit-2 to non-blocking for `TaskCompleted`, which is the
+   fail-open half that keeps row 4 alive in narrowed form.
+
+Then push the two commits and watch CI.
 
 ## Files that matter
 
-    OPEN-WORK.md                                                     read before this file
-    tests/test_repo_publishable.py                                   the publication guard, and why it skips /home/
-    .private-markers                                                 gitignored; the guard is inert without it
-    PLANS/build-plan-high.md                                         `### Partially ships`, the new tier
-    PLANS/build-plan-mid.md                                          C1 and C2 in detail; component 5
-    src/agentdag/composition/kernel.py                               the spec left for whoever builds the judge
-    RESEARCH/workflow/probes/e1_control_packet.md                    C1's input
-    RESEARCH/workflow/probes/e1_control_key.json                     the sealed key, opened only after scoring
-    RESEARCH/workflow/design/probes/bg-session-p1-p4.md              the P4 note, arm D folded in
-    RESEARCH/workflow/probes/probe_bg_session_p1_p4.py               the probe; arm D is --stop-respawn-before-resume
-    RESEARCH/workflow/probes/run_p4_interleaved.py                   the D/B sweep
-    RESEARCH/workflow/probes/analyze_p4_interleaved.py               the tally, one gate for both arms
+    OPEN-WORK.md                                          read before this file
+    PLANS/build-plan-high.md                              the differentiator table, its new `eliminated against`
+                                                          column, the agent-teams block, risks 6 to 8
+    PLANS/build-plan-mid.md                               D2's scope line; the unattended-safety chain with
+                                                          per-row provenance
+    docs/safety-and-sandbox.md                            section 7, rewritten to what is true
+    docs/execution-model.md                               section 8, split from-Python vs from-a-plan
+    src/agentdag/adapters/kernel/executor_claude.py:345   the false "non-default" docstring, backlog 38
+    src/agentdag/adapters/config/defaultconfig.d/60-kernel.toml:102-104
+                                                          the unfireable-backstop comment, backlog 38
+    src/agentdag/application/kernel/context.py:562        the budget fail-open, backlog 55
+    EXECUTION-USER-REVIEW.md                              symlink into the private repo; this session's
+                                                          decisions are the newest entry
 
 ## How to verify this still stands
 
-    git status --porcelain && git log -1 --oneline                  # clean; HEAD is the handover commit
-    .venv/bin/python -m pytest tests/ -q                            # expect 1024 passed
-    grep -c '^- \[ \]' OPEN-WORK.md                                 # 9 open
-    uv run RESEARCH/workflow/probes/probe_bg_session_p1_p4.py | \
-      python3 -c 'import json,sys; print(json.load(sys.stdin)["S5_step_shape_controls"]["all_hold"])'
-                                                                    # True; no dispatch, source arms only
-    python3 RESEARCH/workflow/probes/analyze_p4_interleaved.py | \
-      python3 -c 'import json,sys; print(json.load(sys.stdin)["tally"])'
-                                                                    # D 3 counted 0 duplicated, B 2 counted 2 duplicated
+    git status --porcelain && git log --oneline @{u}..HEAD   # clean; two commits unpushed
+    grep -c '^- \[ \]' OPEN-WORK.md                          # 16 open
+    .venv/bin/python -m pytest tests/ -q                     # no src/ change this session
+    .venv/bin/python -c "from agentdag.composition.kernel import build_op_registry; \
+      print(sorted(build_op_registry().names()))"
+    # ['approve', 'gate:make-test', 'plan', 'reduce:count', 'scan', 'work'] - the set docs/execution-model
+    # section 8 now splits from the Coordinator primitives
 
-`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here. `EXECUTION-USER-REVIEW.md` is a SYMLINK
-into the private research repo, so editing it through this path versions it there; it is still
-gitignored here.
+`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here - verified 2026-09-02 with
+`git ls-files --error-unmatch`, so an overwritten handover is recoverable from git.
+`EXECUTION-USER-REVIEW.md` is a SYMLINK into the private research repo and is gitignored here.
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not delete
 it - if this session ends badly it is the only record of where things stood.
