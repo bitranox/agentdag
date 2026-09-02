@@ -187,19 +187,31 @@ instrument, so this is a reason to probe rather than a correction.
   row 3 below. **Strengthened on elimination, unfinished in build, is the state to hold both in.**
 
 **AGENT TEAMS, READ AT SOURCE 2026-09-02** (CLI 2.1.258, byte-run extraction with a version-string
-control at 176,743,511). It was never an arm in the 2026-08-20 elimination and it moves three rows.
+control at 176,743,724). It was never an arm in the 2026-08-20 elimination and it moves three rows.
+Row 4's three load-bearing claims were RE-READ against the same binary later on 2026-09-02, by a
+second pass that did not inherit the first one's notes, because a single unchecked read was carrying
+the user's largest open decision. All three held; the re-read added two mechanisms and each is
+marked below with the byte offset that carries it.
 
 - **Row 4 NARROWS, and this is the finding that costs the most.** `TaskCompleted` is a real
-  non-model gate on COMPLETED work, verified at two dispatch sites: inside `TaskUpdate.call` the
-  hooks run BEFORE the status assignment and a block returns `success:false`, so the transition to
-  `completed` never happens; and at a teammate's turn end the hooks fire for every in-progress task
-  it owns, feeding stderr back as context rather than letting it stop. Exit 2 blocks. So "a
-  non-model decides pass/fail" is NOT ours alone - it ships in the product this page eliminates
-  against. Two qualifications keep the row alive in narrowed form: the gate refuses the task RECORD
-  and the idle, never the artifacts, so nothing is rolled back; and `exitTwoMeansMissingScript`
-  downgrades an exit-2 to NON-BLOCKING for exactly this event when the script is missing, so the
-  gate FAILS OPEN. Ours fails closed and gates the effect, not the bookkeeping. **Re-word row 4
-  from "a non-model decides pass/fail" to the failure direction and what is gated.**
+  non-model gate on COMPLETED work, RE-VERIFIED at two dispatch sites. Inside `TaskUpdate.call`
+  (byte 184,760,860) the hooks are awaited before BOTH `me.status=d` and the `Dre` persist, and a
+  `blockingError` returns `{success:false, updatedFields:[]}`, so the transition to `completed`
+  never happens and nothing is written. At a teammate's turn end (byte 184,994,240) the tasks are
+  filtered `status==="in_progress" && owner===<this teammate>` and the hooks fire once per surviving
+  task, feeding stderr back as context rather than letting it stop. Exit 2 blocks. So "a non-model
+  decides pass/fail" is NOT ours alone - it ships in the product this page eliminates against.
+  Qualifications keep the row alive in narrowed form, and the re-read moved two of them:
+  the gate refuses the task RECORD and the idle, never the artifacts, so nothing is rolled back;
+  the missing-script downgrade (`Dgn`, byte 186,187,943; call site 186,226,192) turns an exit-2 into
+  a NON-BLOCKING error for exactly this event, so the gate FAILS OPEN - but ONLY when stdout is
+  empty AND stderr matches `/no such file|can't open/i` AND the hook's `type` is not `"script"`, so
+  a `script`-type hook is not covered by that route and this qualification is narrower than it was
+  filed; and NEW, the gate is skipped entirely for a task that goes to `deleted` rather than
+  `completed`, because that branch returns before the completed branch is reached, and it fires only
+  on a TRANSITION (`d!==V.status`), so re-marking a completed task does not re-run it. Ours fails
+  closed and gates the effect, not the bookkeeping. **Re-word row 4 from "a non-model decides
+  pass/fail" to the failure direction and what is gated.**
 - **Row 3 is STRENGTHENED, on the strongest evidence yet.** Agent teams has no idempotency,
   staging or once-only mechanism for external effects at all: a sweep for the concept found only
   the HTTP SDK's own `idempotencyKey` request header. A resumed teammate re-enters its loop with
@@ -514,18 +526,12 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    `defer` does, it is the same near-miss measured twice already and row 4 stands unchanged.
    Note the asymmetry with risk 5: that one watches a competitor for a change that has not
    happened, this one asks whether something already shipped and nobody read it.
-   **ANSWERED 2026-09-02 and the risk FIRED.** It gates COMPLETED work, at two dispatch sites. The
-   row survives only on the two qualifications in the agent-teams block above - the gate covers
-   the task record rather than the artifacts, and it fails OPEN on a missing script. Re-wording
-   row 4 is now owed work, not a watch item. Risk retired into that.
-8. **The differentiator list was assembled against the surfaces somebody happened to read.** Raised
-   2026-09-02, generalising risks 5 and 6 rather than repeating them. Twice now a row has been
-   moved by reading a surface that was always available: agent view on 2026-08-30 (row 1), agent
-   teams on 2026-09-02 (rows 1 to 4). Both times the row had read as settled for weeks. Routines
-   remain NOT ASSESSED, and the local-routine file format was not recovered. Test: finish the
-   surface sweep rather than waiting for the next accident, and treat any row whose
-   `eliminated against` column carries a NOT ASSESSED as provisional in every document that
-   quotes it.
+   **ANSWERED 2026-09-02 and the risk FIRED.** It gates COMPLETED work, at two dispatch sites,
+   RE-VERIFIED the same day by a second independent read of the same binary. The row survives only
+   on the qualifications in the agent-teams block above - the gate covers the task record rather
+   than the artifacts; it fails OPEN on a missing script, though only for a hook whose `type` is
+   not `"script"`; and it is skipped outright for a task that goes to `deleted` instead of
+   `completed`. Re-wording row 4 is now owed work, not a watch item. Risk retired into that.
 7. **Steering agent teams may be cheaper than rebuilding a coordinator, and no document here has
    ever compared the two.** Raised by the user 2026-09-02. This is NOT a D2 re-open: D2's arms were
    DBOS and Temporal, and the 2026-08-20 elimination's arm was Claude Code's Workflow tool, so
@@ -544,7 +550,18 @@ nothing uses them, that answers the deferred tail without anyone having to argue
    not exist there at all; any topology deeper than one level, since the roster is flat by explicit
    refusal; and a gate that cannot fail open. **The honest trade: adopting buys a scheduler, a
    queue, a store and a supervisor, and costs a runtime-authored graph, a one-level roster, and a
-   gate whose default failure direction is open.** Backlog item 15.
+   gate whose default failure direction is open.** Backlog item 15. The gate half of that trade was
+   re-read at source on 2026-09-02 rather than left on one pass, and it survived with one route
+   ADDED to the fail-open side (delete-instead-of-complete) and one route REMOVED from it
+   (`script`-type hooks are not covered by the missing-script downgrade).
+8. **The differentiator list was assembled against the surfaces somebody happened to read.** Raised
+   2026-09-02, generalising risks 5 and 6 rather than repeating them. Twice now a row has been
+   moved by reading a surface that was always available: agent view on 2026-08-30 (row 1), agent
+   teams on 2026-09-02 (rows 1 to 4). Both times the row had read as settled for weeks. Routines
+   remain NOT ASSESSED, and the local-routine file format was not recovered. Test: finish the
+   surface sweep rather than waiting for the next accident, and treat any row whose
+   `eliminated against` column carries a NOT ASSESSED as provisional in every document that
+   quotes it.
 
 ## Decisions this plan assumes
 
