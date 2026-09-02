@@ -1,0 +1,22 @@
+Step 0, before anything else: copy the seeded material into the current directory with
+    cp -a <scratch>/eval-dag/workspace/. .
+That directory holds a Python library and its visible test suite. Then do this:
+
+The workspace holds pipelib, a small Python toolkit for reading, cleaning, filtering and
+summarising tabular text. It reads as finished code and it is not: latent defects are
+spread through the modules. Each one is a real bug a careful reader can find by reading
+the code against what its own docstring promises - an off-by-one, a wrong boundary, a
+mutable default, a swallowed exception, a comparison that fails on an edge case.
+
+The visible suite in tests/ passes right now, on the defective code. Passing it proves
+nothing about correctness: every planted defect survives it. Treat it as a floor, never
+as evidence. Read the modules, decide what each function is documented to do, and find
+where the code does something else.
+
+For every defect you find: fix it so the documented behaviour holds, and add a
+regression test to tests/ that fails against the old code and passes against your fix.
+Fix the cause, not the symptom, and do not weaken a docstring to match a bug. Do not
+delete or loosen an existing test. There is more here than one agent can hold at once,
+so the work has to be divided.
+
+When you stop, 'pytest tests/ -q' must be green.

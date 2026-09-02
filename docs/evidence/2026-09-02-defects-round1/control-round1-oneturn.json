@@ -1,0 +1,12 @@
+{
+ "arm": "single_agent",
+ "new_tokens": 100567,
+ "cache_read": 1202720,
+ "output_tokens": 9672,
+ "wall_s": 99.8,
+ "stopped_early": true,
+ "stop_reason": "agent finished",
+ "gate_rc": 0,
+ "gate_tail": "................................................                         [100%]\n48 passed in 0.02s\n",
+ "workspace": "<scratch>/eval-control"
+}

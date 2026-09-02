@@ -1,0 +1,165 @@
+{
+  "goal": "Seed the workspace from <scratch>/eval-dag/workspace/, then audit every pipelib module against its own docstrings, fix each latent defect at its cause, add a regression test per defect that fails on the old code and passes on the fix, never delete/loosen an existing test or weaken a docstring, and leave 'pytest tests/ -q' green.",
+  "deps": [],
+  "entries": [
+    {
+      "spec": {
+        "node_id": "setup",
+        "kind": "work",
+        "deadline_s": 900,
+        "deps": [],
+        "isolation": "none",
+        "tier_role": "mechanical",
+        "write_set": ["."],
+        "knowledge": []
+      },
+      "op": "work",
+      "args": {},
+      "brief": "Step 0 of the task: in the current working directory run exactly\n    cp -a <scratch>/eval-dag/workspace/. .\nThen: (1) run 'pytest tests/ -q' and confirm it is green on the untouched seed (record the pass count); (2) list every Python module under pipelib/ with 'ls pipelib/*.py | sort' and count them; (3) write inventory.md in your node directory containing: the sorted module list with one line per module giving its path, line count and a one-sentence summary of what it does (from its module docstring), the baseline pytest pass count, and the list of files under tests/. Do NOT modify any source or test file. Do not investigate defects - that is later work. Report the module count and baseline pass count in your handover key_facts.",
+      "output_contract": ["inventory.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "setup", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "audit_a",
+        "kind": "work",
+        "deadline_s": 3600,
+        "deps": ["setup"],
+        "isolation": "none",
+        "tier_role": "deep",
+        "write_set": ["pipelib/", "tests/test_regressions_a.py"],
+        "knowledge": ["../setup/inventory.md"]
+      },
+      "op": "work",
+      "args": {},
+      "brief": "You are auditor A of four (A=0, B=1, C=2, D=3) working on pipelib in the current directory (already seeded; do NOT re-copy). Ownership rule, applied identically by every auditor so the split is disjoint: take the output of 'ls pipelib/*.py | sort', EXCLUDING pipelib/__init__.py, number the files from 0, and own every file whose index modulo 4 equals 0. Auditor A additionally owns pipelib/__init__.py. Do not edit any file you do not own; if you spot a defect in a file you do not own, describe it (file, function, line, expected vs actual behaviour) in your findings.md so the integrator can check it was handled.\n\nFor each owned module: read the whole file slowly, function by function. For every function, state what its docstring promises (return value, boundaries, inclusive/exclusive ranges, handling of empty input, None, whitespace, negative numbers, unicode, duplicates, ordering, error cases) and check the code against that promise. The planted defects are the classic kinds: off-by-one in slicing/range/index, wrong boundary comparison (< vs <=), mutable default argument, exception swallowed or too broad, comparison that fails on an edge case (empty string, zero, None, NaN, mixed case, trailing whitespace), wrong operator precedence, wrong variable used, early return that skips part of the input, aliasing a list instead of copying, wrong rounding, and similar. Expect roughly one or more defects per module; keep looking until you have checked every function. The existing tests in tests/ pass on the buggy code and prove nothing.\n\nFor every defect you find: (1) fix the CAUSE in the module so the documented behaviour holds - never change a docstring to match the bug, never special-case a symptom; (2) add a regression test to tests/test_regressions_a.py (create it; this is the ONLY test file you may write) that fails on the old code and passes on your fix - verify this by temporarily reverting the fix (or testing against a copy of the original module) and running the test, then re-applying the fix; name each test test_<module>_<function>_<what> and put a one-line comment stating the defect. Never delete, rename, skip or loosen any existing test. Existing tests must still pass after your fix; if an existing test contradicts a docstring, the docstring wins - report the conflict in findings.md rather than editing the existing test, and make the fix satisfy the docstring.\n\nBefore finishing: run 'pytest tests/ -q' and make sure it is fully green. Write findings.md in your node directory listing every defect you fixed (module, function, defect, fix, regression test name) and any suspected defects in files you do not own. Put the count of defects fixed in key_facts.",
+      "output_contract": ["findings.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "audit_a", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "audit_b",
+        "kind": "work",
+        "deadline_s": 3600,
+        "deps": ["setup"],
+        "isolation": "none",
+        "tier_role": "deep",
+        "write_set": ["pipelib/", "tests/test_regressions_b.py"],
+        "knowledge": ["../setup/inventory.md"]
+      },
+      "op": "work",
+      "args": {},
+      "brief": "You are auditor B of four (A=0, B=1, C=2, D=3) working on pipelib in the current directory (already seeded; do NOT re-copy). Ownership rule, applied identically by every auditor so the split is disjoint: take the output of 'ls pipelib/*.py | sort', EXCLUDING pipelib/__init__.py, number the files from 0, and own every file whose index modulo 4 equals 1. Do not edit any file you do not own; if you spot a defect in a file you do not own, describe it (file, function, line, expected vs actual behaviour) in your findings.md so the integrator can check it was handled.\n\nFor each owned module: read the whole file slowly, function by function. For every function, state what its docstring promises (return value, boundaries, inclusive/exclusive ranges, handling of empty input, None, whitespace, negative numbers, unicode, duplicates, ordering, error cases) and check the code against that promise. The planted defects are the classic kinds: off-by-one in slicing/range/index, wrong boundary comparison (< vs <=), mutable default argument, exception swallowed or too broad, comparison that fails on an edge case (empty string, zero, None, NaN, mixed case, trailing whitespace), wrong operator precedence, wrong variable used, early return that skips part of the input, aliasing a list instead of copying, wrong rounding, and similar. Expect roughly one or more defects per module; keep looking until you have checked every function. The existing tests in tests/ pass on the buggy code and prove nothing.\n\nFor every defect you find: (1) fix the CAUSE in the module so the documented behaviour holds - never change a docstring to match the bug, never special-case a symptom; (2) add a regression test to tests/test_regressions_b.py (create it; this is the ONLY test file you may write) that fails on the old code and passes on your fix - verify this by temporarily reverting the fix (or testing against a copy of the original module) and running the test, then re-applying the fix; name each test test_<module>_<function>_<what> and put a one-line comment stating the defect. Never delete, rename, skip or loosen any existing test. Existing tests must still pass after your fix; if an existing test contradicts a docstring, the docstring wins - report the conflict in findings.md rather than editing the existing test, and make the fix satisfy the docstring.\n\nBefore finishing: run 'pytest tests/ -q' and make sure it is fully green. Write findings.md in your node directory listing every defect you fixed (module, function, defect, fix, regression test name) and any suspected defects in files you do not own. Put the count of defects fixed in key_facts.",
+      "output_contract": ["findings.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "audit_b", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "audit_c",
+        "kind": "work",
+        "deadline_s": 3600,
+        "deps": ["setup"],
+        "isolation": "none",
+        "tier_role": "deep",
+        "write_set": ["pipelib/", "tests/test_regressions_c.py"],
+        "knowledge": ["../setup/inventory.md"]
+      },
+      "op": "work",
+      "args": {},
+      "brief": "You are auditor C of four (A=0, B=1, C=2, D=3) working on pipelib in the current directory (already seeded; do NOT re-copy). Ownership rule, applied identically by every auditor so the split is disjoint: take the output of 'ls pipelib/*.py | sort', EXCLUDING pipelib/__init__.py, number the files from 0, and own every file whose index modulo 4 equals 2. Do not edit any file you do not own; if you spot a defect in a file you do not own, describe it (file, function, line, expected vs actual behaviour) in your findings.md so the integrator can check it was handled.\n\nFor each owned module: read the whole file slowly, function by function. For every function, state what its docstring promises (return value, boundaries, inclusive/exclusive ranges, handling of empty input, None, whitespace, negative numbers, unicode, duplicates, ordering, error cases) and check the code against that promise. The planted defects are the classic kinds: off-by-one in slicing/range/index, wrong boundary comparison (< vs <=), mutable default argument, exception swallowed or too broad, comparison that fails on an edge case (empty string, zero, None, NaN, mixed case, trailing whitespace), wrong operator precedence, wrong variable used, early return that skips part of the input, aliasing a list instead of copying, wrong rounding, and similar. Expect roughly one or more defects per module; keep looking until you have checked every function. The existing tests in tests/ pass on the buggy code and prove nothing.\n\nFor every defect you find: (1) fix the CAUSE in the module so the documented behaviour holds - never change a docstring to match the bug, never special-case a symptom; (2) add a regression test to tests/test_regressions_c.py (create it; this is the ONLY test file you may write) that fails on the old code and passes on your fix - verify this by temporarily reverting the fix (or testing against a copy of the original module) and running the test, then re-applying the fix; name each test test_<module>_<function>_<what> and put a one-line comment stating the defect. Never delete, rename, skip or loosen any existing test. Existing tests must still pass after your fix; if an existing test contradicts a docstring, the docstring wins - report the conflict in findings.md rather than editing the existing test, and make the fix satisfy the docstring.\n\nBefore finishing: run 'pytest tests/ -q' and make sure it is fully green. Write findings.md in your node directory listing every defect you fixed (module, function, defect, fix, regression test name) and any suspected defects in files you do not own. Put the count of defects fixed in key_facts.",
+      "output_contract": ["findings.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "audit_c", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "audit_d",
+        "kind": "work",
+        "deadline_s": 3600,
+        "deps": ["setup"],
+        "isolation": "none",
+        "tier_role": "deep",
+        "write_set": ["pipelib/", "tests/test_regressions_d.py"],
+        "knowledge": ["../setup/inventory.md"]
+      },
+      "op": "work",
+      "args": {},
+      "brief": "You are auditor D of four (A=0, B=1, C=2, D=3) working on pipelib in the current directory (already seeded; do NOT re-copy). Ownership rule, applied identically by every auditor so the split is disjoint: take the output of 'ls pipelib/*.py | sort', EXCLUDING pipelib/__init__.py, number the files from 0, and own every file whose index modulo 4 equals 3. If that leaves you with no file (fewer than four modules), instead do a full read-only second-opinion pass over every module and write your suspected defects to findings.md without editing anything. Otherwise do not edit any file you do not own; if you spot a defect in a file you do not own, describe it (file, function, line, expected vs actual behaviour) in your findings.md so the integrator can check it was handled.\n\nFor each owned module: read the whole file slowly, function by function. For every function, state what its docstring promises (return value, boundaries, inclusive/exclusive ranges, handling of empty input, None, whitespace, negative numbers, unicode, duplicates, ordering, error cases) and check the code against that promise. The planted defects are the classic kinds: off-by-one in slicing/range/index, wrong boundary comparison (< vs <=), mutable default argument, exception swallowed or too broad, comparison that fails on an edge case (empty string, zero, None, NaN, mixed case, trailing whitespace), wrong operator precedence, wrong variable used, early return that skips part of the input, aliasing a list instead of copying, wrong rounding, and similar. Expect roughly one or more defects per module; keep looking until you have checked every function. The existing tests in tests/ pass on the buggy code and prove nothing.\n\nFor every defect you find: (1) fix the CAUSE in the module so the documented behaviour holds - never change a docstring to match the bug, never special-case a symptom; (2) add a regression test to tests/test_regressions_d.py (create it; this is the ONLY test file you may write) that fails on the old code and passes on your fix - verify this by temporarily reverting the fix (or testing against a copy of the original module) and running the test, then re-applying the fix; name each test test_<module>_<function>_<what> and put a one-line comment stating the defect. Never delete, rename, skip or loosen any existing test. Existing tests must still pass after your fix; if an existing test contradicts a docstring, the docstring wins - report the conflict in findings.md rather than editing the existing test, and make the fix satisfy the docstring.\n\nBefore finishing: run 'pytest tests/ -q' and make sure it is fully green. Write findings.md in your node directory listing every defect you fixed (module, function, defect, fix, regression test name) and any suspected defects in files you do not own. Put the count of defects fixed in key_facts.",
+      "output_contract": ["findings.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "audit_d", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "integrate",
+        "kind": "work",
+        "deadline_s": 3600,
+        "deps": ["audit_a", "audit_b", "audit_c", "audit_d"],
+        "isolation": "none",
+        "tier_role": "deep",
+        "write_set": ["pipelib/", "tests/test_regressions_final.py"],
+        "knowledge": ["../setup/inventory.md", "../audit_a/findings.md", "../audit_b/findings.md", "../audit_c/findings.md", "../audit_d/findings.md"]
+      },
+      "op": "work",
+      "args": {},
+      "brief": "You are the integrator. Four auditors have fixed defects in pipelib/ in the current directory and added tests/test_regressions_{a,b,c,d}.py; their findings.md files are in your knowledge. Do the following, in order.\n\n1. Run 'pytest tests/ -q'. If anything fails, diagnose and fix the cause (a fix in one module may have exposed a defect or an assumption in another) - keep every fix aligned with the docstrings.\n\n2. Verify no existing test was deleted or loosened: make a pristine copy of the seed with 'mkdir -p /tmp/pipelib_seed && cp -a <scratch>/eval-dag/workspace/. /tmp/pipelib_seed/' and diff the original tests/ tree against the current one: the only differences allowed are the new test_regressions_*.py files. Revert any change to a pre-existing test file. Also diff pipelib/ against the seed and confirm no docstring was weakened to match a bug (docstring lines should be unchanged or strictly more precise) - revert any weakening and fix the code instead.\n\n3. Verify every regression test really regresses: copy the current tests/test_regressions_*.py into /tmp/pipelib_seed/tests/ and run pytest there against the ORIGINAL code; every new test should fail (or error) there. Any new test that passes against the original code is not a regression test - sharpen it (or its fix) until it fails on the seed and passes on the current tree.\n\n4. Cross-check: for every 'suspected defect in a file I do not own' listed in any findings.md, confirm the owning auditor fixed it; if not, evaluate it against the docstring and, if real, fix it and add a regression test to tests/test_regressions_final.py (the only test file you may create). Then do one final read of every module, focusing on the interactions the per-module split could miss (helpers in one module called with edge-case inputs from another, shared constants, __init__.py re-exports) and on any function whose findings show no defect fixed - the planted bugs are spread across the modules, so a module with zero findings deserves a second, slower look. Fix and test anything you find the same way.\n\n5. Finish with 'pytest tests/ -q' fully green and 'rm -rf /tmp/pipelib_seed'. Write report.md in your node directory: total defects fixed (per module), total regression tests added, confirmation that step 2 and step 3 checks passed, and the final pytest summary line. Put the total defect count and final pass count in key_facts.",
+      "output_contract": ["report.md"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "integrate", "field": "turns"}, "op": ">=", "value": 1}
+        ]
+      }
+    },
+    {
+      "spec": {
+        "node_id": "final_gate",
+        "kind": "gate",
+        "deadline_s": 600,
+        "deps": ["integrate"],
+        "isolation": "none",
+        "tier_role": "mechanical",
+        "write_set": [],
+        "knowledge": []
+      },
+      "op": "gate:make-test",
+      "args": {},
+      "brief": "Run the test suite ('pytest tests/ -q') in the working directory after integration; the run must be fully green, including all tests/test_regressions_*.py files added by the auditors and integrator.",
+      "output_contract": ["rc"],
+      "acceptance": {
+        "all": [
+          {"ref": {"entry": "final_gate", "field": "rc"}, "op": "==", "value": 0}
+        ]
+      }
+    }
+  ],
+  "done_when": {
+    "all": [
+      {"ref": {"entry": "setup", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "audit_a", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "audit_b", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "audit_c", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "audit_d", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "integrate", "field": "turns"}, "op": ">=", "value": 1},
+      {"ref": {"entry": "final_gate", "field": "rc"}, "op": "==", "value": 0}
+    ]
+  },
+  "holds_while": null
+}

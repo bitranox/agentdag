@@ -1,0 +1,13 @@
+{
+ "arm": "single_agent",
+ "new_tokens": 600820,
+ "cache_read": 53448894,
+ "output_tokens": 63815,
+ "wall_s": 768.8,
+ "stopped_early": false,
+ "stop_reason": "token ceiling reached at 600820",
+ "prompts_sent": 36,
+ "gate_rc": 0,
+ "gate_tail": "........................................................................ [ 86%]\n...........                                                              [100%]\n83 passed in 0.07s\n",
+ "workspace": "<scratch>/eval-control"
+}

@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "command": "quality",
+  "data": {
+    "before": {
+      "scores": {
+        "architecture": 6,
+        "type_safety": 6,
+        "testing": 6,
+        "error_handling": 6,
+        "security": 3,
+        "resource_safety": 3,
+        "documentation": 4,
+        "maintainability": 6
+      },
+      "evidence": {
+        "architecture": "pipeline.py declares `class Pipeline: stages: list = []` as a class attribute and `add()` does `self.stages.append(stage)` without ever assigning `self.stages` in `__init__`, so every Pipeline instance shares and mutates the same list.",
+        "type_safety": "records.py's `coerce_row(row, schema, defaults: dict[str, Any] = {})` uses a mutable default argument that the function body then mutates (`defaults[name] = _EMPTY[kind]`), a classic Python typing/aliasing footgun with no mypy or lint config anywhere in the repo to catch it.",
+        "testing": "tests/test_smoke.py exercises real tmp_path files and no mocking (e.g. test_read_csv_returns_one_row_per_line), but only ever constructs one Pipeline at a time and never filters on a negative-number literal, so it misses the shared-state bug in pipeline.py and the negative-literal bug in exprfilter.py.",
+        "error_handling": "readers.py's read_jsonl silently does `except Exception: continue` on a bad JSON line, contradicting its own docstring's 'Raises: ParseError: If a line is not valid JSON'.",
+        "security": "pathutil.py's safe_join, documented as 'the guard in front of every path that came from outside the program', only rejects a fragment when `part == \"..\"` exactly, so a single crafted fragment such as \"../../etc/passwd\" is not caught and can still escape root.",
+        "resource_safety": "readers.py's read_csv and read_jsonl each build the full `rows = [...]` list in memory from the entire file with no streaming or chunk limit, unlike the bounded pipelib.cache.LruCache.",
+        "documentation": "records.py's coerce_row docstring states 'The defaults mapping is never modified' while the very next lines execute `defaults[name] = _EMPTY[kind]`, and the README's claim that filter literals include 'numbers (negative ones included)' is false because exprfilter._parse_literal never recognises a leading '-'.",
+        "maintainability": "the shared `stages: list = []` class attribute in pipeline.py's Pipeline and the mutable default `defaults: dict[str, Any] = {}` in records.py's coerce_row are both surprising-behavior traps in otherwise clean, DRY, well-named modules."
+      },
+      "weighted_total": 5.09
+    },
+    "after": {
+      "scores": {
+        "architecture": 8,
+        "type_safety": 6,
+        "testing": 8,
+        "error_handling": 8,
+        "security": 8,
+        "resource_safety": 4,
+        "documentation": 8,
+        "maintainability": 8
+      },
+      "evidence": {
+        "architecture": "pipelib/pipeline.py composes independent leaf modules (aggregate, chunking, exprfilter, records) into stages via plain callables, keeping dependency direction one-way with no circular imports.",
+        "type_safety": "Full type hints and `from __future__ import annotations` are used throughout (e.g. pipelib/pipeline.py's `Stage = Callable[[Rows], Rows]`), but there is no mypy config or py.typed marker anywhere in the repo, and pipelib/cache.py silently suppresses with `# type: ignore[attr-defined]` twice.",
+        "testing": "tests/test_readers_records_pathutil.py and test_exprfilter_pipeline.py exercise real filesystem I/O via tmp_path and the actual parser/CLI (test_cli_head_prints_rows uses capsys against main()) rather than mocking pipelib internals, and cover adversarial cases like path traversal (test_safe_join_blocks_multi_segment_traversal) and operator precedence.",
+        "error_handling": "pipelib/errors.py defines a single PipelibError root with typed subclasses (ParseError, SchemaError, ExpressionError, PathError, RetryError), and pipelib/cli.py maps any PipelibError to exit code 2 while success returns 0.",
+        "security": "pipelib/pathutil.py's safe_join normalizes and rejects any joined path that escapes root, and pipelib/exprfilter.py implements a hand-written tokenizer/parser instead of eval() for the filter language, avoiding injection.",
+        "resource_safety": "pipelib/readers.py's read_csv and read_jsonl fully materialize `rows: list[dict[str, Any]]` in memory with no chunked/streaming API, so a very large input file has unbounded memory growth.",
+        "documentation": "README.md accurately documents the filter language, schema kinds, and CLI exit codes, and every public function (e.g. pipelib/timeutil.py's parse_timestamp) carries a docstring with Args/Returns/Raises plus a runnable example.",
+        "maintainability": "Modules are small, consistently named, and free of anonymous-tuple heavy APIs except the documented FieldSpec = tuple[str, int, int] alias in pipelib/readers.py, keeping the codebase DRY and readable."
+      },
+      "weighted_total": 7.3
+    },
+    "delta": {
+      "architecture": 2,
+      "type_safety": 0,
+      "testing": 2,
+      "error_handling": 2,
+      "security": 5,
+      "resource_safety": 1,
+      "documentation": 4,
+      "maintainability": 2
+    },
+    "weighted_delta": 2.21,
+    "discriminated": true
+  }
+}
+RC=0

@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "command": "quality",
+  "data": {
+    "before": {
+      "scores": {
+        "architecture": 4,
+        "type_safety": 6,
+        "testing": 5,
+        "error_handling": 5,
+        "security": 3,
+        "resource_safety": 3,
+        "documentation": 3,
+        "maintainability": 6
+      },
+      "evidence": {
+        "architecture": "pipelib/pipeline.py's Pipeline class declares `stages: list = []` as a class attribute instead of assigning it in __init__, so add() mutates one list shared by every Pipeline instance.",
+        "type_safety": "Modules use `from __future__ import annotations` and full hints (e.g. pipelib/records.py coerce_row), but there is no pyproject.toml/mypy config anywhere in the repo, so the `# type: ignore[attr-defined]` suppressions in pipelib/cache.py's memoize are never actually checked.",
+        "testing": "tests/test_smoke.py exercises real files and the real CLI (test_cli_head_prints_rows) but only ever builds a single Pipeline, so it never catches the shared-state bug in pipelib/pipeline.py's Pipeline.stages.",
+        "error_handling": "pipelib/readers.py's read_jsonl does `except Exception: continue` on a bad json.loads, silently dropping the line instead of raising ParseError as its own docstring claims.",
+        "security": "pipelib/pathutil.py's safe_join only rejects a fragment that is exactly '..' or absolute, so a single fragment like 'a/../../etc/passwd' bypasses the check even though the docstring promises 'the returned path is always inside root'.",
+        "resource_safety": "pipelib/readers.py's read_csv and read_jsonl each materialise the entire file as `rows = [...]` in memory with no streaming or chunked variant for large inputs.",
+        "documentation": "pipelib/cache.py's memoize docstring states 'Both the positional and the keyword arguments take part in the cache key' but the code sets `key = args`, dropping **kwargs from the cache key entirely.",
+        "maintainability": "pipelib/cli.py builds output via repeated string concatenation like `\"cannot read \" + str(args.path) + \": \" + str(error)` instead of f-strings, and the Pipeline class-level `stages` list in pipelib/pipeline.py is a latent maintainability trap."
+      },
+      "weighted_total": 4.41
+    },
+    "after": {
+      "scores": {
+        "architecture": 8,
+        "type_safety": 8,
+        "testing": 9,
+        "error_handling": 8,
+        "security": 7,
+        "resource_safety": 4,
+        "documentation": 6,
+        "maintainability": 7
+      },
+      "evidence": {
+        "architecture": "pipelib/pipeline.py composes only from aggregate.py/chunking.py/exprfilter.py/records.py with stages as plain callables (Stage = Callable[[Rows], Rows]), keeping a clean one-directional dependency graph with no cycles back into cli.py or pipeline.py.",
+        "type_safety": "Every module uses `from __future__ import annotations` with full parameter/return annotations (e.g. pipelib/records.py's coerce_row(row: Mapping[str, Any], schema: Mapping[str, str], defaults: Mapping[str, Any] | None = None) -> dict[str, Any]), and the only suppressions are two narrow `# type: ignore[attr-defined]` lines in pipelib/cache.py for attaching cache_clear/cache_size to a wrapped function.",
+        "testing": "tests/test_regressions_a.py through _d.py exercise real files via tmp_path (e.g. test_readers_read_fixed_width_keeps_a_final_line_without_newline) and real CLI invocation via capsys (test_cli_main_returns_2_for_an_unreadable_directory in test_regressions_d.py), with adversarial inputs like negative numbers, path-escape fragments, and mutable-default leakage, and deterministic retry tests via an injected sleep callable rather than mocking pipelib internals.",
+        "error_handling": "pipelib/errors.py defines a single PipelibError root with ParseError/SchemaError/ExpressionError/PathError/RetryError subclasses, and pipelib/cli.py's main() consistently maps (PipelibError, OSError) to exit code 2 and success to 0 across all four subcommands.",
+        "security": "pipelib/pathutil.py's safe_join() normalizes and rejects any joined path that escapes root (raising PathError), but pipelib/cli.py's main() passes args.path straight into read_records() without ever routing it through safe_join, so the guard exists but is not wired into the CLI's own file-reading boundary.",
+        "resource_safety": "read_csv, read_jsonl and read_records in pipelib/readers.py fully materialize `rows = [dict(row) for row in reader]` / `rows.append(value)` into an in-memory list, and Pipeline.run in pipelib/pipeline.py copies the entire input into `current: Rows = [dict(row) for row in rows]` up front, so there is no streaming or chunked path for large inputs anywhere in the read/filter/aggregate pipeline.",
+        "documentation": "README.md tells users to run `pip install -e .` under Install, but the repository ships no pyproject.toml, setup.py, or setup.cfg, so that documented install path cannot work as written.",
+        "maintainability": "pipelib/cli.py builds every message via string concatenation like `\"cannot read \" + str(args.path) + \": \" + str(error)` instead of f-strings used elsewhere in the codebase's docstrings, and pipelib/readers.py's FieldSpec = tuple[str, int, int] is passed around as bare anonymous tuples like (\"name\", 0, 7) rather than a NamedTuple."
+      },
+      "weighted_total": 7.41
+    },
+    "delta": {
+      "architecture": 4,
+      "type_safety": 2,
+      "testing": 4,
+      "error_handling": 3,
+      "security": 4,
+      "resource_safety": 1,
+      "documentation": 3,
+      "maintainability": 1
+    },
+    "weighted_delta": 3.0,
+    "discriminated": true
+  }
+}
+RC=0

@@ -1,0 +1,11 @@
+{
+ "arm": "agentdag",
+ "new_tokens": 613845,
+ "cache_read": 11333091,
+ "output_tokens": 228055,
+ "wall_s": 1717.4,
+ "stop_reason": "token ceiling reached at 613845",
+ "stopped_early": false,
+ "run_dir": "<scratch>/eval-runs-dag/20260902T212738Z-d2b79e",
+ "workspace": "<scratch>/eval-runs-dag/20260902T212738Z-d2b79e/wt/root"
+}
