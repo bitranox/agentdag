@@ -60,6 +60,20 @@ def new_tokens(run_dir: Path) -> tuple[int, int, int]:
 
 
 def main() -> int:
+    # POSIX only, and stated as a refusal rather than left to fail at the kill. The ceiling is
+    # enforced by signalling the coordinator's whole PROCESS GROUP - it spawns node subprocesses,
+    # and terminating only the parent would leave those running past the ceiling this script
+    # exists to hold. `os.killpg` and `signal.SIGKILL` do not exist on Windows and there is no
+    # drop-in equivalent (it needs CREATE_NEW_PROCESS_GROUP plus CTRL_BREAK), so a port is real
+    # work rather than a shim. The early exit also narrows the platform for the type checker,
+    # which is what CI's Windows cell reads.
+    if sys.platform == "win32":  # pragma: no cover - refused before anything is spawned
+        print(  # noqa: T201 - the refusal must reach whoever ran this
+            "eval_run_agentdag.py is POSIX-only: it holds the ceiling by signalling the "
+            "coordinator's process group, which Windows has no equivalent for.",
+            file=sys.stderr,
+        )
+        return 2
     goal_file, runs_dir, ceiling_s, deadline_s, log_path = sys.argv[1:6]
     ceiling, deadline = int(ceiling_s), float(deadline_s)
     goal = Path(goal_file).read_text(encoding="utf-8")
