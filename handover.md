@@ -61,9 +61,15 @@ coordinator survived - verified with `procsig.py --cmdline 'run start plan-goal'
     git status --porcelain          # only the foreign CLAUDE.md.bak entry
     git log --oneline @{u}..HEAD    # empty, once this handover's own commit is pushed
 
-CI is GREEN on `5317023`, `b43cecd` and `beab496`, each read from its own watcher log. `285a456`
-was pushed with a watch armed and had not reported when this was written; check it with
-`ci_wait.py --sha $(git rev-parse HEAD)`.
+CI is GREEN on `5317023`, `b43cecd` and `beab496`, each read from its own watcher log.
+
+**`285a456` and `bd7a4d5` went RED and `8b02ff6` is the fix.** Cause worth knowing before you add
+any script here: this repo's CI type-checks against the WINDOWS platform, and a local `pyright`
+run defaults to Linux, so `os.killpg` and `signal.SIGKILL` passed every local check and failed
+every windows-latest cell. Before pushing a new script, run
+`pyright --pythonplatform Windows --pythonpath .venv/bin/python` - a plain local pyright cannot see
+this class of error at all. `8b02ff6` had a watch armed and had not reported when this was
+written; check it with `ci_wait.py --sha $(git rev-parse HEAD)`.
 
 ## Shipped this session
 
@@ -78,6 +84,7 @@ was pushed with a watch armed and had not reported when this was written; check 
 - `b43cecd` restored the row ceilings' cost shape, which my rescale had flattened.
 - `beab496` `parallel` 2 to 8, plus the `spec` pre-registration.
 - `285a456` the two eval runners, tracked so a round outlives a session.
+- `bd7a4d5` this handover; `8b02ff6` the Windows fix both of those needed.
 
 ## The two findings that outlive any round
 
@@ -124,6 +131,9 @@ untouched seed as 4.41 and 5.09 across two runs, six times the gap between the a
   had not checked the size claim before building it. The agentswarm cases replaced it entirely.
 - I flattened the policy row ceilings unasked; restored in `b43cecd`.
 - I reported a gate green before reading its RC, twice, and the log said `RC=2` both times.
+- I reported the two eval runners clean on local lint and pyright, and CI was red on three Windows
+  cells. Local pyright defaults to the host platform; the Windows-only attributes were invisible to
+  it. Two commits went out red before the cause was found.
 
 ## How to verify this still stands
 
