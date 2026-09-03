@@ -1,0 +1,13 @@
+{
+ "arm": "single_agent",
+ "new_tokens": 760578,
+ "cache_read": 121063968,
+ "output_tokens": 200826,
+ "wall_s": 2637.2,
+ "stopped_early": false,
+ "stop_reason": "wall-clock deadline reached",
+ "prompts_sent": 10,
+ "gate_rc": 0,
+ "gate_tail": "................................ [ 49%]\n........................................................................ [ 74%]\n........................................................................ [ 98%]\n...                                                                      [100%]\n291 passed in 0.36s\n",
+ "workspace": "<RUNS>/ws-single"
+}

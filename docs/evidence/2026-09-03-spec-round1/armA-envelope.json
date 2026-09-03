@@ -1,0 +1,11 @@
+{
+ "arm": "agentdag",
+ "new_tokens": 213380,
+ "cache_read": 3931391,
+ "output_tokens": 99698,
+ "wall_s": 835.5,
+ "stop_reason": "coordinator exited on its own",
+ "stopped_early": true,
+ "run_dir": "<RUNS>/runs-dag/20260903T101410Z-b0ba12",
+ "workspace": "<RUNS>/runs-dag/20260903T101410Z-b0ba12/wt/root"
+}

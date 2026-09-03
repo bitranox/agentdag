@@ -753,9 +753,7 @@ def _launch_ready(
     return None
 
 
-def _ready(
-    pending: Mapping[str, Entry], records: Mapping[str, ResultRecord], entry_ids: frozenset[str]
-) -> list[Entry]:
+def _ready(pending: Mapping[str, Entry], records: Mapping[str, ResultRecord], entry_ids: frozenset[str]) -> list[Entry]:
     """Return the pending entries whose deps have all landed, in plan order.
 
     A dep naming something that is NOT an entry of this plan is already satisfied: the

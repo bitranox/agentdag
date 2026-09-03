@@ -1,0 +1,16 @@
+{
+ "README.md": "67de0fe16bced29b9833ab9153bcca0c98f517034374eac7076281d336d30945",
+ "SPEC.md": "a11940d678abf5080d5df1dda85aa43312ff6f479396d1c26fe47493c096af12",
+ "conftest.py": "acb970aa52d2617943d31361f7982fbe404542acc0b68c02ef31e6758c3dc2b1",
+ "tabula/__init__.py": "d39f14d9aed18d3c88e89d87e574e673e59d5d9bb7adcd65e21cfe81fddb0088",
+ "tabula/aggregate.py": "e0491c770bd4994026ac3629c07ab7542b04ad75cca298990ea901be3c1d89d4",
+ "tabula/core.py": "49521d7ff7f6706b34a993532f37e3fe1892ae41e1c8a96aaa8815cc106bb092",
+ "tabula/dtypes.py": "981472f4f8e26f1f36ddb16b92b2cb89c359b51f9160e90411d850d137c51cd6",
+ "tabula/errors.py": "79fd701243787a56ac8003f570c6553cc478a5f7936688fc1d8649a6d8bb5073",
+ "tabula/io.py": "1a62a94275bbc2ffe867f4bce996d6f0b68d1c7e699faa1d8b2635f8e3be64ac",
+ "tabula/join.py": "86af499aee0088bac811338bee5285cb2335bb4fcc4086d92085dcde81e740dd",
+ "tabula/query.py": "a9a00c772c773817f19a51e7285f6b514a6a72bebcc1c91fda9cc49571cfdc4d",
+ "tabula/render.py": "3d9c0f25ad63c60b529c1c7dabc848b654d0d1c8661db6eb381e5169e6a6a62a",
+ "tabula/selection.py": "b15903b51cb006acd4248fe4c9e8daf03228e75a33dcc30cf8857f0d0c27f6e5",
+ "tests/test_contract.py": "f9a5935bd9cfaecf7f74b6afdfc720af3e484c7f4595f22d3f51d6ba528093cd"
+}
