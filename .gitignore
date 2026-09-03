@@ -184,6 +184,11 @@ uv.lock
 # .devcontainer/ # needed for github codespaces
 .claude/
 CLAUDE.md
+# An editor or a script backing up the line above produces a name the line above does not
+# match, so the copy escapes the rule its source obeys and lands in `git status` as a new
+# file. One reached the INDEX and sat there across sessions.
+CLAUDE.md.bak
+CLAUDE.md.orig
 prompts.md
 .grimp_cache/
 
