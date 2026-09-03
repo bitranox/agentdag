@@ -1,4 +1,15 @@
-# Handover: agentdag, 2026-09-03 ~11:35. The `spec` round is set up and NOT yet run.
+# STALE - read 2026-09-03 ~12:10, work continued. The `spec` round RAN and round 1 is VOID.
+
+> Everything below describes where the 11:35 session stopped and is kept because it is the
+> only record of that. It is no longer current in one respect that matters: its "next action"
+> has been done. The round ran, arm A CRASHED on a readiness defect since fixed in `c446771`,
+> the sonnet control SATURATED the case at 81/81, and round 1 is VOID for three reasons. The
+> living records are `OPEN-WORK.md` rank 04, `docs/probes/2026-09-03-spec-round1.md` below its
+> divider, and the round 2 pre-registration at `docs/probes/2026-09-03-spec-round2.md`.
+>
+> Its Windows-pyright warning still stands and is worth keeping: this repo's CI type-checks
+> against the WINDOWS platform and a local `pyright` run defaults to Linux, so run
+> `pyright --pythonplatform Windows --pythonpath .venv/bin/python` before pushing a new script.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
 > repo-qualified path for the design documents, probe scripts and measurement notes they were
