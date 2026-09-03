@@ -539,6 +539,7 @@ def wire(
     executors: Mapping[str, Executor] | None = None,
     policy: OneRowPolicy | None = None,
     gate_port: GatePort | None = None,
+    parallel: int = 2,
 ) -> Coordinator:
     """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
 
@@ -546,6 +547,10 @@ def wire(
     to); a test that must exercise a misconfigured coordinator passes its own, e.g. an
     empty mapping to prove the resolved executor is not wired. ``policy`` defaults to
     ``OneRowPolicy()``; a budget-cap test passes ``LowCeilingPolicy()`` instead.
+
+    ``parallel`` defaults to 2, the smallest bound that lets two entries overlap at all. An arm
+    about what a THIRD free slot does has to raise it: at 2 a third dispatch queues behind a
+    landing, which hides the ordering under test.
     """
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     return Coordinator(
@@ -562,7 +567,7 @@ def wire(
         policy=OneRowPolicy() if policy is None else policy,
         registry=build_op_registry(),
         sandbox=NoSandbox(),
-        parallel=2,
+        parallel=parallel,
     )
 
 

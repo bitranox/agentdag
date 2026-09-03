@@ -702,6 +702,9 @@ class _Progress:
     def __init__(self, *, pending: dict[str, Entry], graph: dict[str, NodeSpec]) -> None:
         """Start with every entry pending and nothing landed."""
         self.pending = pending
+        # Taken ONCE, before anything launches: `pending` is what readiness would otherwise be
+        # asked, and it shrinks as entries start, so it cannot answer "is this dep mine?".
+        self.entry_ids = frozenset(pending)
         self.graph = graph
         self.records: dict[str, ResultRecord] = {}
         self.refused: list[SubPlanRefused] = []
@@ -737,7 +740,7 @@ def _launch_ready(
     Returned rather than raised so the caller can still wait out the nodes already in flight:
     raising here would abandon real dispatches with no record of them.
     """
-    for entry in _ready(run.pending, run.records):
+    for entry in _ready(run.pending, run.records, run.entry_ids):
         try:
             wiring.spent.spend(limit=wiring.limits.max_nodes_per_run)
         except RunNodeBudgetExceededError as exc:
@@ -750,7 +753,9 @@ def _launch_ready(
     return None
 
 
-def _ready(pending: Mapping[str, Entry], records: Mapping[str, ResultRecord]) -> list[Entry]:
+def _ready(
+    pending: Mapping[str, Entry], records: Mapping[str, ResultRecord], entry_ids: frozenset[str]
+) -> list[Entry]:
     """Return the pending entries whose deps have all landed, in plan order.
 
     A dep naming something that is NOT an entry of this plan is already satisfied: the
@@ -758,8 +763,15 @@ def _ready(pending: Mapping[str, Entry], records: Mapping[str, ResultRecord]) ->
     (:func:`~agentdag.application.kernel.plan_validate.validate_plan`'s dep rule), and an
     admitted node is terminal before this plan started. Waiting for one would deadlock the
     plan on a record this loop is never going to produce.
+
+    ``entry_ids`` is that test and NOT ``pending``, which is the whole point of the parameter:
+    ``pending`` SHRINKS as entries launch, so an entry that is merely IN FLIGHT is absent from
+    it and reads exactly like an outside dep. A dependent launched on that reading reaches the
+    dispatcher before its dep has a record, which is refused with a ``KernelError`` that fails
+    the run - measured on a real 12-node plan that died after 3. The plan's entry set is fixed
+    for the pass, so it separates "not mine" from "mine, not landed yet".
     """
-    return [e for e in pending.values() if all(dep not in pending or dep in records for dep in e.spec.deps)]
+    return [e for e in pending.values() if all(dep not in entry_ids or dep in records for dep in e.spec.deps)]
 
 
 async def _await_next(in_flight: dict[asyncio.Task[_Landed], Entry]) -> list[_Landed | BaseException]:

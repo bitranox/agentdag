@@ -230,11 +230,12 @@ def run_plan(
     depth: int = 0,
     spent: NodeBudget | None = None,
     ids: NodeIds | None = None,
+    parallel: int = 2,
 ) -> Executed:
     """Execute ``plan`` against a real coordinator over a fresh run directory."""
     run_dir = fresh_run_dir(tmp_path)
     chosen = RecordingExecutor(outcome({"sonnet": 10})) if executor is None else executor
-    coordinator = wire(run_dir, chosen, FakeScanner(), gate_port=gate_port)  # type: ignore[arg-type]
+    coordinator = wire(run_dir, chosen, FakeScanner(), gate_port=gate_port, parallel=parallel)  # type: ignore[arg-type]
     ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
     return asyncio.run(
         execute_plan(
@@ -272,6 +273,70 @@ def test_an_entry_waits_for_its_deps_and_then_runs(tmp_path: Path) -> None:
     assert executor.entered == ["a", "b"]
     assert executor.events == ["enter a", "exit a", "enter b", "exit b"]
     assert set(out.records) == {"a", "b"}
+
+
+class HeldOpenExecutor:
+    """``b`` stays in flight until a LATER node releases it, so one dep lands while it runs.
+
+    The hold is released by another node's dispatch - an EVENT the run itself produces - and
+    never by one sleep outlasting another: a wall-clock race is decided by the machine, and this
+    precondition (one dep landed, its sibling still running) has to hold wherever the suite runs.
+    """
+
+    def __init__(self) -> None:
+        """Start with an empty trace and ``b`` held."""
+        self.events: list[str] = []
+        self.release_b = asyncio.Event()
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Trace the dispatch, holding ``b`` open until ``d`` runs."""
+        node_id = request.node_dir.parent.name
+        self.events.append(f"enter {node_id}")
+        if node_id == "b":
+            await self.release_b.wait()
+        self.events.append(f"exit {node_id}")
+        if node_id == "d":
+            self.release_b.set()
+        return outcome({"sonnet": 10})
+
+    @property
+    def entered(self) -> list[str]:
+        """The node ids in the order they were dispatched."""
+        return [e.removeprefix("enter ") for e in self.events if e.startswith("enter ")]
+
+
+@pytest.mark.os_agnostic
+def test_an_entry_waits_for_a_dep_that_is_in_flight_not_merely_out_of_pending(tmp_path: Path) -> None:
+    """``c`` depends on two entries, and one of them is still running when the other lands.
+
+    Readiness asked whether a dep was still PENDING, and an entry leaves ``pending`` the moment
+    it is LAUNCHED - so a dep that was in flight read as satisfied, ``c`` was dispatched before
+    ``b`` had a record, and the dispatcher refused it with a ``KernelError`` that failed the whole
+    run. This is the shape a planner produces for any decomposition that re-joins, and a real
+    12-node plan died here after 3 nodes.
+
+    ``d`` is what makes the window observable rather than timed: it becomes ready when ``a``
+    lands, so its dispatch PROVES the loop had a launch opportunity while ``b`` was still open.
+    """
+    executor = HeldOpenExecutor()
+    plan = plan_with(
+        [
+            entry(node_id="a"),
+            entry(node_id="b"),
+            entry(node_id="c", deps=["a", "b"]),
+            entry(node_id="d", deps=["a"]),
+        ]
+    )
+    # parallel=4: the defect is MASKED at 2, where `c` queues on the semaphore behind `b` and
+    # picks up its record on the way through. It surfaces once a slot is free for a further
+    # dispatch - which is what raising the shipped default from 2 to 8 did.
+    out = run_plan(tmp_path, plan, executor=executor, parallel=4)
+    assert executor.events.index("enter d") < executor.events.index("exit b"), (
+        "precondition: the loop launched while `b` was still in flight"
+    )
+    assert "enter c" in executor.events, "`c` was refused before it reached the executor"
+    assert executor.events.index("exit b") < executor.events.index("enter c")
+    assert set(out.records) == {"a", "b", "c", "d"}
 
 
 @pytest.mark.os_agnostic
