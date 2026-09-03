@@ -155,3 +155,19 @@ def test_the_scorer_refuses_a_workspace_that_is_not_there(tmp_path: Path) -> Non
 
     with pytest.raises(ec.ScoringError, match="no such workspace"):
         scorer(tmp_path / "never-created")
+
+
+def test_the_scorer_inherits_the_environment_when_no_pythonpath_is_pinned() -> None:
+    """None means inherit, so the default path stays exactly what it was."""
+    assert ec.CaseScorer(python=Path("/x"), case="spec").child_env() is None
+
+
+def test_a_pinned_pythonpath_is_merged_into_the_environment_not_swapped_for_it() -> None:
+    """A bare dict drops everything else the interpreter needs; on Windows that kills the child
+    with empty output, which a caller reads as a program that has no options rather than a dead
+    one."""
+    env = ec.CaseScorer(python=Path("/x"), case="spec", pythonpath=Path("/pinned/src")).child_env()
+
+    assert env is not None
+    assert env["PYTHONPATH"] == "/pinned/src"
+    assert env.get("PATH") == os.environ.get("PATH")

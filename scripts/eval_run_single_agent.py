@@ -52,6 +52,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--gate", required=True, help="the case's visible gate, run once at the end")
     ap.add_argument("--case", required=True, help="the agentswarm case whose hidden suite scores this")
     ap.add_argument("--agentswarm-python", type=Path, required=True)
+    ap.add_argument(
+        "--scorer-pythonpath",
+        type=Path,
+        default=None,
+        help="source tree the scorer imports from; pin it so nothing moves it mid-arm",
+    )
     ap.add_argument("--max-score", type=int, required=True)
     ap.add_argument("--arm", default="single_agent", help="the arm's name, recorded in the envelope")
     return ap.parse_args(argv)
@@ -126,7 +132,11 @@ async def main(argv: list[str] | None = None) -> int:
     workspace = Path(str(args.workspace))
     started = time.monotonic()
     checkpoints = CheckpointRun(
-        scorer=CaseScorer(python=Path(str(args.agentswarm_python)), case=str(args.case)),
+        scorer=CaseScorer(
+            python=Path(str(args.agentswarm_python)),
+            case=str(args.case),
+            pythonpath=args.scorer_pythonpath,
+        ),
         workspace=workspace,
         max_score=int(args.max_score),
         started=started,

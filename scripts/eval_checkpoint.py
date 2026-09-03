@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -165,11 +166,30 @@ def snapshot(workspace: Path, dest: Path) -> Path:
 
 @dataclass(frozen=True)
 class CaseScorer:
-    """Scores a workspace by invoking agentswarm's `cases` entry point under its interpreter."""
+    """Scores a workspace by invoking agentswarm's `cases` entry point under its interpreter.
+
+    `pythonpath` exists so a round can pin the scorer to a source tree and an interpreter that
+    nothing else maintains. The obvious choice - the case repo's own checkout and venv - is
+    maintained by whoever is working in it: a gate there re-syncs that venv under a running arm,
+    and an arm costs an hour. A checkpoint that fails is recorded rather than fatal, so the
+    damage would not be a crash but a MISSED crossing, which moves the very number being
+    measured.
+    """
 
     python: Path
     case: str
+    pythonpath: Path | None = None
     timeout_s: float = SCORE_TIMEOUT_S
+
+    def child_env(self) -> dict[str, str] | None:
+        """The child's environment, or None to inherit this process's.
+
+        Built by merging rather than replacing: a bare dict drops everything the interpreter
+        needs, and on Windows the lost SystemRoot kills the child outright with empty output.
+        """
+        if self.pythonpath is None:
+            return None
+        return {**os.environ, "PYTHONPATH": str(self.pythonpath)}
 
     def __call__(self, workspace: Path) -> Reading:
         """Score one workspace.
@@ -188,6 +208,7 @@ class CaseScorer:
                 errors="replace",
                 timeout=self.timeout_s,
                 check=False,
+                env=self.child_env(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ScoringError(f"scoring {workspace} did not run: {exc}") from exc

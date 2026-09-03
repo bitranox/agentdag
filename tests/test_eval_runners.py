@@ -9,6 +9,7 @@ visible as a number that looks plausible.
 from __future__ import annotations
 
 import json
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def args_for(tmp_path: Path, *, ceiling: int = 1_000_000, deadline: float = 3600
         deadline=deadline,
         case="spec",
         agentswarm_python=Path("/nonexistent/python"),
+        scorer_pythonpath=None,
         max_score=81,
         policy=None,
         arm="agentdag",
@@ -128,9 +130,18 @@ def test_the_token_ceiling_stops_the_arm(tmp_path: Path) -> None:
 
 
 def test_the_deadline_stops_the_arm(tmp_path: Path) -> None:
+    """The arm's start is moved into the past rather than racing the clock to zero.
+
+    A deadline of 0.0 asks whether `monotonic() - started > 0.0`, which is FALSE when both reads
+    land in the same clock tick. Windows' monotonic clock is about 15.6 ms coarse, so this passed
+    on Linux and macOS and failed the windows-latest Python 3.12 cell - a test defect wearing a
+    platform bug's clothes.
+    """
     run_dir = fake_run(tmp_path, results=1)
-    arm = rad.Arm(args_for(tmp_path, deadline=0.0))
+    arm = rad.Arm(args_for(tmp_path, deadline=60.0))
     arm.scorer = ScoreOf(10)  # type: ignore[assignment]
+    arm.started -= 600.0
+    assert time.monotonic() - arm.started > 60.0, "the precondition did not hold; the arm is not overdue"
 
     assert arm.stop_reason(run_dir) == "wall-clock deadline reached"
 

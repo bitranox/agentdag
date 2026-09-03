@@ -106,6 +106,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--deadline", type=float, required=True, help="wall-clock ceiling in seconds")
     ap.add_argument("--case", required=True, help="the agentswarm case whose hidden suite scores this")
     ap.add_argument("--agentswarm-python", type=Path, required=True)
+    ap.add_argument(
+        "--scorer-pythonpath",
+        type=Path,
+        default=None,
+        help="source tree the scorer imports from; pin it so nothing moves it mid-arm",
+    )
     ap.add_argument("--max-score", type=int, required=True)
     ap.add_argument("--policy", type=Path, default=None, help="an alternate tier policy for this arm")
     ap.add_argument("--arm", default="agentdag", help="the arm's name, recorded in the envelope")
@@ -137,7 +143,11 @@ class Arm:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.runs = Path(str(args.runs))
-        self.scorer = CaseScorer(python=Path(str(args.agentswarm_python)), case=str(args.case))
+        self.scorer = CaseScorer(
+            python=Path(str(args.agentswarm_python)),
+            case=str(args.case),
+            pythonpath=args.scorer_pythonpath,
+        )
         self.checkpoints: CheckpointRun | None = None
         self.landed = 0
         self.started = time.monotonic()
