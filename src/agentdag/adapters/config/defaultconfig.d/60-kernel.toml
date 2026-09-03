@@ -84,12 +84,31 @@ notify = "none"
 # .env: KERNEL__PARALLEL=2
 parallel = 2
 
+# Purpose: the per-node token budget applied when a node's own spec declares none
+# Type: integer
+# Default: 300000
+# Environment Variable: AGENTDAG___KERNEL__DEFAULT_NODE_TOKENS=300000
+# .env: KERNEL__DEFAULT_NODE_TOKENS=300000
+# In the unit `charged_tokens` carries since 2026-09-03: input + cache_creation +
+# output, with CACHE READS excluded. NOT the old unit, which counted cache reads and
+# was therefore worth roughly a seventeenth of the same numeral.
+# This is the intended bound on one node's work. Every PLANNER-emitted entry arrives with
+# an empty `budget` (the plan schema does not require one and no shipped rule adds one),
+# so before this existed the whole model-driven path was uncapped per node and only the
+# run-wide row ceiling bound it at all.
+default_node_tokens = 300000
+
 # Purpose: the SDK turn ceiling for one node's dispatch (ClaudeAgentOptions.max_turns)
 # Type: integer
-# Default: 25
-# Environment Variable: AGENTDAG___KERNEL__MAX_TURNS=25
-# .env: KERNEL__MAX_TURNS=25
-max_turns = 25
+# Default: 2000
+# Environment Variable: AGENTDAG___KERNEL__MAX_TURNS=2000
+# .env: KERNEL__MAX_TURNS=2000
+# Deliberately very high: the TOKEN budget is the intended bound on a node, and a turn
+# ceiling is a second, unrelated limit that bites first and for no stated reason. At 25 it
+# was the binding constraint on every real work node measured 2026-09-02 - six of six on
+# one run, two of four on the next - each ending its dispatch mid-task. Turns are not a
+# cost; tokens are, and `budget` is where a node's cost is declared.
+max_turns = 2000
 
 # Purpose: Bash command substrings a node's PreToolUse hook denies outright (design 7)
 # Type: array of strings

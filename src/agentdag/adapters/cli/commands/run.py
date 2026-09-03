@@ -867,6 +867,7 @@ def _build_wiring(
         credential=credential,
         parallel=parallel,
         max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
+        default_node_tokens=_config_int(config, "kernel.default_node_tokens", "default_node_tokens"),
         deny_bash=_config_deny_bash(config),
         notifier=resolve_notifier(ctx),
     )

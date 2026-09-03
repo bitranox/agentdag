@@ -395,7 +395,10 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
     )
     assert o.tokens is not None
     assert o.tokens.in_ == 50 + 3873 + 119786
-    assert o.charged_tokens == {"sonnet": 50 + 3873 + 119786 + 1034}
+    # `tokens.in_` keeps summing all three input fields - that is the CONTEXT figure.
+    # What is CHARGED excludes exactly one of them, the 119,786 cache read, and that single
+    # exclusion is the whole difference between the two numbers.
+    assert o.charged_tokens == {"sonnet": 50 + 3873 + 1034}
     assert o.status == "done"
     bad = outcome_from_usage(
         model="sonnet",
@@ -473,8 +476,9 @@ def _turn_usage(input_tokens: int, *, output_tokens: int = 0, cache_read_input_t
 
     Unlike :func:`_turn` (input-only, for tests that only need :func:`input_total`),
     this is for tests that exercise :meth:`ClaudeExecutor._run`'s running-total sum,
-    which is ``input_total(usage) + output_tokens`` per turn - the same two fields
-    :func:`outcome_from_usage` sums into ``charged_tokens``.
+    which is :func:`new_tokens` per turn - the same figure :func:`outcome_from_usage`
+    charges. ``output_tokens`` and ``cache_read_input_tokens`` are still settable here
+    precisely so a test can prove they are NOT charged.
     """
     usage: dict[str, Any] = {"input_tokens": input_tokens, "output_tokens": output_tokens}
     if cache_read_input_tokens:
@@ -653,25 +657,28 @@ def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_si
 def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The unit-pinning proof: two turns whose own totals (input_total + output_tokens)
-    sum to 120, replayed against a terminal ``ResultMessage.usage`` ALSO totalling 120
-    (mirroring the real SDK - the probe measured the terminal usage is the cumulative
-    session total, not one call's snapshot). At cap=120 the running total lands
+    """The unit-pinning proof: the number the cap compares and the number the record
+    charges must be one figure, in one unit.
+
+    Two turns charging 45 and 65, replayed against a terminal ``ResultMessage.usage``
+    also totalling 110 (mirroring the real SDK, whose terminal usage is the cumulative
+    dispatch total rather than one call's snapshot). At cap=110 the running total lands
     exactly ON the cap and must NOT interrupt (``_on_turn`` uses ``<=``); the dispatch
-    then completes normally and ``outcome.charged_tokens`` - built from the SAME
-    terminal usage by :func:`outcome_from_usage` - reports the identical 120. Drop the
-    cap to 119 (one below the total) and the SAME running total now crosses it,
-    landing ``_budget_outcome`` instead - which reports that SAME 120 too. Either way
-    the number the cap compared and the number the record charged are the same
-    figure: the two are not drifting apart in different units.
+    completes and ``charged_tokens`` reports the identical 110. Drop the cap to 109 and
+    the SAME running total crosses it, landing ``_budget_outcome``, which reports 110 too.
+
+    Both sides carry a cache-read field that must NOT be charged - 10 on the second turn,
+    99,999 on the terminal usage. That asymmetry is deliberate: if either side starts
+    counting cache reads again the two will disagree here by wildly different amounts,
+    rather than drifting together and staying equal while both go wrong.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
     turns = [
         _turn_usage(40, output_tokens=5),  # contributes 45
-        _turn_usage(60, output_tokens=5, cache_read_input_tokens=10),  # contributes 75
-    ]  # running total after both turns: 120
+        _turn_usage(60, output_tokens=5, cache_read_input_tokens=10),  # 65; the 10 cache read is NOT charged
+    ]  # running total after both turns: 110
     terminal = ResultMessage(
         subtype="success",
         duration_ms=1,
@@ -679,23 +686,25 @@ def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
         is_error=False,
         num_turns=2,
         session_id="s1",
-        usage={"input_tokens": 115, "output_tokens": 5},  # same 120 total, terminal-usage shape
+        # The same 110, in terminal-usage shape, with a large cache read alongside to prove
+        # the ONE excluded field never reaches the charge from either side.
+        usage={"input_tokens": 105, "output_tokens": 5, "cache_read_input_tokens": 99_999},
         result="ok",
     )
     monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
 
     FakeStreamClient.configure(turns, terminal)
-    at_cap = asyncio.run(executor.run(_request(tmp_path, token_cap=120)))
-    assert at_cap.status == "done"  # running_total (120) <= cap (120): never interrupted
-    assert at_cap.charged_tokens == {"sonnet": 120}
+    at_cap = asyncio.run(executor.run(_request(tmp_path, token_cap=110)))
+    assert at_cap.status == "done"  # running_total (110) <= cap (110): never interrupted
+    assert at_cap.charged_tokens == {"sonnet": 110}
     assert FakeStreamClient.instances[0].interrupt_calls == 0
 
     FakeStreamClient.configure(turns, terminal)
-    one_under = asyncio.run(executor.run(_request(tmp_path, token_cap=119)))
+    one_under = asyncio.run(executor.run(_request(tmp_path, token_cap=109)))
     assert one_under.status == "failed"
     assert one_under.error is not None
     assert one_under.error.type == "budget_exceeded"
-    assert one_under.charged_tokens == {"sonnet": 120}  # the SAME figure, via the interrupted path
+    assert one_under.charged_tokens == {"sonnet": 110}  # the SAME figure, via the interrupted path
     assert FakeStreamClient.instances[0].interrupt_calls == 1
 
 

@@ -67,7 +67,11 @@ class TestGetConfig:
             "runs_dir": "/var/lib/agentdag/runs",
             "notify": "none",
             "parallel": 2,
-            "max_turns": 25,
+            # max_turns is deliberately very high: a TOKEN budget is the intended bound on a
+            # node and a turn ceiling is an unrelated second limit that bit first. At 25 it
+            # ended six of six real work nodes mid-task on 2026-09-02.
+            "max_turns": 2000,
+            "default_node_tokens": 300000,
             "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],
         }
 

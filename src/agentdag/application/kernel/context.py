@@ -422,7 +422,12 @@ class Coordinator:
             "model": row.alias,
             "effort": spec.effort,
         }
-        node_cap = spec.budget.tokens.get(row.alias)
+        # An absent budget takes the policy's default rather than exempting the node. Every
+        # PLANNER-emitted entry arrives with an empty `budget` - the plan schema does not
+        # require one and no shipped rule adds one - so without this the entire model-driven
+        # path was uncapped per node and only the run-wide row ceiling bound it (OPEN-WORK 55).
+        declared = spec.budget.tokens.get(row.alias)
+        node_cap = self.policy.default_node_tokens if declared is None else declared
         node_deadline_s = min(spec.deadline_s, self.policy.run_limits.deadline_ceiling_s)
 
         async def body(node_dir: Path) -> NodeOutcome:

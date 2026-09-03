@@ -934,3 +934,30 @@ def test_plan_node_confines_reads_while_work_leaves_them_open(tmp_path: Path) ->
     assert cwd in planner_request.read_roots
     assert planner_request.node_dir in planner_request.read_roots
     assert work_request.read_roots is None
+
+
+@pytest.mark.os_agnostic
+def test_a_node_declaring_no_budget_takes_the_policy_default_rather_than_being_exempt(tmp_path: Path) -> None:
+    """Every planner-emitted entry arrives with an empty budget, so the default is what caps it.
+
+    The plan schema does not require a `budget` and no shipped rule adds one, so before this
+    existed the whole model-driven path was uncapped PER NODE and only the run-wide row ceiling
+    bound it - the gap OPEN-WORK 55 names. An absent budget now fails CLOSED onto a real number.
+
+    The control is the second half: a spec that DOES declare a budget keeps its own figure, so
+    the default is a fallback and not an override.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    policy = OneRowPolicy()
+    policy.default_node_tokens = 300_000  # the fake declares None; this run is about the default
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=policy)
+    cwd = run_dir.worktree("a")
+
+    undeclared = work_spec().model_copy(update={"node_id": "w_undeclared", "budget": Budget()})
+    asyncio.run(coordinator.work(undeclared, brief="no budget", cwd=cwd))
+    assert executor.requests[-1].token_cap == 300_000, "an absent budget must take the default"
+
+    declared = work_spec().model_copy(update={"node_id": "w_declared", "budget": Budget(tokens={"sonnet": 7})})
+    asyncio.run(coordinator.work(declared, brief="own budget", cwd=cwd))
+    assert executor.requests[-1].token_cap == 7, "a declared budget is never overridden by the default"

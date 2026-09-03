@@ -33,7 +33,9 @@ if TYPE_CHECKING:
 __all__ = ["LoadedPolicy", "load_policy"]
 
 
-def load_policy(path: Path, *, max_turns: int = 25, deny_bash: Sequence[str] = ()) -> LoadedPolicy:
+def load_policy(
+    path: Path, *, max_turns: int = 25, deny_bash: Sequence[str] = (), default_node_tokens: int | None = None
+) -> LoadedPolicy:
     """Read ``path`` once, content-hash its bytes, and parse it into a loaded policy port.
 
     ``yaml.safe_load`` only - ``yaml.load`` without an explicit ``Loader`` can construct
@@ -60,13 +62,27 @@ def load_policy(path: Path, *, max_turns: int = 25, deny_bash: Sequence[str] = (
     version = "sha256:" + hashlib.sha256(raw).hexdigest()
     data = yaml.safe_load(raw.decode("utf-8"))
     table = PolicyTable.model_validate(data)
-    return LoadedPolicy(table=table, version=version, max_turns=max_turns, deny_bash=tuple(deny_bash))
+    return LoadedPolicy(
+        table=table,
+        version=version,
+        max_turns=max_turns,
+        deny_bash=tuple(deny_bash),
+        default_node_tokens=default_node_tokens,
+    )
 
 
 class LoadedPolicy:
     """The :class:`~agentdag.application.kernel.ports.Policy` port over one loaded policy table."""
 
-    def __init__(self, *, table: PolicyTable, version: str, max_turns: int, deny_bash: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        table: PolicyTable,
+        version: str,
+        max_turns: int,
+        deny_bash: tuple[str, ...],
+        default_node_tokens: int | None = None,
+    ) -> None:
         """Bind a loaded table to the two app-config limits every node dispatch reads.
 
         Args:
@@ -81,6 +97,7 @@ class LoadedPolicy:
         self.max_attempts = table.thresholds.max_attempts
         self.max_continuations = table.thresholds.max_continuations
         self.deny_bash = deny_bash
+        self.default_node_tokens = default_node_tokens
         self.on_auth_failure = table.escalation.on_auth_failure
         self.on_rate_limit = table.escalation.on_rate_limit
         self.run_limits: RunLimits = table.run_limits

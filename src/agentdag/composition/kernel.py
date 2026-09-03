@@ -73,6 +73,7 @@ def wire_kernel(
     max_turns: int,
     deny_bash: Sequence[str],
     notifier: Notifier,
+    default_node_tokens: int | None = None,
 ) -> KernelWiring:
     """Build the production kernel wiring for one CLI invocation of ``agentdag run``.
 
@@ -85,6 +86,9 @@ def wire_kernel(
             reporting that choice is the CLI's job, not the composition root's.
         parallel: How many map branches a launch may run at once.
         max_turns: The SDK turn ceiling every node dispatch runs under.
+        default_node_tokens: The per-node token budget a spec that declares none takes,
+            in NEW tokens; ``None`` leaves such a node uncapped, which is what every
+            planner-emitted node was before this existed.
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
         notifier: Where this launch's run events go - resolved by the CLI, which is
             the layer that has both the loaded config naming the sink and the email
@@ -105,7 +109,7 @@ def wire_kernel(
             credential_probe=ApiCredentialProbe(read_token=credential.bearer_token),
         )
     }
-    policy = load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash)
+    policy = load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash, default_node_tokens=default_node_tokens)
     # Both halves are still CONCRETE here, which is why the check lives at this line rather
     # than over the finished wiring: `KernelWiring.policy` is the narrow `Policy` PORT, and the
     # rows are a property of the loaded table, not of the port. Reaching back through the port

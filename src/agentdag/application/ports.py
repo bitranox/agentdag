@@ -129,6 +129,7 @@ class WireKernel(Protocol):
         credential: CredentialSource,
         parallel: int,
         max_turns: int,
+        default_node_tokens: int | None,
         deny_bash: Sequence[str],
         notifier: Notifier,
     ) -> KernelWiring: ...

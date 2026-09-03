@@ -44,6 +44,9 @@ class OneRowPolicy:
 
     version: str = "sha256:test"
     max_turns: int = 5
+    default_node_tokens: int | None = None
+    """No default cap: these doubles pin what a node's OWN declared budget does,
+    and a default would silently cap every spec that declares none."""
     max_attempts: int = 1
     max_continuations: int = 3
     deny_bash: tuple[str, ...] = ()

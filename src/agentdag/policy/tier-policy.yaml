@@ -220,14 +220,20 @@ thresholds:
 run_limits:
   # the run's token cap per model row: the dispatch that would cross it raises
   # BudgetExceeded (3.4)
+  # NOTE the unit changed 2026-09-03: input + cache_creation + output, the figure
+  # `charged_tokens` now carries. They used to include cache reads, which are 80-98
+  # percent of input on every measured row, so the same numeral was worth roughly a
+  # seventeenth of what it appeared to be. Raised here rather than merely re-scaled: the
+  # intended bound on a run is the operator's own ceiling, and these exist to stop a runaway,
+  # not to size a job.
   tokens_per_row:
-    haiku: 2000000
-    sonnet: 8000000
-    codex: 4000000
-    opus: 3000000
-    fable: 1000000
+    haiku: 20000000
+    sonnet: 20000000
+    codex: 20000000
+    opus: 20000000
+    fable: 20000000
   # the largest deadline_s any node may declare
-  deadline_ceiling_s: 5400
+  deadline_ceiling_s: 86400
   # the highest role each kind may resolve to, after any planner override
   per_kind_ceiling:
     work: deep

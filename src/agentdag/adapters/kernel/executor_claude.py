@@ -100,6 +100,7 @@ __all__ = [
     "CredentialSource",
     "OAuthTokenFile",
     "append_transcript",
+    "charged_total",
     "input_total",
     "outcome_from_usage",
     "separated_refusal",
@@ -458,6 +459,44 @@ nodes on the first `spec`-scale run each ended with this subtype at ``num_turns`
 configured ceiling. The SDK names the same constant in its own error mapping."""
 
 
+def charged_total(usage: Mapping[str, Any]) -> int:
+    """Sum what a budget CHARGES: ``input_tokens + cache_creation_input_tokens + output_tokens``.
+
+    It excludes exactly one field, ``cache_read_input_tokens``, and that exclusion is the point.
+    A cached prefix is re-read on every turn, so charging it makes a limit grow with how LONG a
+    conversation got rather than with how much work was done: measured 2026-09-02 on one real work
+    node, 1,132,340 charged the old way against 66,665 of new context, a factor of 17.0. A ceiling
+    in the old unit therefore bound conversation length, not spend.
+
+    Output IS charged, and that is a deliberate divergence from `agentswarm`'s evaluation protocol,
+    which excludes it. Its reason does not apply here: it reads the streamed ``message_start``
+    usage, which under-reports output by orders of magnitude, while this reads the terminal
+    ``ResultMessage`` usage, which is the cumulative dispatch total and accurate. Output is also
+    the expensive half - the shipped policy prices it at 5x input on every row - so a budget
+    without it under-counts precisely where cost concentrates.
+
+    ``input_total`` remains the right figure for the CONTEXT question - what the model just saw,
+    which decides the handover ceiling (design 3.8) - and is unchanged. The two answer different
+    questions and one piece of arithmetic cannot serve both.
+
+    Args:
+        usage: ``ResultMessage.usage`` or one turn's ``AssistantMessage.usage``.
+
+    Returns:
+        ``input_tokens + cache_creation_input_tokens + output_tokens``.
+
+    Example:
+        >>> charged_total({"input_tokens": 50, "cache_creation_input_tokens": 3873,
+        ...                "cache_read_input_tokens": 119786, "output_tokens": 1034})
+        4957
+    """
+    return (
+        int(usage.get("input_tokens", 0))
+        + int(usage.get("cache_creation_input_tokens", 0))
+        + int(usage.get("output_tokens", 0))
+    )
+
+
 def outcome_from_usage(
     *,
     model: str,
@@ -538,7 +577,7 @@ def outcome_from_usage(
         # it is this outcome's decisive fact and a condition may branch only on a typed key.
         typed_fields=["turns", "turns_exhausted"],
         tokens=tokens,
-        charged_tokens={model: in_tokens + out_tokens},
+        charged_tokens={model: charged_total(usage)},
         executor_used="claude",
         model_used=model,
         effort_used=_NO_VALUE,
@@ -1083,7 +1122,7 @@ class ClaudeExecutor:
                     # request once per block. An event carrying no id cannot be attributed,
                     # so it keeps a key of its own and is counted once, as before.
                     request_key = message.message_id or f"unkeyed-{len(spend_by_request)}"
-                    spend_by_request[request_key] = input_total(usage) + int(usage.get("output_tokens", 0))
+                    spend_by_request[request_key] = charged_total(usage)
                     running_total = sum(spend_by_request.values())
                     if not cap_hit and not deadline_hit:
                         cap_hit = await self._on_turn(running_total, client, request.token_cap)
@@ -1340,7 +1379,7 @@ class ClaudeExecutor:
             # `first_turn_input_tokens`, not something a branch should read.
             typed_fields=["context_at_handover", "grace_expired", "stopped_by_subtree"],
             tokens=tokens,
-            charged_tokens={request.model: in_tokens + out_tokens},
+            charged_tokens={request.model: charged_total(usage)},
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
@@ -1447,7 +1486,7 @@ class ClaudeExecutor:
             key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["cap_hit"],
             tokens=tokens,
-            charged_tokens={request.model: in_tokens + out_tokens},
+            charged_tokens={request.model: charged_total(usage)},
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
@@ -1551,7 +1590,7 @@ class ClaudeExecutor:
             key_facts={"deadline_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["deadline_hit"],
             tokens=tokens,
-            charged_tokens={request.model: in_tokens + out_tokens},
+            charged_tokens={request.model: charged_total(usage)},
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
