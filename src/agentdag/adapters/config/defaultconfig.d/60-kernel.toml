@@ -79,10 +79,18 @@ notify = "none"
 
 # Purpose: how many map branches (or top-level nodes) a run may dispatch at once
 # Type: integer
-# Default: 2
-# Environment Variable: AGENTDAG___KERNEL__PARALLEL=2
-# .env: KERNEL__PARALLEL=2
-parallel = 2
+# Default: 8
+# Environment Variable: AGENTDAG___KERNEL__PARALLEL=8
+# .env: KERNEL__PARALLEL=8
+# At 2 this was the binding constraint on every fan-out a planner produced: measured
+# 2026-09-02, a four-wide independent fan-out ran two at a time, and 2026-09-03 a
+# seven-wide one did the same. The planner decides how wide the work divides; the
+# scheduler should not silently quarter it. Concurrency is bounded by the per-node
+# token budget and the run-wide row ceilings, which is where a bound belongs.
+# NOTE this does not make a GATE node concurrent: Coordinator.gate runs its subprocess
+# synchronously on the event loop, so a gate still blocks every in-flight node for its
+# whole duration (OPEN-WORK 65). Raising this does not fix that and was not meant to.
+parallel = 8
 
 # Purpose: the per-node token budget applied when a node's own spec declares none
 # Type: integer

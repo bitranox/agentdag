@@ -66,7 +66,7 @@ class TestGetConfig:
         assert data["kernel"] == {
             "runs_dir": "/var/lib/agentdag/runs",
             "notify": "none",
-            "parallel": 2,
+            "parallel": 8,
             # max_turns is deliberately very high: a TOKEN budget is the intended bound on a
             # node and a turn ceiling is an unrelated second limit that bit first. At 25 it
             # ended six of six real work nodes mid-task on 2026-09-02.
