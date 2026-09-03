@@ -226,12 +226,16 @@ run_limits:
   # seventeenth of what it appeared to be. Raised here rather than merely re-scaled: the
   # intended bound on a run is the operator's own ceiling, and these exist to stop a runaway,
   # not to size a job.
+  # The ORDERING is deliberate and predates the rescale: a cheap row gets more headroom, a
+  # premium row less, so a runaway on fable is caught sooner than one on haiku. The ratios
+  # are inherited rather than measured - what is established is that they were chosen, not
+  # that they are right - so keep the shape when rescaling and do not flatten it.
   tokens_per_row:
-    haiku: 20000000
+    haiku: 40000000
     sonnet: 20000000
     codex: 20000000
-    opus: 20000000
-    fable: 20000000
+    opus: 8000000
+    fable: 4000000
   # the largest deadline_s any node may declare
   deadline_ceiling_s: 86400
   # the highest role each kind may resolve to, after any planner override
