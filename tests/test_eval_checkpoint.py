@@ -166,8 +166,12 @@ def test_a_pinned_pythonpath_is_merged_into_the_environment_not_swapped_for_it()
     """A bare dict drops everything else the interpreter needs; on Windows that kills the child
     with empty output, which a caller reads as a program that has no options rather than a dead
     one."""
-    env = ec.CaseScorer(python=Path("/x"), case="spec", pythonpath=Path("/pinned/src")).child_env()
+    pinned = Path("/pinned/src")
+    env = ec.CaseScorer(python=Path("/x"), case="spec", pythonpath=pinned).child_env()
 
     assert env is not None
-    assert env["PYTHONPATH"] == "/pinned/src"
+    # Compared through the same Path round trip, not against a literal: str(Path("/pinned/src"))
+    # is a backslash path on Windows, so the literal form asserts the separator rather than the
+    # value and reddens all three Windows cells while passing everywhere else.
+    assert Path(env["PYTHONPATH"]) == pinned
     assert env.get("PATH") == os.environ.get("PATH")
