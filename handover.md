@@ -1,15 +1,4 @@
-# STALE - read 2026-09-03 ~12:10, work continued. The `spec` round RAN and round 1 is VOID.
-
-> Everything below describes where the 11:35 session stopped and is kept because it is the
-> only record of that. It is no longer current in one respect that matters: its "next action"
-> has been done. The round ran, arm A CRASHED on a readiness defect since fixed in `c446771`,
-> the sonnet control SATURATED the case at 81/81, and round 1 is VOID for three reasons. The
-> living records are `OPEN-WORK.md` rank 04, `docs/probes/2026-09-03-spec-round1.md` below its
-> divider, and the round 2 pre-registration at `docs/probes/2026-09-03-spec-round2.md`.
->
-> Its Windows-pyright warning still stands and is worth keeping: this repo's CI type-checks
-> against the WINDOWS platform and a local `pyright` run defaults to Linux, so run
-> `pyright --pythonplatform Windows --pythonpath .venv/bin/python` before pushing a new script.
+# Handover: agentdag, 2026-09-03 ~14:35. Round 1 is VOID and round 2 is pre-registered, not built.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
 > repo-qualified path for the design documents, probe scripts and measurement notes they were
@@ -19,139 +8,100 @@
 > of where it came from even when the source is not public.
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
-where the last session stopped.
+where this session stopped.
 
-## The next action, and the reason this handover exists
+## The next action
 
-**`OPEN-WORK.md` rank 04: run both arms of the `spec` round, score them, write the results under
-the divider in `docs/probes/2026-09-03-spec-round1.md`.**
+**`OPEN-WORK.md` rank 04, and it is the top-ranked open item.** Build the checkpoint scorer the
+round 2 pre-registration requires, prove its discrimination control, then run the three arms.
 
-The pre-registration is written and COMMITTED. **Nothing above its divider may be edited** - a
-counted run has begun under it. Read the six pre-registered bands BEFORE reading any number: two of
-them say the round is mis-calibrated, and the previous round landed in exactly one of those.
+The pre-registration is at `docs/probes/2026-09-03-spec-round2.md` and **nothing above its divider
+may be edited once a counted run begins** - none has begun, so it is still amendable until then.
+It makes the instrument's validity a PRECONDITION, not a nicety:
 
-Everything needed is tracked. Nothing depends on the dead session's scratchpad:
+1. Add a checkpoint score to both runners - `cases.score` after each prompt for the control,
+   after each node lands for the two agentdag arms - recording tokens and elapsed time at the
+   FIRST result reading 81/81, and stopping that arm there.
+2. Before any arm runs, show the checkpoint scorer discriminates: 0/81 on the untouched seed and
+   81/81 on `hidden/reference`. A scorer that cannot tell those apart cannot detect a crossing.
+3. Run P (agentdag pinned to sonnet), S (agentdag as shipped), C (one sonnet agent), sequentially.
 
-    scripts/eval_run_agentdag.py            arm A   (GOAL_FILE RUNS_DIR CEILING DEADLINE_S LOG)
-    scripts/eval_run_single_agent.py        arm B   (TASK_FILE WORKSPACE CEILING DEADLINE_S GATE_CMD)
-    scripts/runsum.py                       read a finished run's phases and per-node cost
-    docs/probes/2026-09-03-spec-round1.md   the pre-registration
-    docs/probes/2026-09-02-defects-round1.md  the previous round, for the reporting form
+Arm P's policy is CONSTRUCTIBLE - verified this session, not assumed. A table with every role on
+the sonnet row and haiku/opus/fable set `available: false` passes
+`_refuse_a_policy_offering_an_unwired_executor` (which keys on the EXECUTOR string, and all four
+Claude rows share the wired `claude` executor) and resolves every tier role to sonnet. The shipped
+table resolves `mechanical->haiku standard->sonnet deep->opus top->fable`.
 
-Setup, in order:
-
-1. Seed from agentswarm at commit `071f36c`: `cases.copy_seed(cases.load("spec"), <dir>)`. Re-prove
-   the floor is 0/81 on THAT copy, not merely in the agentswarm repo.
-2. Build one goal text used by BOTH arms: a step-0 `cp -a <seed>/. .` line, then `case.task`
-   verbatim. `plan-goal` mints its own empty `wt/root` and cannot be handed a pre-seeded directory,
-   so the copy is a deviation applied to both arms rather than to one.
-3. Hold 1,200,000 new tokens and 2400 s on both. Run them SEQUENTIALLY - latency is a scored axis
-   and concurrent arms would share this machine.
-4. Score with `cases.score`. For quality use
-   `quality.py <workspace> --against cases/spec/hidden/reference`. **This differs from the
-   `defects` round on purpose**: `spec`'s seed is stubs, so scoring against it measures the absence
-   of code; the protocol says the control for a stubs case is the reference or another run.
-5. Raw artifacts into `docs/evidence/2026-09-03-spec-round1/`. **Redact before committing** -
-   absolute paths, and the operator's OS username, which agentdag writes into every `run_started`
-   line as `by` (backlog 06). The repo's own `test_no_tracked_file_carries_a_private_name` catches
-   both; it caught both last time and it is the reason the gate went red twice.
-
-Arm A was started and stopped twice, deliberately: once to raise `parallel`, once to hand over
-rather than orphan a run under a ceiling this session was holding. **No results exist.**
+Seed each arm with `cases.copy_seed(cases.load("spec"), <dir>)` from a checkout of `agentswarm`,
+re-prove the floor 0/81 on THAT copy, and **delete the `__pycache__` the floor run leaves inside
+it** - `copy_seed` excludes bytecode on purpose and scoring puts it back, so a seed handed on
+unswept carries stale bytecode into every arm. Put the run root OUTSIDE every git work tree:
+`CredentialCopy` writes a copy of the operator's credentials into every node's home.
 
 ## In flight
 
-**Nothing is part-done.** No half-written file, no background job of mine still running, and no
-coordinator survived - verified with `procsig.py --cmdline 'run start plan-goal'`, not a bare
-`pgrep` (a bare one self-matches; the guard blocked me for exactly that earlier).
+**Nothing is part-done.** No half-written file, no background job of mine still running, no
+coordinator alive. Round 1's arms both terminated and were scored.
 
-**Not mine:** `CLAUDE.md.bak` is still `AD` in the index, from a session before last.
+**Not mine:** `CLAUDE.md.bak` is still `AD` in the index. It is now `OPEN-WORK.md` rank 72 with the
+reason it must not be cleared from here; keep an explicit pathspec on every commit until it is.
 
 ## Committed, or not
 
     git status --porcelain          # only the foreign CLAUDE.md.bak entry
     git log --oneline @{u}..HEAD    # empty, once this handover's own commit is pushed
 
-CI is GREEN on `5317023`, `b43cecd` and `beab496`, each read from its own watcher log.
-
-**`285a456` and `bd7a4d5` went RED and `8b02ff6` is the fix.** Cause worth knowing before you add
-any script here: this repo's CI type-checks against the WINDOWS platform, and a local `pyright`
-run defaults to Linux, so `os.killpg` and `signal.SIGKILL` passed every local check and failed
-every windows-latest cell. Before pushing a new script, run
-`pyright --pythonplatform Windows --pythonpath .venv/bin/python` - a plain local pyright cannot see
-this class of error at all. `8b02ff6` had a watch armed and had not reported when this was
-written; check it with `ci_wait.py --sha $(git rev-parse HEAD)`.
-
-## Shipped this session
-
-- `7a886d8` the turn ceiling ends `NEEDS_CONTINUATION` with `turns_exhausted` typed and the tree
-  kept, not a TRANSIENT `EXECUTOR_ERROR` that sent the retry path back into the same wall; and
-  `wire_kernel` refuses a policy table offering a row nothing wires. Both were load-bearing for the
-  `defects` round - two nodes continued where they would previously have died.
-- `f390c73` the `defects` round: probe, evidence, backlog 06.
-- `5317023` **the token unit.** `charged_total` = input + cache_creation + output, cache reads
-  excluded. A node declaring no budget takes `kernel.default_node_tokens` (300,000) instead of
-  being exempt. `max_turns` 25 to 2000; `tokens_per_row` rescaled; `deadline_ceiling_s` to 86,400.
-- `b43cecd` restored the row ceilings' cost shape, which my rescale had flattened.
-- `beab496` `parallel` 2 to 8, plus the `spec` pre-registration.
-- `285a456` the two eval runners, tracked so a round outlives a session.
-- `bd7a4d5` this handover; `8b02ff6` the Windows fix both of those needed.
-
-## The two findings that outlive any round
-
-**agentdag's ceilings were denominated in a unit that grows with conversation length.**
-`charged_tokens` was `input_total + output`, and `input_total` includes cache reads: measured
-1,132,340 charged against 66,665 of new context on one real node, 17.0x. `tokens_by_row` sums that,
-so every cap bound conversation length rather than work. Fixed in `5317023`. **Records written
-before that commit are not comparable with later ones on that field.**
-
-**A green visible gate is not evidence of work, and the CONTROL arm proved it.** On `defects` the
-single agent, left to judge itself, stopped after one turn at 17 percent of budget having changed
-NOTHING - 0/20, zero lines - with the seeded suite green, because that suite passes on defective
-code by design. Re-prompted while budget remained, the same agent reached 19/20. The entire
-distance between 0 and 19 was the stopping rule. That is the strongest evidence this project has
-for its own thesis, and it came off the arm meant to refute it.
-
-## The `defects` round's verdict, so it is not misquoted
-
-**MIS-CALIBRATED.** Both arms saturated - agentdag 20/20, single agent 19/20 - so the round does
-NOT show agentdag beating a single agent. Correctness and cost per point were not separated (one
-hidden test; 3 percent). Latency was the only axis that separated them and agentdag lost, 2.23x
-wall clock for 1.02x tokens. Quality separated nothing and said so itself: the scorer read the same
-untouched seed as 4.41 and 5.09 across two runs, six times the gap between the arms.
+CI is green on `2b1f770`, `431a0d3`, `a126f67` and `23d90fd`, each read from its own watcher log.
 
 ## Decided this session, with the reason
 
-1. **Planner reads are ALLOWLISTED** to its node dir and cwd, and a confined node gets no Bash
-   (user), over deny-Bash-only - a shell command's read set is not decidable from its text.
-2. **The charge includes OUTPUT** (user), diverging from agentswarm's protocol deliberately:
-   agentdag reads the terminal cumulative usage, so the protocol's reason for excluding output does
-   not apply, and the policy prices output at 5x input.
-3. **The row ceilings keep their cost shape on a rescale** (user) - I had flattened them.
-4. **`parallel` raised to 8** (user), after it quartered a four-wide and then a seven-wide fan-out.
-5. **The `defects` result is labelled BEST CASE** (user) - I chose a maximally decomposable task
-   and said so before the numbers landed.
+1. **Round 1 is VOID, not repaired** (user). Three independent reasons, and the third is why a
+   re-run was not the answer: arm A crashed on a defect since fixed; the held-fixed model-tier row
+   was FALSE when written and no re-run repairs that; and the control SATURATED.
+2. **Round 2 is THREE arms** (user) - pinned, shipped, control. Round 1 fused decomposition with
+   model tier and could not tell them apart. Pinned-vs-control isolates the thesis;
+   shipped-vs-pinned prices the tier policy.
+3. **Round 2 measures cost to first crossing of 81/81, not score** (user), with each arm stopping
+   at saturation. The case saturates, so score cannot separate anything; this keeps the case and
+   changes the quantity, which avoids choosing a ceiling that decides where the answer lands.
+4. **Round 2's wall-clock ceiling is 3600 s, not round 1's 2400 s** (user). Under cost-to-saturation
+   the deadline bounds only an arm that never crosses, and round 1's control ran 2637 s with its
+   crossing point unknown, so 2400 s could have stopped an arm short of a crossing it would
+   have made.
+5. **Round 1's control is NOT carried forward.** Its 760,578 tokens is the cost to its DEADLINE,
+   not to its crossing, and its workspace is not a repository, so nothing can recover when it
+   first reached 81/81.
 
-## Corrections made, so they are not re-derived
+## Decided against, so it is not redone
 
-- I misread a gate's exit status off a background job twice. The guard shipped as bitranox-skills
-  6.0.0 exists because of it, and it BLOCKED me later in the same session on the same shape.
-- I claimed the runaway `find /` demonstrated backlog 65's deadline defect. It did not. **That
-  defect is still UNTESTED.**
-- My first rank-05 fixture failed its own premise: the task was not too big for one context, and I
-  had not checked the size claim before building it. The agentswarm cases replaced it entirely.
-- I flattened the policy row ceilings unasked; restored in `b43cecd`.
-- I reported a gate green before reading its RC, twice, and the log said `RC=2` both times.
-- I reported the two eval runners clean on local lint and pyright, and CI was red on three Windows
-  cells. Local pyright defaults to the host platform; the Windows-only attributes were invisible to
-  it. Two commits went out red before the cause was found.
+* **Re-running arm A alone.** It repairs the crash and leaves the false tier row published.
+* **Lowering the ceiling until the control falls short.** It needs a calibration run and the
+  ceiling would be one I chose, which is choosing where the answer lands - the objection that
+  already retired an earlier fixture here.
+* **Searching agentswarm for a harder case.** `defects` and `spec` have both saturated; a search
+  may cost several control runs and end where we are.
+* **Clearing `CLAUDE.md.bak` from the index.** 26 processes have this repo as their cwd across at
+  least two session trees, so it may be live work.
+
+## Still open, untouched
+
+One line each; `OPEN-WORK.md` carries the detail and is the file to read.
+
+* rank 05 - the real comparison on a scratch clone against a single-agent control.
+* rank 25 - checkpoint C1, which is holding C2's already-collected arms.
+* rank 30 - whether the non-idempotent-resume finding earns a differentiator row.
+* rank 06, 07, 38 and below - see the file; none was touched this session.
 
 ## How to verify this still stands
 
     git status --porcelain                     # only the foreign CLAUDE.md.bak entry
-    grep -c '^- \[ \]' OPEN-WORK.md            # 20 open
-    env -u VIRTUAL_ENV make test               # read RC from the LOG, never a job exit code
-    .venv/bin/python -m pytest tests/ -q       # 1034 passed at 285a456
+    grep -c '^- \[ \]' OPEN-WORK.md            # 21 open
+    env -u VIRTUAL_ENV make test               # read the RC from the LOG, never a job exit code
+    .venv/bin/python -m pytest tests/ -q       # 1035 passed at the tip
+
+Before pushing a new script here, run `pyright --pythonplatform Windows --pythonpath
+.venv/bin/python`: CI type-checks against WINDOWS and a local pyright defaults to Linux, which is
+how two commits went out red on 2026-09-03.
 
 `PLANS/`, `OPEN-WORK.md` and this file are TRACKED here, so an overwritten handover is recoverable
 from git. `EXECUTION-USER-REVIEW.md` is a SYMLINK into the private research repo and is gitignored.

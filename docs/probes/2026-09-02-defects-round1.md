@@ -124,6 +124,13 @@ is better than the other.
 That verdict is the pre-registered one and it stands regardless of how the numbers read, which is
 the whole reason for writing the bands first. What follows is reported under it, not against it.
 
+**And the whole round is a BEST CASE for agentdag, decided by the user before the numbers landed.**
+The case was chosen for being maximally decomposable, which is the condition a coordinator is most
+likely to win under. So this round's figures are the favourable end of agentdag's range and must
+not be quoted as a typical one. That label was agreed on 2026-09-02 and lived only in a session
+handover until 2026-09-03; it is written into the document it qualifies now, because a caveat that
+sits anywhere other than beside the number it bounds is one readers reproduce the error of.
+
 ### What the run does establish
 
 **On correctness, the two arms are not separated.** 20/20 against 19/20 is one hidden test, at one
