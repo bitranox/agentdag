@@ -221,7 +221,7 @@ def test_an_existing_destination_problem_is_replaced_not_merged(tmp_path: Path) 
     assert (dest / "p" / "config.yaml").is_file()
 
 
-@pytest.mark.parametrize("name", ["..", "../catalog", "sub/p", "sub\\p", ".", ""])
+@pytest.mark.parametrize("name", ["..", "../catalog", "sub/p", "sub\\p", ".", "", "C:", "C:catalog"])
 def test_a_problem_name_that_could_escape_the_destination_is_refused(tmp_path: Path, name: str) -> None:
     """The name is joined onto dest and that directory is then REMOVED, so containment is not optional.
 

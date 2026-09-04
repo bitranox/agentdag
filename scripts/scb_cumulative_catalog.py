@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Derive a SlopCodeBench catalog whose ``checkpoint_N.md`` carries parts 1..N, not part N alone.
+"""Derive a SlopCodeBench catalog whose checkpoint_N.md carries parts 1..N, not part N alone.
 
 The harness renders a checkpoint's prompt from ``<problem>/checkpoint_N.md`` and nothing else, and
 in the shipped catalog that file is the DELTA: what part N adds. An agent dispatched on it is
@@ -55,7 +55,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -65,7 +65,8 @@ __all__ = ["MANIFEST_NAME", "CatalogError", "build_catalog", "cumulative_text", 
 
 MANIFEST_NAME = "CUMULATIVE-MANIFEST.json"
 
-_SUMMARY = "Derive a SlopCodeBench catalog whose checkpoint_N.md carries parts 1..N rather than part N alone."
+# The module docstring's first sentence, so --help and the docstring cannot drift apart.
+_SUMMARY = (__doc__ or "").split("\n", 1)[0]
 
 _NEW_MARKER = "(NEW in this checkpoint)"
 _PRIOR_MARKER = "(already implemented in the workspace)"
@@ -173,7 +174,10 @@ def _is_one_component(name: str) -> bool:
     the destination entirely. Containment is checked here, on the name itself, rather than left to
     follow from some other refusal that happens to reject the same input today.
     """
-    return name not in _UNSAFE_NAMES and "/" not in name and "\\" not in name
+    if name in _UNSAFE_NAMES or "/" in name or "\\" in name:
+        return False
+    # A bare drive prefix carries no separator, so the checks above cannot see it.
+    return not PureWindowsPath(name).drive
 
 
 def _validate(source: Path, names: Sequence[str]) -> tuple[_Problem, ...]:
