@@ -59,7 +59,9 @@ where `own` and `inherited` split a checkpoint's failed tests by the checkpoint 
 (the harness keys each test group `<origin checkpoint>-<category>`). `repaired` is `None`, not
 0, for the first checkpoint of a problem and for a checkpoint with no regression suite
 (`dynamic_config_service_api` checkpoints 3 and 4): "not measurable" and "measured as zero" are
-different answers. Both readings are computed by `scripts/slopcodebench_readings.py`, never by
+different answers. A NEGATIVE value is meaningful too: it means a test of an earlier part that
+passed at the previous checkpoint fails now, so the checkpoint broke old behaviour rather than
+repairing any; it is reported as measured, not clipped to zero. Both readings are computed by `scripts/slopcodebench_readings.py`, never by
 eye.
 
 **Per arm:** `S`, the count of the 17 checkpoints with `strict_pass_rate == 1.0`; `C`, the mean
