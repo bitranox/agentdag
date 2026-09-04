@@ -8,11 +8,13 @@ plausible number rather than an error, so each is pinned here rather than checke
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-
 from slopcodebench_readings import collect_problem, peak_prompt_tokens, read_checkpoint
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.os_agnostic
 
@@ -51,9 +53,7 @@ def _write_checkpoint(
         )
     )
     if usage_lines is not None:
-        (checkpoint / "agent" / "stdout.jsonl").write_text(
-            "\n".join(json.dumps(line) for line in usage_lines)
-        )
+        (checkpoint / "agent" / "stdout.jsonl").write_text("\n".join(json.dumps(line) for line in usage_lines))
     return checkpoint
 
 
@@ -127,9 +127,7 @@ def test_a_repeated_message_id_does_not_raise_the_peak(tmp_path: Path) -> None:
 def test_checkpoint_10_sorts_after_checkpoint_9(tmp_path: Path) -> None:
     """Lexical ordering would put checkpoint_10 second and silently reorder the curve."""
     for name in ("checkpoint_1", "checkpoint_9", "checkpoint_10"):
-        _write_checkpoint(
-            tmp_path, name, pass_counts={"Core": 1}, total_counts={"Core": 1}, usage_lines=[]
-        )
+        _write_checkpoint(tmp_path, name, pass_counts={"Core": 1}, total_counts={"Core": 1}, usage_lines=[])
     problem = collect_problem(tmp_path)
     assert [c.checkpoint for c in problem.checkpoints] == [
         "checkpoint_1",
@@ -146,16 +144,12 @@ def test_an_unevaluated_checkpoint_is_skipped_not_scored_zero(tmp_path: Path) ->
 
 def test_solved_counts_only_a_full_strict_pass(tmp_path: Path) -> None:
     """``S`` is the pre-registered count of checkpoints at strict_pass_rate exactly 1.0."""
-    _write_checkpoint(
-        tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2}, usage_lines=[]
-    )
-    _write_checkpoint(
-        tmp_path, "checkpoint_2", pass_counts={"Core": 1}, total_counts={"Core": 2}, usage_lines=[]
-    )
+    _write_checkpoint(tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2}, usage_lines=[])
+    _write_checkpoint(tmp_path, "checkpoint_2", pass_counts={"Core": 1}, total_counts={"Core": 2}, usage_lines=[])
     assert collect_problem(tmp_path).solved == 1
 
 
-def test_a_checkpoint_with_no_core_tests_is_excluded_from_C_not_scored_zero(tmp_path: Path) -> None:
+def test_a_checkpoint_with_no_core_tests_is_excluded_from_mean_core_not_scored_zero(tmp_path: Path) -> None:
     """0/0 Core scores 0.0 from the harness formula, which would drag the pre-registered C down."""
     _write_checkpoint(
         tmp_path,
@@ -177,7 +171,7 @@ def test_a_checkpoint_with_no_core_tests_is_excluded_from_C_not_scored_zero(tmp_
     assert problem.mean_core_pass_rate == pytest.approx(1.0)
 
 
-def test_C_is_none_when_no_checkpoint_has_core_tests(tmp_path: Path) -> None:
+def test_mean_core_is_none_when_no_checkpoint_has_core_tests(tmp_path: Path) -> None:
     """None is reportable as 'not measured'; 0.0 would read as total failure."""
     _write_checkpoint(
         tmp_path,

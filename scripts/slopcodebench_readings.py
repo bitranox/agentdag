@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = [
     "CheckpointReading",
@@ -197,7 +199,5 @@ def collect_problem(problem_dir: Path) -> ProblemReading:
 
 def collect_run(run_dir: Path) -> tuple[ProblemReading, ...]:
     """Every problem in a run directory that has at least one evaluated checkpoint."""
-    problems = sorted(
-        d for d in run_dir.iterdir() if d.is_dir() and (d / "problem.yaml").is_file()
-    )
+    problems = sorted(d for d in run_dir.iterdir() if d.is_dir() and (d / "problem.yaml").is_file())
     return tuple(p for d in problems if (p := collect_problem(d)).checkpoints)
