@@ -60,7 +60,8 @@ not.
 | checkpoints      | 17, the full sequence of each problem, in order                                |
 | problem catalog  | SCBench v1.0, commit `4d38d300059667d57e43c31969bc455f5c338b52`                |
 | harness          | `SprocketLab/slop-code-bench`, `uv sync` on Python 3.12                        |
-| agent            | `configs/agents/claude_code.yaml`, `permission_mode: bypassPermissions`        |
+| agent            | `claude_code`, `permission_mode: bypassPermissions`, `step_limit` 100          |
+| Claude Code CLI  | pinned to `2.1.260` in the container, matching this host's binary              |
 | model            | `opus-5` (`claude-opus-5`)                                                     |
 | prompt           | `just-solve`, the benchmark's own, unmodified                                  |
 | thinking         | `high`                                                                         |
