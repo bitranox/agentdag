@@ -49,20 +49,20 @@ composition, import-linter enforced), Python 3.12+, `uv`. Package `agentdag`, CL
 
 ## The slice, and what each milestone is judged against
 
-| milestone                   | state                                     | judged by                                                                                                                     |
-|-----------------------------|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| M0 design fixes             | DONE                                      | schemas validate against their examples; no C-id's old text survives a grep                                                   |
-| S0 slice-0 probes           | DONE                                      | each probe has a written result under `RESEARCH/workflow/design/probes/`                                                      |
-| M1 graph A baseline         | DONE                                      | the baseline ran attended on scratch clones; see the caveat in that section                                                   |
-| D2 adopt versus rebuild     | DONE, REBUILD stands                      | a decision, recorded, with its re-open trigger ruled on                                                                       |
-| M2 the kernel               | DONE                                      | the section-9 rows M2 owns, each with its positive control                                                                    |
-| M3 the three properties     | OPEN, part built on the M3 branch         | the section-9 negative tests with their positive controls, `stage`/`apply` INCLUDED                                           |
-| M5 first real run           | OPEN, sequenced AFTER M6 as its demo      | the high plan's "What done means for the whole build", quoted in that section                                                 |
-| C1 validate the judge panel | OPEN, needs the user, no code             | agreement on >= 5 of 6, or the panel's other 24 verdicts are discarded                                                        |
-| C2 arm C/D                  | COLLECTED (both arms), judging waits C1   | informs M6's SHAPE - granularity, and whether briefs and a cost model earn their cost; it does NOT decide whether M6 is built |
-| M6 decomposition            | OPEN, ungated (2026-08-21); M5 follows it | a wrong-by-construction plan re-plans, converges, and REPLAYS to the same plans                                               |
-| M4 the Codex arm            | CUT                                       | see `## Cut`                                                                                                                  |
-| L1 to L8 the deferred tail  | CUT, except L4 which M6 supersedes        | see `## Cut`                                                                                                                  |
+| milestone                   | state                                                                                                         | judged by                                                                                                                     |
+|-----------------------------|---------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| M0 design fixes             | DONE                                                                                                          | schemas validate against their examples; no C-id's old text survives a grep                                                   |
+| S0 slice-0 probes           | DONE                                                                                                          | each probe has a written result under `RESEARCH/workflow/design/probes/`                                                      |
+| M1 graph A baseline         | DONE                                                                                                          | the baseline ran attended on scratch clones; see the caveat in that section                                                   |
+| D2 adopt versus rebuild     | DONE, REBUILD stands                                                                                          | a decision, recorded, with its re-open trigger ruled on                                                                       |
+| M2 the kernel               | DONE                                                                                                          | the section-9 rows M2 owns, each with its positive control                                                                    |
+| M3 the three properties     | OPEN, part built on the M3 branch                                                                             | the section-9 negative tests with their positive controls, `stage`/`apply` INCLUDED                                           |
+| M5 first real run           | OPEN, sequenced AFTER M6 as its demo                                                                          | the high plan's "What done means for the whole build", quoted in that section                                                 |
+| C1 validate the judge panel | CLOSED 2026-09-05: NOT RUN as designed; post-hoc, the executability lens does not discriminate                | the panel's other 24 verdicts are DISCARDED; a judge needs a repaired lens validated on a fresh packet by a cold reader       |
+| C2 arm C/D                  | COLLECTED (both arms); NOT judged by the E1 panel, which C1 closed as failing; waits for a re-validated panel | informs M6's SHAPE - granularity, and whether briefs and a cost model earn their cost; it does NOT decide whether M6 is built |
+| M6 decomposition            | OPEN, ungated (2026-08-21); M5 follows it                                                                     | a wrong-by-construction plan re-plans, converges, and REPLAYS to the same plans                                               |
+| M4 the Codex arm            | CUT                                                                                                           | see `## Cut`                                                                                                                  |
+| L1 to L8 the deferred tail  | CUT, except L4 which M6 supersedes                                                                            | see `## Cut`                                                                                                                  |
 
 ---
 
@@ -505,9 +505,38 @@ control; it is not a comparison target, for the reason given in the M1 section.
 
 ## C1 - validate the judge panel (a checkpoint; no code ships)
 
-State: OPEN, needs the user, roughly ten minutes of their time. **C1 comes before C2 is judged.**
-The panel that would score C2 is the instrument under test here, and running an unvalidated
-instrument on a second experiment produces two results to discard instead of one.
+State: CLOSED 2026-09-05, the user's decision from three options. **Not run as designed, and
+the panel's other 24 verdicts are DISCARDED.** Why it could not run: on 2026-09-02 the user asked
+to see a model's read of the packet before scoring it, was told once that this spends the cold
+read, and confirmed; an anchored reader cannot supply the cold control either falsifier is
+written about, and no second reader was named. What closed it instead is a post-hoc finding,
+recorded as such and not as the registered falsifier firing:
+
+- The panel's `executability` lens returned exactly 2 for arm A and exactly 4 for arm B on ALL
+  14 pairs (re-read from `RESEARCH/workflow/probes/probe_e1_panel.result.json` on 2026-09-05),
+  while its `coverage` and `proportion` lenses vary from task to task. The `problems` lists under
+  those constant scores differ per task, so the lens read the plans and then saturated on the
+  arm-level structural difference - the graph arm's briefs are absent from every plan by E1's
+  design. No parser or code path could manufacture the constant: the score is the model's own
+  JSON, parsed as written.
+- A second model reader applying the same criterion to the six packet pairs, sealed before the
+  key was opened (`RESEARCH/workflow/probes/e1_model_scores_SEALED.md`, sha256 `f98e2250...`),
+  scored arm A 2,2,3,2,2,3 and arm B 4,5,5,5,5,5 - the two 3s for a nameable property (an
+  `approve` node before the irreversible step, with stage/apply separation) that the flat-scored
+  graphs lack. Its 6-of-6 preference for prose is worthless as a preference signal, because the
+  packet's named format confound landed on it as predicted; the within-arm spread is the part
+  the shared handicap does not explain.
+
+A scorer with zero variance over 14 inputs, six of which another reader can tell apart, is
+failing to discriminate, whatever a human would have said. This is a WEAKER claim than the checkpoint was
+built to make: it shows this panel fails, not what a passing one looks like, and the human
+agreement rate stays unmeasured. Consequences: C2 is NOT judged by this panel; component 5's
+judge op is not built against it; a judge needs a lens that discriminates within an arm,
+validated on a FRESH six-pair packet by a reader who has seen neither this packet, nor the model
+read, nor these scores. That work is `OPEN-WORK.md` rank 39.
+
+The original design, kept for the record:
+
 
 Inputs: E1's 14 task pairs and the panel's 42 verdicts (`RESEARCH/workflow/probes/probe_e1_panel.result.json`);
 the packet `RESEARCH/workflow/probes/e1_control_packet.md`, six pairs drawn by seed with the arm labels stripped
@@ -544,7 +573,9 @@ State: COLLECTED. Both arms are complete in
 arm D 13/14, one `parse_error` on `ci-crossplat`), and the file records `"judged": false` on
 purpose - judging before C1 passes would only produce a second set of verdicts to discard. The
 older `armC.partial.json` filename this section used to cite was superseded at `15825ea` and no
-longer exists.
+longer exists. **C1 closed 2026-09-05 with this panel FAILING** - its executability lens is a
+per-arm constant across all 14 pairs - so C2 is NOT judged by it; it waits for the repaired and
+re-validated panel that `OPEN-WORK.md` rank 39 owns.
 
 **What C2 now decides, and what it no longer decides (2026-08-21).** It informs M6's SHAPE - node
 granularity, and whether briefs and a cost model earn their cost. It does NOT decide whether M6 is
