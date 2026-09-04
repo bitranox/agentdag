@@ -16,8 +16,8 @@ where this session stopped.
 from the three live candidates, then run a CONTROL-ONLY calibration arm before any coordinator arm,
 with what counts as "the control fails" written down first.
 
-Rank 08 does NOT block that first step: a control-only arm has no coordinator, so the unseeded-
-checkpoint defect cannot reach it. Rank 08 must be settled before the COORDINATOR arm runs, or the
+Rank 32 does NOT block that first step: a control-only arm has no coordinator, so the unseeded-
+checkpoint defect cannot reach it. Rank 32 must be settled before the COORDINATOR arm runs, or the
 score curve charges the coordinator for its own read-confinement.
 
 ## In flight
@@ -26,8 +26,10 @@ score curve charges the coordinator for its own read-confinement.
 
 ## Committed, or not
 
-`OPEN-WORK.md` is MODIFIED and uncommitted - rank 05 extended and rank 08 added, this session's
-whole reconciliation. Commit it with this file.
+This session's whole reconciliation is in `OPEN-WORK.md`: rank 05 extended, and rank 32 added (filed
+as 08, reranked below the USER items by the user, because this file's rule is that a `USER:` item
+outranks every `FOUND:` one). Check with `git status --porcelain` rather than trusting this line -
+a handover cannot state whether the commit that carries it has happened.
 
 **Not mine:** `CLAUDE.md.bak` is still `AD` in the index. It is rank 72 with the reason it must not
 be cleared from here; keep an explicit pathspec on every commit until it is.
@@ -71,7 +73,7 @@ One line each; `OPEN-WORK.md` holds the detail.
 ## Files that matter
 
 - `docs/probes/2026-09-03-spec-round2.md` - the finished three-arm round, all results under the divider.
-- `OPEN-WORK.md` - ranks 05 and 08 carry this session's whole state.
+- `OPEN-WORK.md` - ranks 05 and 32 carry this session's whole state.
 - `scripts/eval_run_agentdag.py`, `scripts/eval_run_single_agent.py`, `scripts/eval_checkpoint.py` -
   the runners and the checkpoint scorer, unchanged and working.
 
