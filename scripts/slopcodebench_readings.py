@@ -155,14 +155,14 @@ def _rates(metrics: dict[str, Any]) -> tuple[float, float, float, int, int]:
 def _failed_split(metrics: dict[str, Any], *, checkpoint: str) -> tuple[int, int]:
     """Failed tests split into this checkpoint's own and those carried in from earlier ones.
 
-    The harness keys each group ``<origin checkpoint>-<Category>``, and neither a checkpoint name
-    nor a category carries a hyphen, so the origin is everything before the last one.
+    The harness keys each group ``<origin checkpoint>-<Category>``. Matching the whole prefix
+    including the separator keeps ``checkpoint_1`` from claiming ``checkpoint_10``'s groups.
     """
     groups: dict[str, dict[str, list[str]]] = metrics.get("tests", {})
     own = inherited = 0
     for key, group in groups.items():
         failed = len(group.get("failed", []))
-        if key.rsplit("-", 1)[0] == checkpoint:
+        if key.startswith(f"{checkpoint}-"):
             own += failed
         else:
             inherited += failed
@@ -248,20 +248,38 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
     )
 
 
+def _checkpoint_number(name: str) -> int | None:
+    """The trailing number of ``checkpoint_7``, or None for a name that carries none."""
+    tail = name.rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
 def _checkpoint_order(path: Path) -> tuple[int, str]:
     """Sort ``checkpoint_10`` after ``checkpoint_9`` rather than beside ``checkpoint_1``."""
-    tail = path.name.rsplit("_", 1)[-1]
-    return (int(tail), path.name) if tail.isdigit() else (1 << 30, path.name)
+    number = _checkpoint_number(path.name)
+    return (number if number is not None else 1 << 30, path.name)
 
 
-def _repaired(previous: CheckpointReading | None, current: CheckpointReading) -> int | None:
+def _is_next_after(previous: CheckpointReading, *, current: CheckpointReading) -> bool:
+    """Whether ``current`` is the checkpoint immediately after ``previous``."""
+    before = _checkpoint_number(previous.checkpoint)
+    after = _checkpoint_number(current.checkpoint)
+    return before is not None and after is not None and after == before + 1
+
+
+def _repaired(previous: CheckpointReading | None, *, current: CheckpointReading) -> int | None:
     """Inherited failures cleared at ``current``, or None where nothing could be observed.
 
-    None is not zero. The first checkpoint of a problem carried nothing in, and a checkpoint with
-    no regression suite reports zero inherited failures whether or not the earlier defects
-    survive, so a 0 there would read as a measurement that never happened.
+    None is not zero, and three cases cannot be observed: the first checkpoint of a problem
+    carried nothing in; a checkpoint with no regression suite reports zero inherited failures
+    whether or not the earlier defects survive; and where an unevaluated checkpoint was skipped,
+    the surviving predecessor is not the one this checkpoint inherited from, so the difference
+    between the two spans work nobody scored. A 0 in any of them would report a measurement that
+    never happened.
     """
     if previous is None or current.regression_total == 0:
+        return None
+    if not _is_next_after(previous, current=current):
         return None
     return previous.failed_inherited + previous.failed_own - current.failed_inherited
 
@@ -269,10 +287,9 @@ def _repaired(previous: CheckpointReading | None, current: CheckpointReading) ->
 def _with_repairs(readings: Sequence[CheckpointReading]) -> tuple[CheckpointReading, ...]:
     """Stamp each checkpoint's repair count, which only its predecessor can supply."""
     stamped: list[CheckpointReading] = []
-    previous: CheckpointReading | None = None
     for reading in readings:
-        stamped.append(replace(reading, repaired=_repaired(previous, reading)))
-        previous = reading
+        previous = stamped[-1] if stamped else None
+        stamped.append(replace(reading, repaired=_repaired(previous, current=reading)))
     return tuple(stamped)
 
 

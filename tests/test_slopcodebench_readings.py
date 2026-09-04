@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.os_agnostic
 
 
-def _group(*, failed: int, passed: int = 0) -> dict[str, list[str]]:
+def _group(*, failed: int = 0, passed: int = 0) -> dict[str, list[str]]:
     """One test group in the harness's shape: named tests under ``passed`` and ``failed``."""
     return {
         "passed": [f"passed_{i}" for i in range(passed)],
@@ -218,9 +218,11 @@ def test_a_carried_defect_that_survives_reads_zero_repaired(tmp_path: Path) -> N
 def test_a_cleared_inherited_failure_counts_as_one_repair(tmp_path: Path) -> None:
     """One of the two carried defects passes at checkpoint 2, so the repair count is 1.
 
-    Checkpoint 2 fails two tests of its OWN as well. Without them, counting own failures as
-    inherited would leave this reading at 1 all the same and the mutation arm would prove
-    nothing, and it stays at 1 for the same reason if the two counts are made equal.
+    Checkpoint 2 fails two tests of its OWN as well, so that this reading also pins the origin
+    split. Swapping own for inherited moves the result by ``inherited - own`` at THIS checkpoint
+    (the previous checkpoint's two counts are summed, so re-partitioning them cancels), which is
+    -1 here. A fixture with no own failures would be caught too, at +1; the one shape that hides
+    the swap is own and inherited being equal.
     """
     _write_checkpoint(
         tmp_path,
@@ -276,7 +278,10 @@ def test_the_first_checkpoint_of_a_problem_has_no_repair_reading(tmp_path: Path)
         "checkpoint_1",
         pass_counts={"Core": 0, "Regression": 3},
         total_counts={"Core": 1, "Regression": 3},
-        tests={"checkpoint_1-Core": _group(failed=1)},
+        tests={
+            "checkpoint_1-Core": _group(failed=1),
+            "checkpoint_1-Regression": _group(passed=3),
+        },
     )
     first = collect_problem(tmp_path).checkpoints[0]
     assert first.repaired is None
@@ -317,3 +322,33 @@ def test_repaired_total_and_defined_fold_over_the_problem(tmp_path: Path) -> Non
     assert [c.repaired for c in problem.checkpoints] == [None, 1, 0]
     assert problem.repaired_total == 1
     assert problem.repaired_defined == 2
+
+
+def test_a_checkpoint_after_an_unevaluated_gap_has_no_repair_reading(tmp_path: Path) -> None:
+    """A skipped checkpoint breaks the chain, and the difference across the gap is not a repair.
+
+    Checkpoint 3 inherited its failures from checkpoint 2, which was dispatched and never scored.
+    What checkpoint 1 was failing says nothing about what checkpoint 3 cleared, so subtracting
+    the two would report a repair count for work nobody measured.
+    """
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0},
+        total_counts={"Core": 2},
+        tests={"checkpoint_1-Core": _group(failed=2)},
+    )
+    (tmp_path / "checkpoint_2").mkdir()
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_3",
+        pass_counts={"Core": 0, "Regression": 1},
+        total_counts={"Core": 1, "Regression": 2},
+        tests={
+            "checkpoint_1-Regression": _group(failed=1, passed=1),
+            "checkpoint_3-Core": _group(failed=1),
+        },
+    )
+    checkpoints = collect_problem(tmp_path).checkpoints
+    assert [c.checkpoint for c in checkpoints] == ["checkpoint_1", "checkpoint_3"]
+    assert checkpoints[1].repaired is None
