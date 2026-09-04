@@ -28,11 +28,13 @@ argument OVER ``os.environ`` (M1 note) rather than replacing it, so omitting a k
 lets the merge read it straight from the coordinator's own process; the SECOND layer
 is that the coordinator process itself must be started with a clean environment
 (Task 17), so a leak needs both to fail. The credential is minted per-node from one
-of two sources (D3, RESEARCH): :class:`OAuthTokenFile` (the measured default: D3 arm
-A2 proved ``CLAUDE_CODE_OAUTH_TOKEN`` authenticates a child whose
-``CLAUDE_CONFIG_DIR`` is empty) or :class:`CredentialCopy` (D3 arm C: a private,
+of two sources (D3, RESEARCH): :class:`CredentialCopy` (D3 arm C: a private,
 owner-only copy of the operator's ``.credentials.json``, mirroring M1's
-``_copy_credential``).
+``_copy_credential``), which is the SHIPPED default because
+``[credentials] claude_oauth_token_file`` ships empty; or :class:`OAuthTokenFile`,
+used when that key names an existing keyfile (D3 arm A2 proved
+``CLAUDE_CODE_OAUTH_TOKEN`` authenticates a child whose ``CLAUDE_CONFIG_DIR`` is
+empty).
 
 Every streamed message is scrubbed (:func:`~agentdag.domain.scrub.scrub`, the domain
 module - this adapter used to define it locally, see that module's own docstring for
@@ -51,8 +53,9 @@ the coordinator branches on; it is unit-tested with no SDK call at all
 Contents:
     * :data:`DEFAULT_TOOLS` - the tool set a node gets when the caller does not override it.
     * :class:`CredentialSource` - what :class:`ClaudeExecutor` needs from a credential.
-    * :class:`OAuthTokenFile` - a per-operator OAuth-token keyfile (the measured default).
-    * :class:`CredentialCopy` - a private, owner-only copy of ``.credentials.json``.
+    * :class:`OAuthTokenFile` - a per-operator OAuth-token keyfile, when config names one.
+    * :class:`CredentialCopy` - a private, owner-only copy of ``.credentials.json``; the
+      shipped default.
     * :func:`append_transcript` - scrub and append one streamed message, owner-only.
     * :func:`input_total` - sum the three input-token fields a usage mapping carries.
     * :func:`outcome_from_usage` - pure: one dispatch's terminal usage -> :class:`NodeOutcome`.
@@ -309,7 +312,7 @@ def _base_env(node_dir: Path) -> tuple[dict[str, str], Path]:
 
 @dataclass(frozen=True, slots=True)
 class OAuthTokenFile:
-    """Credential source: a per-operator OAuth-token keyfile (D3's measured default).
+    """Credential source: a per-operator OAuth-token keyfile, used when config names one that exists.
 
     D3 (``workflow/design/probes/d3-subscription-terms.md``, RESEARCH) measured that
     ``CLAUDE_CODE_OAUTH_TOKEN`` authenticates an SDK child whose ``CLAUDE_CONFIG_DIR``
@@ -349,9 +352,14 @@ class CredentialCopy:
     Mirrors ``work_claude_sdk.py``'s ``_copy_credential`` (M1): the copy is created with
     ``O_EXCL`` and mode ``0600`` in one step so the secret is never briefly
     world-readable, and an existing copy is left alone (the node may have refreshed its
-    own token into it). Kept as the non-default :class:`CredentialSource` because the
-    keyfile path (:class:`OAuthTokenFile`) removes the N-parallel-nodes-share-one-
-    writable-login concern the original M1 note raised (D3's "Consequence for Task 14").
+    own token into it). This is the SHIPPED default :class:`CredentialSource`:
+    ``[credentials] claude_oauth_token_file`` ships empty, so the run command's credential
+    resolver lands here unless an operator names an existing keyfile. D3 preferred the
+    keyfile (:class:`OAuthTokenFile`), which removes the N-parallel-nodes-share-one-
+    writable-login concern the original M1 note raised (D3's "Consequence for Task 14");
+    that preference is not what ships. Consequence: every node home under a run directory
+    holds a copy of the operator's live credential, so a run directory is never
+    publishable raw.
     """
 
     source_path: Path

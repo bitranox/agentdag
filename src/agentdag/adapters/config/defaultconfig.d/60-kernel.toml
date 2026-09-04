@@ -32,14 +32,17 @@
 [credentials]
 
 # Purpose: path to the operator's Claude Code OAuth-token keyfile (the output of
-#   `claude setup-token`, saved to this path) - the MEASURED default credential path
-#   (D3, RESEARCH workflow/design/probes/d3-subscription-terms.md: arm A2 proved
+#   `claude setup-token`, saved to this path). When it names an existing file, each
+#   node authenticates with that token and receives nothing else (D3, RESEARCH
+#   workflow/design/probes/d3-subscription-terms.md: arm A2 proved
 #   CLAUDE_CODE_OAUTH_TOKEN authenticates an SDK child whose CLAUDE_CONFIG_DIR is an
 #   EMPTY directory).
 # Type: string (absolute path) or ""
-# Default: "" (empty means: use the credential COPY path instead - a private,
-#   owner-only copy of ~/.claude/.credentials.json into each node's own config dir;
-#   D3 arm C, the CredentialCopy class)
+# Default: "" - so the SHIPPED default is the credential COPY: a private, owner-only
+#   copy of ~/.claude/.credentials.json into each node's own config dir (D3 arm C, the
+#   CredentialCopy class). Every node home under a run directory then holds the
+#   operator's live credential, and a run directory is never publishable raw. Name a
+#   keyfile here to change that.
 # Environment Variable: AGENTDAG___CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/path/to/keyfile
 # .env: CREDENTIALS__CLAUDE_OAUTH_TOKEN_FILE=/path/to/keyfile
 # Note: the file itself is never read by this config layer - only its PATH is
