@@ -126,6 +126,38 @@ noise on n=17 is wide, so the band that does NOT contradict it is `1 <= S <= 8`.
 investigated before any number from it is believed or reported as a result. Naming that before
 the run is what makes this a calibration arm rather than merely a control arm.
 
+### The strain check, and why this subset alone cannot answer the thesis
+
+Decided with the user on 2026-09-04, before the first counted checkpoint.
+
+Rank 05 exists because decomposition can only pay where ONE AGENT'S CONTEXT is the binding
+constraint. This subset was chosen for calibration, not for strain, and all three problems are
+rated Medium. SlopCodeBench's difficulty is iterative degradation across checkpoints, which is not
+the same pressure. So this arm carries an extra reading whose only job is to say whether the
+condition rank 05 needs was present at all:
+
+**Per checkpoint, `input + cache_write` tokens against the model's context limit.** If the control
+never approaches that limit on any of the 17 checkpoints, then this subset prices iterative
+degradation and says nothing about decomposition under context pressure, and a later arm on the
+catalog's Hard problems is required before the thesis is tested. That conclusion is licensed
+whatever the band verdict turns out to be: the two questions are separate and this document must
+not let a USABLE verdict be read as "the thesis can now be tested here".
+
+### Replication: this arm is n=1, deliberately
+
+The harness ships a `variance` command and a `configs/runs/variance.yaml`, which is the authors
+saying run-to-run spread is material. This arm runs each problem ONCE anyway, decided with the
+user before the run.
+
+The reason it is safe HERE: the pre-registered bands are coarse (SATURATED at `S >= 12` of 17), so
+plausible noise cannot flip the verdict this arm exists to produce.
+
+The reason it is NOT yet safe for what comes next, stated now rather than after the numbers are
+seen: a coordinator arm compared against a single control run measures SEPARATION, not causation.
+Whether replication is needed for THAT comparison is decided from the per-checkpoint spread this
+arm observes, read against the authors' published variance. That decision is about a future arm
+and may not be used to revisit this arm's own band verdict, which the table above fixes.
+
 ### Void conditions, applying to this arm and to every later arm
 
 Written as properties of a RUN, so that a later coordinator arm cannot be held to a laxer standard
