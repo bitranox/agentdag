@@ -57,9 +57,10 @@ recorded separately, and peak single-request prompt occupancy. Two readings are 
 
 where `own` and `inherited` split a checkpoint's failed tests by the checkpoint they originated in
 (the harness keys each test group `<origin checkpoint>-<category>`). `repaired` is `None`, not
-0, for the first checkpoint of a problem and for a checkpoint with no regression suite
-(`dynamic_config_service_api` checkpoints 3 and 4): "not measurable" and "measured as zero" are
-different answers. A NEGATIVE value is meaningful too: it means a test of an earlier part that
+0, for the first checkpoint of a problem, for a checkpoint with no regression suite
+(`dynamic_config_service_api` checkpoints 3 and 4), and for a checkpoint whose predecessor was
+not evaluated (the reading would otherwise be a two-checkpoint delta): "not measurable" and
+"measured as zero" are different answers. A NEGATIVE value is meaningful too: it means a test of an earlier part that
 passed at the previous checkpoint fails now, so the checkpoint broke old behaviour rather than
 repairing any; it is reported as measured, not clipped to zero. Both readings are computed by `scripts/slopcodebench_readings.py`, never by
 eye.
