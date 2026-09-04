@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -131,21 +131,35 @@ def peak_prompt_tokens(stdout_jsonl: Path) -> int:
     peak = 0
     for line in stdout_jsonl.read_text(errors="replace").splitlines():
         try:
-            payload: Any = json.loads(line)
+            payload: object = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(payload, dict) or payload.get("type") == "result":
+        usage = _request_usage(payload)
+        if usage is None:
             continue
-        usage = payload.get("usage") or (payload.get("message") or {}).get("usage")
-        if not isinstance(usage, dict):
-            continue
-        prompt = (
-            int(usage.get("input_tokens", 0) or 0)
-            + int(usage.get("cache_read_input_tokens", 0) or 0)
-            + int(usage.get("cache_creation_input_tokens", 0) or 0)
-        )
-        peak = max(peak, prompt)
+        prompt = _int_field(usage, "input_tokens") + _int_field(usage, "cache_read_input_tokens")
+        peak = max(peak, prompt + _int_field(usage, "cache_creation_input_tokens"))
     return peak
+
+
+def _request_usage(payload: object) -> dict[str, object] | None:
+    """The usage block of one request event, or None for anything else (the ``result`` included)."""
+    if not isinstance(payload, dict):
+        return None
+    event = cast("dict[str, object]", payload)
+    if event.get("type") == "result":
+        return None
+    usage = event.get("usage")
+    if usage is None:
+        message = event.get("message")
+        usage = cast("dict[str, object]", message).get("usage") if isinstance(message, dict) else None
+    return cast("dict[str, object]", usage) if isinstance(usage, dict) else None
+
+
+def _int_field(usage: dict[str, object], key: str) -> int:
+    """An integer usage field, reading a missing or null field as 0."""
+    value = usage.get(key)
+    return int(value) if isinstance(value, int) else 0
 
 
 def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading | None:

@@ -14,6 +14,7 @@ import pytest
 from slopcodebench_readings import collect_problem, peak_prompt_tokens, read_checkpoint
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 pytestmark = pytest.mark.os_agnostic
@@ -25,7 +26,7 @@ def _write_checkpoint(
     *,
     pass_counts: dict[str, int],
     total_counts: dict[str, int],
-    usage_lines: list[dict[str, object]] | None = None,
+    usage_lines: Sequence[Mapping[str, object]] | None = None,
 ) -> Path:
     checkpoint = root / name
     (checkpoint / "agent").mkdir(parents=True)

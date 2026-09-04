@@ -303,8 +303,8 @@ section may be read as a claim about decomposition.
 
 ### Conditions the readings were taken under
 
-- **Host load.** Another session's `semdex` job (`preembed_vectors.py`, nice 19, about 9 to 13
-  cores on live samples) ran from 15:14:51 through the end of the arm. `database_migration` had
+- **Host load.** Another session's embedding job (a long-running Python process at nice 19,
+  about 9 to 13 cores on live samples) ran from 15:14:51 through the end of the arm. `database_migration` had
   a quiet host for its first 47 minutes; `circuit_eval` and `dynamic_config_service_api` ran
   fully loaded. The job runs at nice 19 and the checkpoint work is dominated by model latency,
   but the per-checkpoint `seconds` column is not comparable across the three problems, nor to a
