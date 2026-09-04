@@ -54,20 +54,21 @@ not.
 
 ### Held fixed
 
-| Setting          | Value                                                                          |
-|------------------|--------------------------------------------------------------------------------|
-| problems         | `circuit_eval` (8), `database_migration` (5), `dynamic_config_service_api` (4) |
-| checkpoints      | 17, the full sequence of each problem, in order                                |
-| problem catalog  | SCBench v1.0, commit `4d38d300059667d57e43c31969bc455f5c338b52`                |
-| harness          | `SprocketLab/slop-code-bench`, `uv sync` on Python 3.12                        |
-| agent            | `claude_code`, `permission_mode: bypassPermissions`, `step_limit` 100          |
-| Claude Code CLI  | pinned to `2.1.260` in the container, matching this host's binary              |
-| model            | `opus-5` (`claude-opus-5`)                                                     |
-| prompt           | `just-solve`, the benchmark's own, unmodified                                  |
-| thinking         | `high`                                                                         |
-| environment      | `docker-python3.12-uv`                                                         |
-| auth             | `CLAUDE_CODE_OAUTH_TOKEN`, Max subscription, tier `default_claude_max_20x`     |
-| runs per problem | 1                                                                              |
+| Setting          | Value                                                                              |
+|------------------|------------------------------------------------------------------------------------|
+| problems         | `circuit_eval` (8), `database_migration` (5), `dynamic_config_service_api` (4)     |
+| checkpoints      | 17, the full sequence of each problem, in order                                    |
+| problem catalog  | SCBench v1.0, commit `4d38d300059667d57e43c31969bc455f5c338b52`                    |
+| harness          | `SprocketLab/slop-code-bench`, `uv sync` on Python 3.12                            |
+| agent            | `claude_code`, `permission_mode: bypassPermissions`, `step_limit` 100              |
+| Claude Code CLI  | pinned to `2.1.260` in the container, matching this host's binary                  |
+| model            | `opus-5` (`claude-opus-5`)                                                         |
+| prompt           | `just-solve`, the benchmark's own, unmodified                                      |
+| thinking         | `high`                                                                             |
+| environment      | `docker-python3.12-uv`                                                             |
+| auth             | `CLAUDE_CODE_OAUTH_TOKEN`, Max subscription, tier `default_claude_max_20x`         |
+| `pass_policy`    | `any-case`, the only value that does NOT early-stop at the first failed checkpoint |
+| runs per problem | 1                                                                                  |
 
 The subset is the humanlayer three and not a sample I chose. Choosing the problems myself is
 choosing the answer, which is the reason rank 05 rejected a synthetic task in the first place.
@@ -77,6 +78,22 @@ humanlayer describe it as spanning easy, medium and hard. In catalog v1.0 all th
 rated **Medium**. The subset is therefore NOT a difficulty spread, and nothing here may claim it
 is. It remains the right subset for calibration because it is the same problems, model and prompt
 as the only published Opus 5 figure, which is the only property this arm needs from it.
+
+### Why `pass_policy` is `any-case` and not the default
+
+Read at source before the run (`src/slop_code/agent_runner/runner.py:689-705`): the runner
+early-stops the whole problem the moment a checkpoint fails its pass policy, for every value
+EXCEPT `any-case`. On the default `any`, a problem whose second checkpoint fails yields two
+readings instead of five, and a score curve that stops at the first failure is not a curve.
+
+This does not touch the scoring. `strict_pass_rate`, `core_pass_rate` and `isolated_pass_rate`
+are computed from test counts, not from the pass policy, so `S` and `C` mean the same thing under
+either value. What changes is only how many checkpoints get attempted.
+
+A caveat this creates for the calibration band: the published 4 of 17 does not state its pass
+policy. If that run early-stopped, its denominator counts checkpoints that were never attempted
+as failures, which would bias it DOWNWARD relative to this arm. The band stays as pre-registered,
+but a result in its upper half is not evidence of a discrepancy for that reason alone.
 
 ### What counts as "the control fails"
 
