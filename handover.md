@@ -49,8 +49,11 @@ be cleared from here; keep an explicit pathspec on every commit until it is.
 - **The measured quantity is now a SCORE CURVE at a shared ceiling** (final score plus cost to any
   threshold an arm reaches), because an unsaturated benchmark has no crossing. The checkpoint
   apparatus already records this as its readings list.
-- **Commits carry NO `Co-Authored-By` trailer**, per the pinned rule, though 16 of the 30 commits
-  before this session do. Raised with the user and NOT answered - see below.
+- **Commits carry NO `Co-Authored-By` trailer.** 16 of the 30 commits before this session did,
+  because the harness instructs the trailer in a per-session system-reminder and that had been
+  winning against the pinned rule. Raised with the user, who confirmed the rule stands; the pinned
+  fact `no-claude-commit-attribution` now names the harness instruction as the thing that defeats
+  it, so a future session meets the counter-argument rather than only the rule.
 
 ## Decided against, and why
 
@@ -66,8 +69,8 @@ be cleared from here; keep an explicit pathspec on every commit until it is.
 
 One line each; `OPEN-WORK.md` holds the detail.
 
-- An unanswered question to the user: the `Co-Authored-By` contradiction between the pinned rule and
-  this repo's own history. Both commits this session were made without the trailer.
+- Nothing was left unanswered. The `Co-Authored-By` question raised during this session was settled
+  by the user before it ended; see the decisions above.
 - Everything else is in the backlog at its own rank.
 
 ## Files that matter
