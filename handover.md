@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-04 ~12:30. The spec round is closed; rank 05 has a benchmark route and a plumbing test that passed.
+# STALE - read 2026-09-04, work continued
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
 > repo-qualified path for the design documents, probe scripts and measurement notes they were
