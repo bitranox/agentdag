@@ -129,9 +129,12 @@ max_turns = 2000
 # Note: matched as a substring after whitespace-collapsing (see
 #   agentdag.adapters.kernel.hooks_claude.deny_bash_commands). This is a denylist
 #   for exfiltration/publishing actions, not a general filesystem sandbox: a Bash
-#   command that merely WRITES outside the isolation root (e.g. `printf x > /tmp/y`)
-#   is not caught here - the post-node isolation-root scan is the backstop for that
-#   (measured live: workflow/design/probes/m2-hooks-dontask.md in RESEARCH).
+#   command that merely WRITES outside the run directory (e.g. `printf x > /tmp/y`)
+#   is caught by NOTHING - the live write-set hook sees the Write/Edit tools, not
+#   Bash, and the post-node isolation scan walks the run directory only, so it
+#   reports a stray write INSIDE the run directory and never one elsewhere on the
+#   machine (denylist measured live: workflow/design/probes/m2-hooks-dontask.md in
+#   RESEARCH; the scan's reach read at source, isolation_scan.py and context.py).
 deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
 
 # Purpose: the label a run records as its actor - `owner` in state.json, and `by` on every
