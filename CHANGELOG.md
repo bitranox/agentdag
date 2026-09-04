@@ -192,6 +192,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   the three `RunLimits` fields it reads - `planner_kinds` and `per_kind_ceiling` - therefore bound
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
+### Changed
+- The actor a run records - `owner` in `state.json`, and `by` on every journal line that names
+  who did something (`run_started`, a resume, a retry grant, an approve decision, a cancel) - is
+  the configured `[kernel] operator` label, never the operating account's name. The packaged
+  default is the constant `operator`; a name appears in a run directory only where an operator set
+  one, knowing it travels with every copy of that directory. A blank label, and the reserved value
+  `system` the run summary reads as "no human involved", are refused by name before any run
+  directory exists. A test now fails if any production module reads the OS user again.
+
 ### Fixed
 - A rate limit killed a run permanently and reported it as a login failure. The Claude CLI
   describes an exhausted quota and a rejected credential identically - the same

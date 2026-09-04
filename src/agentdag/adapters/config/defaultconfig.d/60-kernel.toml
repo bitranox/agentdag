@@ -130,3 +130,18 @@ max_turns = 2000
 #   is not caught here - the post-node isolation-root scan is the backstop for that
 #   (measured live: workflow/design/probes/m2-hooks-dontask.md in RESEARCH).
 deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
+
+# Purpose: the label a run records as its actor - `owner` in state.json, and `by` on every
+#   journal line that names who did something (run_started, resume, retry grant, approve
+#   decision, cancel)
+# Type: string, non-blank
+# Default: "operator" - a constant that identifies nobody. The operating account's name is
+#   NEVER read: a run directory copied out as evidence publishes whatever sits here, and
+#   nothing in agentdag warns when it does. Set a name only if you want names in run
+#   directories, knowing they travel with every copy.
+# Environment Variable: AGENTDAG___KERNEL__OPERATOR=ops-desk
+# .env: KERNEL__OPERATOR=ops-desk
+# Note: an explicit blank ("" or whitespace) is refused by name before any run directory
+#   is created, rather than falling back to the default - a blank override is a
+#   misconfiguration, not a request for the default.
+operator = "operator"

@@ -73,6 +73,8 @@ class TestGetConfig:
             "max_turns": 2000,
             "default_node_tokens": 300000,
             "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],
+            # The actor label every run records; a constant, never the operating account's name.
+            "operator": "operator",
         }
 
 

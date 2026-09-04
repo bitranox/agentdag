@@ -74,7 +74,6 @@ Contents:
 from __future__ import annotations
 
 import asyncio
-import getpass
 import json
 import os
 import sys
@@ -94,7 +93,7 @@ from agentdag.adapters.kernel.notify_mail import MailNotifier
 from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.adapters.kernel.scope_systemd import SystemdScope
-from agentdag.application.kernel.approve import apply_due_default, suspend_payload_rel
+from agentdag.application.kernel.approve import SYSTEM_IDENTITY, apply_due_default, suspend_payload_rel
 from agentdag.application.kernel.cancel import request_cancel, resolve_cancel, scope_unit, sweep_stale_scope
 from agentdag.application.kernel.crash import record_crash
 from agentdag.application.kernel.run import run_coordinator
@@ -281,6 +280,7 @@ def cli_run_start(
     _require_writable_runs_dir(runs_dir)
     wiring, credential_desc = _build_wiring(ctx, policy_override=policy_option, parallel_override=parallel_option)
     safe_console.echo(f"credential: {credential_desc}")
+    owner = _operator_label(config)
     run_id = _mint_run_id()
     run_dir = FsRunDir.create(runs_dir, run_id)
     run_dir.write_state(
@@ -288,7 +288,7 @@ def cli_run_start(
             run_id=run_id,
             workflow=workflow.name,
             args=args.model_dump(mode="json"),
-            owner=getpass.getuser(),
+            owner=owner,
             status=RunStatus.RUNNING,
             policy_version=wiring.policy.version,
         )
@@ -421,7 +421,7 @@ def cli_run_retry(
         node_id=node_id,
         key=_grantable_key_of(run_dir, run_id=run_id, node_id=node_id, max_attempts=wiring.policy.max_attempts),
         reason=reason_text,
-        by=getpass.getuser(),
+        by=_operator_label(get_cli_context(ctx).config),
         token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
     )
     try:
@@ -528,7 +528,7 @@ def cli_run_cancel(ctx: click.Context, *, run_id: str, runs_option: Path | None)
     try:
         requested = request_cancel(
             run_dir,
-            by=getpass.getuser(),
+            by=_operator_label(config),
             token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
         )
     except RunRefused as exc:
@@ -572,7 +572,13 @@ def cli_run_approve(
     run_dir = _open_run_dir(runs_dir, run_id)
     state = run_dir.read_state()
     decision = _decision_for(
-        run_dir, state, run_id=run_id, node_id=node_id, decision_id=decision_id, reason_text=reason_text
+        run_dir,
+        state,
+        run_id=run_id,
+        node_id=node_id,
+        decision_id=decision_id,
+        reason_text=reason_text,
+        by=_operator_label(config),
     )
     try:
         run_dir.write_decision(decision)
@@ -836,6 +842,43 @@ def _config_int(config: Config, key: str, default_key: str) -> int:
     return int(config.get(key, default=_packaged_kernel_defaults()[default_key]))
 
 
+def _operator_label(config: Config) -> str:
+    """Read ``[kernel] operator``, the label every actor slot records, refusing a blank one by name.
+
+    The packaged default is a constant that identifies nobody; the operating account's name
+    is never read, because a run directory copied out as evidence publishes whatever sits in
+    ``owner`` and ``by``, and nothing warns when it does. Absent means the default. An
+    explicit blank is a misconfiguration and is refused here, before any run directory
+    exists, rather than surfacing later as a ``min_length`` error on a journal line. So is
+    :data:`~agentdag.application.kernel.approve.SYSTEM_IDENTITY`: the run summary answers
+    "was a human involved" by comparing ``by`` against it, so a label equal to it would make
+    every human decision read as one the timer applied.
+
+    Args:
+        config: The merged layered configuration.
+
+    Returns:
+        The label, stripped of surrounding whitespace.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` when the configured value is blank
+            or is the reserved system identity.
+    """
+    raw = config.get("kernel.operator", default=_packaged_kernel_defaults()["operator"])
+    label = str(raw).strip()
+    if not label:
+        _fail(
+            "[kernel] operator (config key kernel.operator) is blank: set a non-empty label, "
+            "or remove the override to record the default"
+        )
+    if label == SYSTEM_IDENTITY:
+        _fail(
+            f"[kernel] operator (config key kernel.operator) is {SYSTEM_IDENTITY!r}, which is reserved: "
+            "the run summary reads that value as a decision the system applied, not a person"
+        )
+    return label
+
+
 def _config_deny_bash(config: Config) -> tuple[str, ...]:
     """Read ``[kernel] deny_bash``, defaulting to the packaged denylist.
 
@@ -1002,7 +1045,7 @@ def _run_foreground(
                 registry=wiring.registry,
                 sandbox=wiring.sandbox,
                 parallel=wiring.parallel,
-                by=getpass.getuser(),
+                by=_operator_label(get_cli_context(ctx).config),
                 token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
                 resume_reason=resume_reason,
                 notifier=wiring.notifier,
@@ -1054,7 +1097,14 @@ def _relaunch(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, reason: 
 
 
 def _decision_for(
-    run_dir: FsRunDir, state: RunState, *, run_id: str, node_id: str, decision_id: str, reason_text: str
+    run_dir: FsRunDir,
+    state: RunState,
+    *,
+    run_id: str,
+    node_id: str,
+    decision_id: str,
+    reason_text: str,
+    by: str,
 ) -> Decision:
     """Build the :class:`Decision` to record for ``node_id``, reading ``state.json``'s live cursor.
 
@@ -1098,7 +1148,7 @@ def _decision_for(
         node_id=node_id,
         decision=decision_id,
         reason=reason_text,
-        by=getpass.getuser(),
+        by=by,
         token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
         payload_hash=payload_hash,
     )
