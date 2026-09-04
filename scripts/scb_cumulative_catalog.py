@@ -65,8 +65,13 @@ __all__ = ["MANIFEST_NAME", "CatalogError", "build_catalog", "cumulative_text", 
 
 MANIFEST_NAME = "CUMULATIVE-MANIFEST.json"
 
+_SUMMARY = "Derive a SlopCodeBench catalog whose checkpoint_N.md carries parts 1..N rather than part N alone."
+
 _NEW_MARKER = "(NEW in this checkpoint)"
 _PRIOR_MARKER = "(already implemented in the workspace)"
+
+# Names that resolve to something other than a child of the directory they are joined onto.
+_UNSAFE_NAMES = frozenset({"", ".", ".."})
 
 # Non-greedy and DOTALL: the canary spans several lines and ends at the FIRST closing delimiter,
 # so a body that contains its own HTML comment is not swallowed into the canary.
@@ -149,16 +154,26 @@ def _checkpoint_number(name: str) -> int | None:
     return int(match.group(1)) if match is not None else None
 
 
-def _checkpoints_of(problem: Path) -> tuple[Path, ...]:
-    """Every ``checkpoint_<n>.md`` in the directory, ordered by NUMBER rather than by name."""
+def _checkpoints_of(problem: Path) -> tuple[tuple[int, Path], ...]:
+    """Every ``checkpoint_<n>.md`` with its number, ordered by NUMBER rather than by name."""
     numbered = [(_checkpoint_number(path.name), path) for path in problem.iterdir() if path.is_file()]
-    ordered = sorted((number, path) for number, path in numbered if number is not None)
-    return tuple(path for _, path in ordered)
+    return tuple(sorted((number, path) for number, path in numbered if number is not None))
 
 
 def _unique(names: Iterable[str]) -> tuple[str, ...]:
     """The names in caller order with repeats dropped, so a repeated ``--problem`` builds once."""
     return tuple(dict.fromkeys(names))
+
+
+def _is_one_component(name: str) -> bool:
+    """Whether ``name`` is a single plain path component.
+
+    A problem name is joined onto the destination root and that directory is then REMOVED and
+    rewritten, so a name carrying a separator or a traversal element would delete a tree outside
+    the destination entirely. Containment is checked here, on the name itself, rather than left to
+    follow from some other refusal that happens to reject the same input today.
+    """
+    return name not in _UNSAFE_NAMES and "/" not in name and "\\" not in name
 
 
 def _validate(source: Path, names: Sequence[str]) -> tuple[_Problem, ...]:
@@ -172,19 +187,26 @@ def _validate(source: Path, names: Sequence[str]) -> tuple[_Problem, ...]:
         One validated record per name, in the order given.
 
     Raises:
-        CatalogError: The source root is not a directory, a named problem is not under it, or one
-            holds no checkpoint files.
+        CatalogError: The source root is not a directory, a name is not a single path component, a
+            named problem is not under the root, or one holds no checkpoints or a gap in them.
     """
     if not source.is_dir():
         raise CatalogError(f"source root {source} is not a directory")
     validated: list[_Problem] = []
     for name in names:
+        if not _is_one_component(name):
+            raise CatalogError(f"problem name {name!r} is not a single path component, so it could escape the output")
         directory = source / name
         if not directory.is_dir():
             raise CatalogError(f"problem {name!r} is not in {source}")
-        checkpoints = _checkpoints_of(directory)
-        if not checkpoints:
+        numbered = _checkpoints_of(directory)
+        if not numbered:
             raise CatalogError(f"problem {name!r} holds no checkpoint_<n>.md files")
+        numbers = [number for number, _ in numbered]
+        # Part labels are positional, so a gap renames every part after it without any error.
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise CatalogError(f"problem {name!r} has checkpoints {numbers}, not 1..{len(numbers)}")
+        checkpoints = tuple(path for _, path in numbered)
         validated.append(_Problem(name=name, directory=directory, checkpoints=checkpoints))
     return tuple(validated)
 
@@ -248,7 +270,8 @@ def build_catalog(source: Path, dest: Path, *, problems: Sequence[str], source_c
 
 def main(argv: list[str] | None = None) -> int:
     """Derive the catalog named on the command line. 0 on success, 2 on a refusal."""
-    parser = argparse.ArgumentParser(prog="scb_cumulative_catalog", description=__doc__)
+    # A one-line description: argparse reflows the module docstring's literal block into prose.
+    parser = argparse.ArgumentParser(prog="scb_cumulative_catalog", description=_SUMMARY)
     parser.add_argument("--source", required=True, type=Path, help="root of the shipped catalog")
     parser.add_argument("--dest", required=True, type=Path, help="root of the derived catalog")
     parser.add_argument("--source-commit", required=True, help="commit the source is read at; recorded verbatim")

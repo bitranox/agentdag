@@ -219,3 +219,32 @@ def test_an_existing_destination_problem_is_replaced_not_merged(tmp_path: Path) 
 
     assert not stale.exists()
     assert (dest / "p" / "config.yaml").is_file()
+
+
+@pytest.mark.parametrize("name", ["..", "../catalog", "sub/p", "sub\\p", ".", ""])
+def test_a_problem_name_that_could_escape_the_destination_is_refused(tmp_path: Path, name: str) -> None:
+    """The name is joined onto dest and that directory is then REMOVED, so containment is not optional.
+
+    The surviving-source assertion is the one that matters: under a ``..`` name the removal would
+    take the whole tmp tree, source catalog included, and a check on dest alone cannot see that.
+    """
+    source, dest = tmp_path / "catalog", tmp_path / "derived"
+    _write_problem(source, "p", parts=2)
+
+    with pytest.raises(CatalogError, match="single path component"):
+        build_catalog(source, dest, problems=[name], source_commit="0f1e2d3c")
+
+    assert not dest.exists()
+    assert (source / "p" / "checkpoint_1.md").is_file()
+
+
+def test_a_gap_in_the_checkpoint_numbers_is_refused(tmp_path: Path) -> None:
+    """Part labels are positional, so a missing part 2 would silently relabel part 3 as part 2."""
+    source, dest = tmp_path / "catalog", tmp_path / "derived"
+    _write_problem(source, "p", parts=3)
+    (source / "p" / "checkpoint_2.md").unlink()
+
+    with pytest.raises(CatalogError, match=r"not 1\.\.2"):
+        build_catalog(source, dest, problems=["p"], source_commit="0f1e2d3c")
+
+    assert not dest.exists()
