@@ -153,3 +153,37 @@ def test_solved_counts_only_a_full_strict_pass(tmp_path: Path) -> None:
         tmp_path, "checkpoint_2", pass_counts={"Core": 1}, total_counts={"Core": 2}, usage_lines=[]
     )
     assert collect_problem(tmp_path).solved == 1
+
+
+def test_a_checkpoint_with_no_core_tests_is_excluded_from_C_not_scored_zero(tmp_path: Path) -> None:
+    """0/0 Core scores 0.0 from the harness formula, which would drag the pre-registered C down."""
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 2, "Functionality": 1},
+        total_counts={"Core": 2, "Functionality": 1},
+        usage_lines=[],
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_2",
+        pass_counts={"Functionality": 1},
+        total_counts={"Functionality": 1},
+        usage_lines=[],
+    )
+    problem = collect_problem(tmp_path)
+    assert [c.core_total for c in problem.checkpoints] == [2, 0]
+    # Averaging the vacuous 0.0 in would give 0.5; excluding it gives the true 1.0.
+    assert problem.mean_core_pass_rate == pytest.approx(1.0)
+
+
+def test_C_is_none_when_no_checkpoint_has_core_tests(tmp_path: Path) -> None:
+    """None is reportable as 'not measured'; 0.0 would read as total failure."""
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Functionality": 1},
+        total_counts={"Functionality": 1},
+        usage_lines=[],
+    )
+    assert collect_problem(tmp_path).mean_core_pass_rate is None

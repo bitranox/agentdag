@@ -57,6 +57,8 @@ class CheckpointReading:
     isolated_pass_rate: float
     total_tests: int
     passed_tests: int
+    core_total: int
+    core_passed: int
     cost: float
     elapsed: float
     steps: int
@@ -74,6 +76,18 @@ class ProblemReading:
 
     problem: str
     checkpoints: tuple[CheckpointReading, ...]
+
+    @property
+    def mean_core_pass_rate(self) -> float | None:
+        """The pre-registered ``C``, over checkpoints that HAVE core tests.
+
+        A checkpoint with no Core tests scores 0.0 from the harness's formula, which is
+        indistinguishable from failing every Core test. Averaging those in would drag ``C``
+        toward a band boundary for a reason that is not about the work, so they are excluded and
+        ``None`` is returned when none remain.
+        """
+        scored = [c.core_pass_rate for c in self.checkpoints if c.core_total > 0]
+        return sum(scored) / len(scored) if scored else None
 
     @property
     def solved(self) -> int:
@@ -141,6 +155,8 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
     metrics: dict[str, Any] = json.loads(evaluation.read_text())
     result: dict[str, Any] = json.loads(inference.read_text())
     strict, core, isolated, total, passed = _rates(metrics)
+    total_counts: dict[str, int] = metrics.get("total_counts", {})
+    pass_counts: dict[str, int] = metrics.get("pass_counts", {})
     usage: dict[str, Any] = result.get("usage", {})
     current: dict[str, Any] = usage.get("current_tokens", {})
     return CheckpointReading(
@@ -151,6 +167,8 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
         isolated_pass_rate=isolated,
         total_tests=total,
         passed_tests=passed,
+        core_total=total_counts.get("Core", 0),
+        core_passed=pass_counts.get("Core", 0),
         cost=float(usage.get("cost", 0.0) or 0.0),
         elapsed=float(result.get("elapsed", 0.0) or 0.0),
         steps=int(usage.get("steps", 0) or 0),
