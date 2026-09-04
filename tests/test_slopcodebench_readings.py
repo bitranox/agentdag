@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.os_agnostic
 
 
+def _group(*, failed: int, passed: int = 0) -> dict[str, list[str]]:
+    """One test group in the harness's shape: named tests under ``passed`` and ``failed``."""
+    return {
+        "passed": [f"passed_{i}" for i in range(passed)],
+        "failed": [f"failed_{i}" for i in range(failed)],
+    }
+
+
 def _write_checkpoint(
     root: Path,
     name: str,
@@ -27,6 +35,7 @@ def _write_checkpoint(
     pass_counts: dict[str, int],
     total_counts: dict[str, int],
     usage_lines: Sequence[Mapping[str, object]] | None = None,
+    tests: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> Path:
     checkpoint = root / name
     (checkpoint / "agent").mkdir(parents=True)
@@ -37,6 +46,7 @@ def _write_checkpoint(
                 "total_counts": total_counts,
                 "pytest_collected": sum(total_counts.values()),
                 "infrastructure_failure": False,
+                "tests": tests if tests is not None else {},
             }
         )
     )
@@ -182,3 +192,128 @@ def test_mean_core_is_none_when_no_checkpoint_has_core_tests(tmp_path: Path) -> 
         usage_lines=[],
     )
     assert collect_problem(tmp_path).mean_core_pass_rate is None
+
+
+def test_a_carried_defect_that_survives_reads_zero_repaired(tmp_path: Path) -> None:
+    """The identity case: every inherited failure fails again, so nothing was repaired."""
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0},
+        total_counts={"Core": 2},
+        tests={"checkpoint_1-Core": _group(failed=2)},
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_2",
+        pass_counts={"Core": 0, "Regression": 0},
+        total_counts={"Core": 1, "Regression": 2},
+        tests={"checkpoint_1-Regression": _group(failed=2), "checkpoint_2-Core": _group(failed=1)},
+    )
+    second = collect_problem(tmp_path).checkpoints[1]
+    assert second.repaired == 0
+    assert (second.failed_own, second.failed_inherited) == (1, 2)
+
+
+def test_a_cleared_inherited_failure_counts_as_one_repair(tmp_path: Path) -> None:
+    """One of the two carried defects passes at checkpoint 2, so the repair count is 1.
+
+    Checkpoint 2 fails two tests of its OWN as well. Without them, counting own failures as
+    inherited would leave this reading at 1 all the same and the mutation arm would prove
+    nothing, and it stays at 1 for the same reason if the two counts are made equal.
+    """
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0},
+        total_counts={"Core": 2},
+        tests={"checkpoint_1-Core": _group(failed=2)},
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_2",
+        pass_counts={"Core": 0, "Regression": 1},
+        total_counts={"Core": 2, "Regression": 2},
+        tests={
+            "checkpoint_1-Regression": _group(failed=1, passed=1),
+            "checkpoint_2-Core": _group(failed=2),
+        },
+    )
+    second = collect_problem(tmp_path).checkpoints[1]
+    assert second.repaired == 1
+    assert (second.failed_own, second.failed_inherited) == (2, 1)
+
+
+def test_a_checkpoint_with_no_regression_suite_reads_none_not_zero(tmp_path: Path) -> None:
+    """With no regression suite the zero inherited failures are vacuous, not a measured repair."""
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0},
+        total_counts={"Core": 2},
+        tests={"checkpoint_1-Core": _group(failed=2)},
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_2",
+        pass_counts={"Core": 1},
+        total_counts={"Core": 1},
+        tests={"checkpoint_2-Core": _group(failed=0, passed=1)},
+    )
+    second = collect_problem(tmp_path).checkpoints[1]
+    assert second.repaired is None
+    assert second.failed_inherited == 0
+
+
+def test_the_first_checkpoint_of_a_problem_has_no_repair_reading(tmp_path: Path) -> None:
+    """Nothing was carried into the first checkpoint, so there is nothing to have repaired.
+
+    It is given a regression suite so that the ``None`` is owed to the absent predecessor alone,
+    not to the no-regression-suite rule that a real checkpoint 1 would also satisfy.
+    """
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0, "Regression": 3},
+        total_counts={"Core": 1, "Regression": 3},
+        tests={"checkpoint_1-Core": _group(failed=1)},
+    )
+    first = collect_problem(tmp_path).checkpoints[0]
+    assert first.repaired is None
+    assert first.regression_total == 3
+
+
+def test_repaired_total_and_defined_fold_over_the_problem(tmp_path: Path) -> None:
+    """The problem's totals count only the checkpoints where a repair could be observed."""
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 0},
+        total_counts={"Core": 2},
+        tests={"checkpoint_1-Core": _group(failed=2)},
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_2",
+        pass_counts={"Core": 0, "Regression": 1},
+        total_counts={"Core": 1, "Regression": 2},
+        tests={
+            "checkpoint_1-Regression": _group(failed=1, passed=1),
+            "checkpoint_2-Core": _group(failed=1),
+        },
+    )
+    _write_checkpoint(
+        tmp_path,
+        "checkpoint_3",
+        pass_counts={"Core": 1, "Regression": 1},
+        total_counts={"Core": 1, "Regression": 3},
+        tests={
+            "checkpoint_1-Regression": _group(failed=1),
+            "checkpoint_2-Regression": _group(failed=1, passed=1),
+            "checkpoint_3-Core": _group(failed=0, passed=1),
+        },
+    )
+    problem = collect_problem(tmp_path)
+    assert [c.repaired for c in problem.checkpoints] == [None, 1, 0]
+    assert problem.repaired_total == 1
+    assert problem.repaired_defined == 2

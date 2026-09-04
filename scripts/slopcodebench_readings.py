@@ -1,8 +1,9 @@
-"""Read the pre-registered readings of the SlopCodeBench control arm out of a run directory.
+"""Read the pre-registered readings of a SlopCodeBench arm out of a run directory.
 
-`docs/probes/2026-09-04-slopcodebench-control.md` pre-registers what this arm measures, and this
-script is the only thing that computes it, so a number in the write-up is never a number somebody
-read off a log by eye.
+`docs/probes/2026-09-04-slopcodebench-control.md` and
+`docs/probes/2026-09-05-slopcodebench-corrected-pair.md` pre-register what the arms measure, and
+this script is the only thing that computes it, so a number in a write-up is never a number
+somebody read off a log by eye.
 
 Three of the quantities are recomputed here rather than taken from the harness, because the
 harness reports them per checkpoint and the pre-registration asks for them per ARM:
@@ -20,6 +21,14 @@ request's prompt is ``input + cache_read + cache_write``. Both are reported, sep
 labelled, and the write-up says which one answers which question. Occupancy is what decides
 whether one agent's context was ever the binding constraint.
 
+**The repair reading is None where it is not measurable, which is not zero.** ``repaired`` asks
+how many failures a checkpoint carried in and then cleared, which needs the PREVIOUS checkpoint's
+split of its failures into own and inherited, so ``collect_problem`` stamps it rather than
+``read_checkpoint``. A checkpoint with no regression suite reports zero inherited failures
+whether or not the earlier defects survive, and the first checkpoint of a problem carried nothing
+in at all: both read ``None``, and folding either in as a 0 would report a measurement that never
+happened.
+
 Two traps in the token stream, both of which silently inflate a total:
 
 * the ``result`` event's usage is the CUMULATIVE dispatch total, so including it in a per-request
@@ -32,10 +41,11 @@ Two traps in the token stream, both of which silently inflate a total:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 __all__ = [
@@ -70,6 +80,18 @@ class CheckpointReading:
     """Largest single request's input + cache_read + cache_write: the occupancy reading."""
     had_error: bool
     infrastructure_failure: bool
+    failed_own: int
+    """Failed tests in groups that ORIGINATED in this checkpoint."""
+    failed_inherited: int
+    """Failed tests in groups carried forward from an earlier checkpoint."""
+    regression_total: int
+    """Regression tests this checkpoint was scored against; 0 means it carries no suite."""
+    repaired: int | None = None
+    """Inherited failures cleared since the previous checkpoint, or None where not measurable.
+
+    Stamped by ``collect_problem``, because it depends on the PREVIOUS checkpoint and one
+    checkpoint's ``evaluation.json`` cannot supply that.
+    """
 
 
 @dataclass(frozen=True)
@@ -90,6 +112,16 @@ class ProblemReading:
         """
         scored = [c.core_pass_rate for c in self.checkpoints if c.core_total > 0]
         return sum(scored) / len(scored) if scored else None
+
+    @property
+    def repaired_total(self) -> int:
+        """Inherited failures cleared across the checkpoints where the reading is defined."""
+        return sum(c.repaired for c in self.checkpoints if c.repaired is not None)
+
+    @property
+    def repaired_defined(self) -> int:
+        """Checkpoints where a repair count could be observed at all."""
+        return sum(1 for c in self.checkpoints if c.repaired is not None)
 
     @property
     def solved(self) -> int:
@@ -118,6 +150,23 @@ def _rates(metrics: dict[str, Any]) -> tuple[float, float, float, int, int]:
         total_total,
         total_passed,
     )
+
+
+def _failed_split(metrics: dict[str, Any], *, checkpoint: str) -> tuple[int, int]:
+    """Failed tests split into this checkpoint's own and those carried in from earlier ones.
+
+    The harness keys each group ``<origin checkpoint>-<Category>``, and neither a checkpoint name
+    nor a category carries a hyphen, so the origin is everything before the last one.
+    """
+    groups: dict[str, dict[str, list[str]]] = metrics.get("tests", {})
+    own = inherited = 0
+    for key, group in groups.items():
+        failed = len(group.get("failed", []))
+        if key.rsplit("-", 1)[0] == checkpoint:
+            own += failed
+        else:
+            inherited += failed
+    return own, inherited
 
 
 def peak_prompt_tokens(stdout_jsonl: Path) -> int:
@@ -175,6 +224,7 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
     pass_counts: dict[str, int] = metrics.get("pass_counts", {})
     usage: dict[str, Any] = result.get("usage", {})
     current: dict[str, Any] = usage.get("current_tokens", {})
+    failed_own, failed_inherited = _failed_split(metrics, checkpoint=checkpoint_dir.name)
     return CheckpointReading(
         problem=problem,
         checkpoint=checkpoint_dir.name,
@@ -192,6 +242,9 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
         peak_prompt_tokens=peak_prompt_tokens(checkpoint_dir / "agent" / "stdout.jsonl"),
         had_error=bool(result.get("had_error", False)),
         infrastructure_failure=bool(metrics.get("infrastructure_failure", False)),
+        failed_own=failed_own,
+        failed_inherited=failed_inherited,
+        regression_total=total_counts.get("Regression", 0),
     )
 
 
@@ -201,6 +254,28 @@ def _checkpoint_order(path: Path) -> tuple[int, str]:
     return (int(tail), path.name) if tail.isdigit() else (1 << 30, path.name)
 
 
+def _repaired(previous: CheckpointReading | None, current: CheckpointReading) -> int | None:
+    """Inherited failures cleared at ``current``, or None where nothing could be observed.
+
+    None is not zero. The first checkpoint of a problem carried nothing in, and a checkpoint with
+    no regression suite reports zero inherited failures whether or not the earlier defects
+    survive, so a 0 there would read as a measurement that never happened.
+    """
+    if previous is None or current.regression_total == 0:
+        return None
+    return previous.failed_inherited + previous.failed_own - current.failed_inherited
+
+
+def _with_repairs(readings: Sequence[CheckpointReading]) -> tuple[CheckpointReading, ...]:
+    """Stamp each checkpoint's repair count, which only its predecessor can supply."""
+    stamped: list[CheckpointReading] = []
+    previous: CheckpointReading | None = None
+    for reading in readings:
+        stamped.append(replace(reading, repaired=_repaired(previous, reading)))
+        previous = reading
+    return tuple(stamped)
+
+
 def collect_problem(problem_dir: Path) -> ProblemReading:
     """Every evaluated checkpoint of one problem, in checkpoint order."""
     dirs = sorted(
@@ -208,7 +283,7 @@ def collect_problem(problem_dir: Path) -> ProblemReading:
         key=_checkpoint_order,
     )
     readings = [r for d in dirs if (r := read_checkpoint(d, problem=problem_dir.name)) is not None]
-    return ProblemReading(problem=problem_dir.name, checkpoints=tuple(readings))
+    return ProblemReading(problem=problem_dir.name, checkpoints=_with_repairs(readings))
 
 
 def collect_run(run_dir: Path) -> tuple[ProblemReading, ...]:
