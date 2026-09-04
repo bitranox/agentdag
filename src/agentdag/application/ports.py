@@ -131,6 +131,7 @@ class WireKernel(Protocol):
         max_turns: int,
         default_node_tokens: int | None,
         deny_bash: Sequence[str],
+        deny_tools: Sequence[str],
         notifier: Notifier,
     ) -> KernelWiring: ...
 

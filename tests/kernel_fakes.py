@@ -424,6 +424,7 @@ class OneRowPolicy:
     max_attempts: int = 1
     max_continuations: int = 3
     deny_bash: tuple[str, ...] = ("git push",)
+    deny_tools: tuple[str, ...] = ("WebFetch",)
     on_auth_failure: FailureAction = FailureAction.FAIL_RUN
     on_rate_limit: FailureAction = FailureAction.SUSPEND_RUN
     run_limits: RunLimits = RunLimits(

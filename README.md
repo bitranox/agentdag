@@ -322,6 +322,17 @@ account, so its own Bash tool can read files anywhere on the machine that user c
 and can make outbound network requests. The M1 baseline's "this is not containment"
 caveat above applies to the kernel unchanged in kind.
 
+**The boundary the kernel does enforce, stated in one place.** A node's Write and Edit tool
+calls are refused outside its declared write set inside the run directory, by a live
+`PreToolUse` deny rather than a scan. A planner node's reads are confined to its own directory
+and working directory, and it gets no Bash at all. Every other node's Bash is filtered by the
+`[kernel] deny_bash` substring list, which is refused by name when set to a blank value rather
+than read as an empty list. The tools that reach the network or spawn a sub-agent are refused
+outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. An operator
+widens either list deliberately by writing an explicit `[]`. Bash is the hole in that boundary:
+a shell command can read and write anywhere the operating-system user can, and nothing catches
+a write it makes outside the run directory.
+
 - **The Bash denylist blocks the exact command shapes the policy lists, and nothing
   else.** Measured against the shipped policy: `curl -XPOST ...`, `curl -d ...`, a plain
   GET with the data in the URL, `git -C some/path push` and `python3 -c ...` all pass. It

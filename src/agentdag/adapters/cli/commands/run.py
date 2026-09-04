@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from importlib.resources import files
@@ -879,20 +880,75 @@ def _operator_label(config: Config) -> str:
     return label
 
 
-def _config_deny_bash(config: Config) -> tuple[str, ...]:
-    """Read ``[kernel] deny_bash``, defaulting to the packaged denylist.
+_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+"""The shape of a tool name a ``PreToolUse`` matcher can fire on: a bare identifier
+(``WebFetch``, ``Task``, ``mcp__server__tool``). A name outside this shape never matches
+anything, so it would widen the boundary silently; it is refused instead."""
 
-    A TOML array (the common case) comes back as a real list; an env-var override
-    (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr,gh release``, per
-    ``defaultconfig.d/60-kernel.toml``'s own documented convention) comes back as ONE
-    comma-joined string - measured directly against ``get_config()``:
-    ``lib_layered_config`` does not split it, so this does, matching the documented
-    format rather than treating the whole string as a single denylist pattern.
+
+def _config_deny_bash(config: Config) -> tuple[str, ...]:
+    """Read ``[kernel] deny_bash``, the Bash command substrings every node is refused.
+
+    Shares :func:`_config_denylist`'s blank-versus-empty rule: a blank value is refused by
+    name, an explicit ``[]`` is honoured. An entry that is blank after stripping is refused
+    too - as a substring it would match EVERY command, which is a mistake, not a policy.
     """
-    raw = config.get("kernel.deny_bash", default=_packaged_kernel_defaults()["deny_bash"])
+    return _config_denylist(config, "kernel.deny_bash", default_key="deny_bash", entry_shape=None)
+
+
+def _config_deny_tools(config: Config) -> tuple[str, ...]:
+    """Read ``[kernel] deny_tools``, the tool names every node is refused outright.
+
+    Same blank-versus-empty rule as :func:`_config_deny_bash`; each entry must also look like
+    a tool name (:data:`_TOOL_NAME`), because a matcher on a name with a space or a slash
+    in it fires on nothing and the operator would believe the tool closed.
+    """
+    return _config_denylist(config, "kernel.deny_tools", default_key="deny_tools", entry_shape=_TOOL_NAME)
+
+
+def _config_denylist(
+    config: Config, key: str, *, default_key: str, entry_shape: re.Pattern[str] | None
+) -> tuple[str, ...]:
+    """Read one of the two denylists, failing CLOSED on a blank and honouring an explicit empty list.
+
+    Two shapes arrive from ``lib_layered_config``: a TOML array (the common case) as a real
+    list, and an env-var override (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr``, the
+    convention ``60-kernel.toml`` documents) as ONE comma-joined string that this splits.
+    The two absent-ish cases are decided deliberately and differently: a BLANK string - an
+    env var set to nothing, ``--set kernel.deny_bash=`` - is a misconfiguration and is
+    refused before any run directory exists, because reading it as "deny nothing" is how a
+    boundary disappears without anyone choosing that; an explicit EMPTY LIST (``[]``) is an
+    operator stating that this run widens the boundary, and is returned as ``()``.
+
+    Args:
+        config: The merged layered configuration.
+        key: The dotted config key, named in every refusal.
+        default_key: The key's name inside the packaged ``[kernel]`` table.
+        entry_shape: A pattern every entry must match, or ``None`` for none beyond non-blank.
+
+    Returns:
+        The entries, stripped, possibly empty.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, a blank entry, or an
+            entry outside ``entry_shape``.
+    """
+    raw = config.get(key, default=_packaged_kernel_defaults()[default_key])
     if isinstance(raw, str):
-        return tuple(item.strip() for item in raw.split(",") if item.strip())
-    return tuple(str(item) for item in raw)
+        if not raw.strip():
+            _fail(
+                f"[kernel] {default_key} (config key {key}) is blank: name at least one entry, "
+                f"write [] to close nothing on purpose, or remove the override to use the packaged list"
+            )
+        entries = [item.strip() for item in raw.split(",")]
+    else:
+        entries = [str(item).strip() for item in raw]
+    for entry in entries:
+        if not entry:
+            _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which would match everything")
+        if entry_shape is not None and not entry_shape.match(entry):
+            _fail(f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name a hook can match")
+    return tuple(entries)
 
 
 def _build_wiring(
@@ -912,6 +968,7 @@ def _build_wiring(
         max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
         default_node_tokens=_config_int(config, "kernel.default_node_tokens", "default_node_tokens"),
         deny_bash=_config_deny_bash(config),
+        deny_tools=_config_deny_tools(config),
         notifier=resolve_notifier(ctx),
     )
     return wiring, credential_desc

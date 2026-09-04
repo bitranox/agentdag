@@ -62,6 +62,15 @@ def test_shipped_policy_loads_and_is_versioned_by_content() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_the_tool_denylist_rides_on_the_loaded_policy_like_the_bash_one() -> None:
+    """``deny_tools`` is app config, not YAML: it reaches every dispatch through the loaded policy."""
+    p = load_policy(shipped(), deny_bash=("git push",), deny_tools=("WebFetch", "Task"))
+
+    assert p.deny_tools == ("WebFetch", "Task")
+    assert load_policy(shipped()).deny_tools == ()
+
+
+@pytest.mark.os_agnostic
 def test_the_node_granularity_floor_is_counted_in_tokens_not_minutes() -> None:
     """The floor is 260,000 tokens, and the superseded minutes key is refused rather than ignored.
 
@@ -186,6 +195,7 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
             parallel=1,
             max_turns=25,
             deny_bash=(),
+            deny_tools=(),
             notifier=NoNotifier(),
         )
     assert "codex" in str(caught.value), "the message must name the row, not just the count"
@@ -199,6 +209,7 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
         parallel=1,
         max_turns=25,
         deny_bash=(),
+        deny_tools=(),
         notifier=NoNotifier(),
     )
 

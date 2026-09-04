@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from ...application.kernel.ports import ResolvedRow
+from ...application.kernel.ports import Denylists, ResolvedRow
 from ...domain.policy import PolicyTable, resolve_row
 
 if TYPE_CHECKING:
@@ -34,7 +34,12 @@ __all__ = ["LoadedPolicy", "load_policy"]
 
 
 def load_policy(
-    path: Path, *, max_turns: int = 25, deny_bash: Sequence[str] = (), default_node_tokens: int | None = None
+    path: Path,
+    *,
+    max_turns: int = 25,
+    deny_bash: Sequence[str] = (),
+    deny_tools: Sequence[str] = (),
+    default_node_tokens: int | None = None,
 ) -> LoadedPolicy:
     """Read ``path`` once, content-hash its bytes, and parse it into a loaded policy port.
 
@@ -66,7 +71,7 @@ def load_policy(
         table=table,
         version=version,
         max_turns=max_turns,
-        deny_bash=tuple(deny_bash),
+        deny=Denylists(bash=tuple(deny_bash), tools=tuple(deny_tools)),
         default_node_tokens=default_node_tokens,
     )
 
@@ -80,7 +85,7 @@ class LoadedPolicy:
         table: PolicyTable,
         version: str,
         max_turns: int,
-        deny_bash: tuple[str, ...],
+        deny: Denylists,
         default_node_tokens: int | None = None,
     ) -> None:
         """Bind a loaded table to the two app-config limits every node dispatch reads.
@@ -89,14 +94,16 @@ class LoadedPolicy:
             table: The parsed policy table.
             version: The content hash of the YAML bytes this table was parsed from.
             max_turns: The SDK turn ceiling, from the app config - see :func:`load_policy`.
-            deny_bash: The bash denylist, from the app config - see :func:`load_policy`.
+            deny: The two denylists from the app config - see :func:`load_policy`; exposed
+                as :attr:`deny_bash` and :attr:`deny_tools`, the names the ``Policy`` port reads.
         """
         self.table = table
         self.version = version
         self.max_turns = max_turns
         self.max_attempts = table.thresholds.max_attempts
         self.max_continuations = table.thresholds.max_continuations
-        self.deny_bash = deny_bash
+        self.deny_bash = deny.bash
+        self.deny_tools = deny.tools
         self.default_node_tokens = default_node_tokens
         self.on_auth_failure = table.escalation.on_auth_failure
         self.on_rate_limit = table.escalation.on_rate_limit

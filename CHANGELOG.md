@@ -7,6 +7,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Added
+- `[kernel] deny_tools`: tool names every node is refused outright by a `PreToolUse` hook,
+  `WebFetch`, `WebSearch` and `Task` by shipped default - the tools that reach the network or
+  spawn a sub-agent. `allowed_tools` on the SDK is an auto-approval list, not a bound, so a deny
+  hook is the only thing that closes a tool. The kernel's enforced boundary is now stated in one
+  place in the README: tool writes contained to the write set, planner reads confined, Bash
+  denylisted, network and sub-agent tools closed, and Bash named as the hole that remains.
 - A stored record is served only to the node it belongs to (M3 Task 25). The journal key still
   carries no node id, so two nodes whose spec identity, brief, input and dependency prefix all
   match still share one; the replay index is now keyed by `(node id, key)`, so a second node
@@ -193,6 +199,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- Both denylists fail closed on a blank value. `[kernel] deny_bash` set to nothing through an env
+  var used to reach every node as an empty list, which is no denylist at all; a blank value, and
+  a blank entry (which as a substring would match every command), are now refused by name before
+  any run directory exists. An explicit `[]` is an operator's statement and is honoured.
 - The actor a run records - `owner` in `state.json`, and `by` on every journal line that names
   who did something (`run_started`, a resume, a retry grant, an approve decision, a cancel) - is
   the configured `[kernel] operator` label, never the operating account's name. The packaged
@@ -202,6 +212,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   directory exists. A test now fails if any production module reads the OS user again.
 
 ### Fixed
+- Four statements said the OAuth keyfile was the default credential source and the credential
+  copy the non-default; the resolver picks the keyfile only when config names an existing file,
+  and that key ships empty, so the copy is the shipped default and every node home holds the
+  operator's live credential. One more said the post-node isolation scan backstops a Bash write
+  outside the run directory; the scan walks the run directory only. All five now say what the
+  code does.
 - A rate limit killed a run permanently and reported it as a login failure. The Claude CLI
   describes an exhausted quota and a rejected credential identically - the same
   "Not logged in - Please run /login" text, `authentication_failed`, a null

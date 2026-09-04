@@ -240,9 +240,9 @@ class Coordinator:
         The policy resolves the spec to a model row before the key is computed, and the
         resolved row and executor are written back onto the dispatched spec - so a
         policy change that moves this spec's RESOLVED ROW (its model alias or its
-        executor) is a different call, not a silently different node. ``max_turns`` and
-        ``deny_bash`` reach the executor request but are not part of the key or of
-        ``input_obj``, so changing only those does not.
+        executor) is a different call, not a silently different node. ``max_turns``,
+        ``deny_bash`` and ``deny_tools`` reach the executor request but are not part of the
+        key or of ``input_obj``, so changing only those does not.
 
         The token cap has two call sites (design 7, M3): this method threads
         ``spec.budget.tokens.get(row.alias)`` through as ``ExecutorRequest.token_cap``,
@@ -463,6 +463,7 @@ class Coordinator:
                 isolation_root=self.run_dir.root,
                 write_set=tuple(spec.write_set),
                 deny_bash=self.policy.deny_bash,
+                deny_tools=self.policy.deny_tools,
                 read_roots=(node_dir, cwd) if confine_reads else None,
                 token_cap=node_cap,
                 deadline_s=node_deadline_s,

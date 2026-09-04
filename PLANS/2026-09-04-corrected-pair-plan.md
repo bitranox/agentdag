@@ -222,6 +222,12 @@ PreToolUse deny hooks keep write confinement. Verification probe (record, do not
 given the full set that uses `Task` must show the sub-agent's spend inside its own
 `ResultMessage` usage; if it does not, report it and the knob stays unused by the arm.
 
+Since 2026-09-05 the kernel also ships `kernel.deny_tools = ["WebFetch", "WebSearch", "Task"]`,
+a `PreToolUse` refusal independent of `kernel.tools`. The pre-registered decision that coordinator
+nodes get the full CLI tool set therefore needs the arm's run config to set `kernel.deny_tools =
+[]` explicitly (an explicit empty list is honoured; a blank is refused), or `Task` stays closed and
+the spend probe above can never run. Record that line in the arm's config beside `kernel.tools`.
+
 ## Task 11: The harness agent type (in the agentdag repo, `deploy/slopcodebench/`)
 
 Package `agentdag_scb_agent/` (`__init__.py`, `agent.py`, `docker.j2`), `agentdag.yaml`, and

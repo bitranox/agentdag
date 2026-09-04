@@ -73,6 +73,8 @@ class TestGetConfig:
             "max_turns": 2000,
             "default_node_tokens": 300000,
             "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],
+            # The tools closed to every node by default: the ones that reach the network or spawn sub-agents.
+            "deny_tools": ["WebFetch", "WebSearch", "Task"],
             # The actor label every run records; a constant, never the operating account's name.
             "operator": "operator",
         }

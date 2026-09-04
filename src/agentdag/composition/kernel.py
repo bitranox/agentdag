@@ -72,6 +72,7 @@ def wire_kernel(
     parallel: int,
     max_turns: int,
     deny_bash: Sequence[str],
+    deny_tools: Sequence[str],
     notifier: Notifier,
     default_node_tokens: int | None = None,
 ) -> KernelWiring:
@@ -90,6 +91,8 @@ def wire_kernel(
             in NEW tokens; ``None`` leaves such a node uncapped, which is what every
             planner-emitted node was before this existed.
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
+        deny_tools: The tool names every node's PreToolUse hook refuses outright. Required,
+            like ``deny_bash``: the composition is the one caller that must not forget it.
         notifier: Where this launch's run events go - resolved by the CLI, which is
             the layer that has both the loaded config naming the sink and the email
             adapter the mail sink sends through; this function takes neither.
@@ -102,6 +105,7 @@ def wire_kernel(
         "claude": ClaudeExecutor(
             credentials=credential,
             deny_bash=tuple(deny_bash),
+            deny_tools=tuple(deny_tools),
             clock=clock,
             # Reads the token from the SAME credential source the dispatch used, so the
             # probe asks about exactly the credential that was refused - a probe pointed
@@ -109,7 +113,13 @@ def wire_kernel(
             credential_probe=ApiCredentialProbe(read_token=credential.bearer_token),
         )
     }
-    policy = load_policy(policy_path, max_turns=max_turns, deny_bash=deny_bash, default_node_tokens=default_node_tokens)
+    policy = load_policy(
+        policy_path,
+        max_turns=max_turns,
+        deny_bash=deny_bash,
+        deny_tools=deny_tools,
+        default_node_tokens=default_node_tokens,
+    )
     # Both halves are still CONCRETE here, which is why the check lives at this line rather
     # than over the finished wiring: `KernelWiring.policy` is the narrow `Policy` PORT, and the
     # rows are a property of the loaded table, not of the port. Reaching back through the port

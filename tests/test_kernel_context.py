@@ -60,6 +60,18 @@ from kernel_fakes import (
 
 
 @pytest.mark.os_agnostic
+def test_work_hands_the_policy_s_tool_denylist_to_the_executor(tmp_path: Path) -> None:
+    """The coordinator forwards ``deny_tools`` beside ``deny_bash``: a node's boundary is the policy's."""
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert executor.requests[0].deny_tools == ("WebFetch",)
+
+
+@pytest.mark.os_agnostic
 def test_work_runs_the_resolved_row_s_executor_and_charges_what_it_reported(tmp_path: Path) -> None:
     run_dir = fresh_run_dir(tmp_path)
     executor = RecordingExecutor(outcome({"sonnet": 120}))

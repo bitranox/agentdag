@@ -374,6 +374,14 @@ class ExecutorRequest:
     supports confinement must also refuse the tools whose reads it cannot attribute - a
     shell command's read set is not decidable from its text."""
 
+    deny_tools: tuple[str, ...] = ()
+    """Tool names this node may not call at all - refused by a ``PreToolUse`` hook, whatever
+    the arguments (``[kernel] deny_tools``; shipped default ``WebFetch``, ``WebSearch`` and
+    ``Task``, the tools that reach the network or spawn a sub-agent). An empty tuple here
+    means the executor's own fallback applies, the same reading as :attr:`deny_bash`; a
+    caller that means to close nothing passes an empty tuple to an executor built with an
+    empty one. Defaults so a call site that predates this field constructs without it."""
+
     token_cap: int | None = None
     """This node's own token cap for its resolved row (``NodeSpec.budget.tokens[row]``),
     or ``None`` when the node declares no cap for this row - nothing for the executor to
@@ -451,6 +459,20 @@ class ResolvedRow:
     resolving something that is not a tier row."""
 
 
+@dataclass(frozen=True, slots=True)
+class Denylists:
+    """The two lists that ARE the kernel's stated boundary for what a node may call.
+
+    ``bash`` filters Bash commands by substring; ``tools`` closes whole tools outright.
+    Both come from the app config (``[kernel] deny_bash`` / ``deny_tools``) and reach every
+    dispatch through the loaded policy. Bundled so a policy constructor names the boundary
+    once instead of growing a parameter per list.
+    """
+
+    bash: tuple[str, ...]
+    tools: tuple[str, ...]
+
+
 class Policy(Protocol):
     """The tier policy: which model row a spec resolves to, and the run-wide executor limits.
 
@@ -487,6 +509,10 @@ class Policy(Protocol):
     A model node is NOT retried here - design 2.3 rule 5 owns that, and it escalates a rank
     rather than repeating in place."""
     deny_bash: tuple[str, ...]
+    deny_tools: tuple[str, ...]
+    """Tool names every node is refused outright (``[kernel] deny_tools``), forwarded to each
+    dispatch beside :attr:`deny_bash`; the two lists ARE the kernel's stated boundary for a
+    node's Bash and its network and sub-agent tools."""
 
     on_auth_failure: FailureAction
     """What to do when the provider rejected the credential itself (``Escalation.on_auth_failure``).

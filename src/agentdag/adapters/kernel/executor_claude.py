@@ -80,6 +80,7 @@ from .clock_utc import UtcClock
 from .credential_probe import NoCredentialProbe
 from .hooks_claude import (
     deny_bash_commands,
+    deny_closed_tools,
     deny_every_bash_command,
     deny_outside_write_set,
     deny_reads_outside,
@@ -974,6 +975,12 @@ class ClaudeExecutor:
             the executor's own fallback when the caller does not thread the request's
             through per-call (kept keyword-only so it is never confused with the
             positional ``credentials``).
+        deny_tools: Tool names refused outright by a ``PreToolUse`` hook
+            (:func:`~agentdag.adapters.kernel.hooks_claude.deny_closed_tools`), the same
+            request-then-fallback reading as ``deny_bash``. Defaults to EMPTY here because
+            the shipped default lives in config (``[kernel] deny_tools``) and reaches this
+            field through the composition, never as a second literal that could drift;
+            an executor built directly with neither closes no tool.
         tools: The tool set a node may call, matched against
             ``ClaudeAgentOptions.allowed_tools``. Defaults to :data:`DEFAULT_TOOLS`.
         clock: The seam :meth:`_run` reads wall-clock time through to enforce a node's
@@ -993,6 +1000,7 @@ class ClaudeExecutor:
 
     credentials: CredentialSource
     deny_bash: tuple[str, ...] = field(kw_only=True)
+    deny_tools: tuple[str, ...] = field(default=(), kw_only=True)
     tools: tuple[str, ...] = field(default=DEFAULT_TOOLS, kw_only=True)
     clock: Clock = field(default_factory=UtcClock, kw_only=True)
     credential_probe: CredentialProbe = field(default_factory=NoCredentialProbe, kw_only=True)
@@ -1241,7 +1249,8 @@ class ClaudeExecutor:
                         ),
                     ),
                     *self._read_confinement(request),
-                    # The third hook is not a guard: it decides nothing and blocks nothing,
+                    *self._closed_tools(request),
+                    # The last hook is not a guard: it decides nothing and blocks nothing,
                     # it puts the stop notice in front of the model once armed. Matched
                     # broadly so the notice reaches a node whatever tool it reaches for.
                     HookMatcher(
@@ -1254,6 +1263,18 @@ class ClaudeExecutor:
             },
             env=env,
         )
+
+    def _closed_tools(self, request: ExecutorRequest) -> tuple[HookMatcher, ...]:
+        """Return the one matcher refusing this request's closed tools, or nothing when the list is empty.
+
+        The request's list wins; the executor's own is the fallback, exactly as for the Bash
+        denylist. Empty on both means no matcher, which is what an operator who set
+        ``[kernel] deny_tools = []`` asked for.
+        """
+        names = request.deny_tools or self.deny_tools
+        if not names:
+            return ()
+        return (HookMatcher(matcher="|".join(names), hooks=_as_sdk_hooks(deny_closed_tools())),)
 
     def _read_confinement(self, request: ExecutorRequest) -> tuple[HookMatcher, ...]:
         """Return the Bash and read matchers for this request, confined or not.

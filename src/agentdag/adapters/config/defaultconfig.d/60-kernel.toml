@@ -135,7 +135,25 @@ max_turns = 2000
 #   reports a stray write INSIDE the run directory and never one elsewhere on the
 #   machine (denylist measured live: workflow/design/probes/m2-hooks-dontask.md in
 #   RESEARCH; the scan's reach read at source, isolation_scan.py and context.py).
+# Note: a BLANK value (an env var set to nothing) is refused by name before any run
+#   directory exists - it is not read as "deny nothing". To close nothing on purpose,
+#   write an explicit empty list: `deny_bash = []`, or AGENTDAG___KERNEL__DENY_BASH='[]'.
+#   A blank ENTRY is refused too: as a substring it would match every command.
 deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
+
+# Purpose: tool names every node is refused OUTRIGHT by a PreToolUse hook, whatever the
+#   arguments - the boundary for the tools that reach the network or spawn a sub-agent
+# Type: array of strings, each a bare tool name (WebFetch, Task, mcp__server__tool)
+# Default: ["WebFetch", "WebSearch", "Task"]
+# Environment Variable: AGENTDAG___KERNEL__DENY_TOOLS=WebFetch,WebSearch,Task
+# .env: KERNEL__DENY_TOOLS=WebFetch,WebSearch,Task
+# Note: `allowed_tools` on the SDK is an auto-approval list, not a bound - measured, nodes
+#   ran tools outside it - so a deny hook is the only thing that closes a tool. Same
+#   blank-versus-empty rule as deny_bash: a blank value is refused, `deny_tools = []` is
+#   an operator's statement that this run's nodes may reach the network and sub-agents.
+#   An entry that is not a tool-name shape is refused, because a matcher on it would fire
+#   on nothing and the tool would read as closed while it is open.
+deny_tools = ["WebFetch", "WebSearch", "Task"]
 
 # Purpose: the label a run records as its actor - `owner` in state.json, and `by` on every
 #   journal line that names who did something (run_started, resume, retry grant, approve

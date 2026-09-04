@@ -87,6 +87,12 @@ def _only_hook(matchers: Sequence[HookMatcher], matcher: str) -> HookCallback:
     return cast("HookCallback", hooks[0])
 
 
+def _pretooluse(options: ClaudeAgentOptions) -> list[HookMatcher]:
+    """Return the PreToolUse matchers of built options, failing plainly if none were registered."""
+    assert options.hooks is not None, "options carry no hooks at all"
+    return options.hooks["PreToolUse"]
+
+
 def _request(tmp_path: Path, **overrides: Any) -> ExecutorRequest:
     """Build a minimal, well-formed ``ExecutorRequest`` under ``tmp_path`` for a unit test.
 
@@ -1664,6 +1670,45 @@ def test_confined_bash_is_refused_whatever_the_command_says() -> None:
     assert fire(hook, "Bash", {"command": "ls"}) == "deny"
     assert fire(hook, "Bash", {"command": "grep -r x /"}) == "deny"
     assert fire(hook, "Bash", {"command": ""}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_denied_tools_get_one_matcher_that_refuses_them_outright(tmp_path: Path) -> None:
+    """``deny_tools`` closes the network and sub-agent tools the way a confined node's Bash is closed.
+
+    Asserts on what the matcher DOES: the hook denies whatever the tool input says, and the
+    reason names the tool and the config key, so a refused node learns why rather than
+    trying another route.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), deny_tools=("WebFetch", "Task"))
+
+    options = executor._options_for(_request(tmp_path), is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+
+    hook = _only_hook(_pretooluse(options), "WebFetch|Task")
+    assert fire(hook, "WebFetch", {"url": "https://example.invalid"}) == "deny"
+    assert fire(hook, "Task", {"prompt": "spawn a helper"}) == "deny"
+    reason = asyncio.run(_await_hook(hook, "WebFetch", {"url": "https://example.invalid"}))
+    assert "WebFetch" in str(reason) and "deny_tools" in str(reason)
+
+
+@pytest.mark.os_agnostic
+def test_a_request_s_own_tool_denylist_wins_and_an_empty_one_registers_no_matcher(tmp_path: Path) -> None:
+    """The request carries the run's list; the executor's own is the fallback, and empty on both means no matcher."""
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), deny_tools=("WebSearch",))
+
+    from_request = executor._options_for(  # pyright: ignore[reportPrivateUsage]
+        _request(tmp_path, deny_tools=("Task",)), is_stopping=lambda: False
+    )
+    assert fire(_only_hook(_pretooluse(from_request), "Task"), "Task", {}) == "deny"
+    assert not [m for m in _pretooluse(from_request) if m.matcher == "WebSearch"]
+
+    bare = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    none = bare._options_for(_request(tmp_path), is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+    assert not [m for m in _pretooluse(none) if "WebSearch" in (m.matcher or "") or "Task" in (m.matcher or "")]
 
 
 @pytest.mark.os_agnostic

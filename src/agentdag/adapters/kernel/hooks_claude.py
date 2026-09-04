@@ -68,6 +68,7 @@ __all__ = [
     "HookCallback",
     "HookResult",
     "deny_bash_commands",
+    "deny_closed_tools",
     "deny_every_bash_command",
     "deny_outside_write_set",
     "deny_reads_outside",
@@ -254,6 +255,34 @@ def deny_every_bash_command(reason: str) -> HookCallback:
     async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
         del input_data, tool_use_id, context  # unused: this denies unconditionally
         return _deny(reason)
+
+    return hook
+
+
+def deny_closed_tools() -> HookCallback:
+    """Build a ``PreToolUse`` hook refusing every call of the tools its matcher names.
+
+    Matched (by the caller's ``HookMatcher``) against the ``[kernel] deny_tools`` names
+    joined by ``|`` - by shipped default ``WebFetch``, ``WebSearch`` and ``Task``, the
+    tools that reach the network or spawn a sub-agent. The decision is unconditional:
+    ``allowed_tools`` is an auto-approval list, not a bound (measured: nodes ran tools
+    outside it), so a hook returning ``deny`` is the only thing that closes a tool.
+
+    The reason names the tool it just refused and the config key that closed it, so a
+    refused node learns that the route is closed by policy rather than trying it again
+    another way.
+
+    Returns:
+        The hook callback.
+    """
+
+    async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
+        del tool_use_id, context  # unused: this denies unconditionally
+        tool = str(input_data.get("tool_name", "this tool"))
+        return _deny(
+            f"{tool} is closed to nodes of this run by [kernel] deny_tools; "
+            "do the work with the tools you have, and say in your result what you could not reach"
+        )
 
     return hook
 
