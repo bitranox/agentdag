@@ -1,4 +1,4 @@
-# Handover: agentdag, 2026-09-04 ~19:30. Round 2 has two arms of three; arm C is staged and not run.
+# Handover: agentdag, 2026-09-04 ~12:30. The spec round is closed; rank 05 has a benchmark route and a plumbing test that passed.
 
 > **The `RESEARCH/` paths point into a private companion repo.** These documents cite it by
 > repo-qualified path for the design documents, probe scripts and measurement notes they were
@@ -12,108 +12,88 @@ where this session stopped.
 
 ## The next action
 
-**`OPEN-WORK.md` rank 04, still the top-ranked open item.** Run arm C, then write the three-way
-result. One command, from the repo root:
+**`OPEN-WORK.md` rank 05, the top-ranked open item.** Pick the benchmark for the real measurement
+from the three live candidates, then run a CONTROL-ONLY calibration arm before any coordinator arm,
+with what counts as "the control fails" written down first.
 
-    bash ~/agentdag-eval/spec-round2/run-armC.sh > ~/agentdag-eval/spec-round2/armC-envelope.json
-
-It takes up to an hour (ceilings 1,200,000 new tokens and 3600 s) and stops itself at the first
-81/81. Then write arm C and the outcome-band reading into
-`docs/probes/2026-09-03-spec-round2.md` under the divider, beside arms P and S.
-
-**Do NOT run a bmk gate while an arm is in flight.** A gate re-syncs the project `.venv`, and the
-coordinator runs out of it for the whole arm. Verify with direct `.venv/bin/python -m ruff/pyright/
-pytest` calls instead, and run `make test` once the arm is done.
+Rank 08 does NOT block that first step: a control-only arm has no coordinator, so the unseeded-
+checkpoint defect cannot reach it. Rank 08 must be settled before the COORDINATOR arm runs, or the
+score curve charges the coordinator for its own read-confinement.
 
 ## In flight
 
-**Nothing is part-done and no process of mine is alive.** Arms P and S both terminated at their own
-crossings and are written up and pushed. Arm C has never been started.
-
-**Not mine:** `CLAUDE.md.bak` is still `AD` in the index. It is `OPEN-WORK.md` rank 72 with the
-reason it must not be cleared from here; keep an explicit pathspec on every commit until it is.
+**Nothing is part-done and no process of mine is alive.** The three eval trees are cold and complete.
 
 ## Committed, or not
 
-    git status --porcelain          # only the foreign CLAUDE.md.bak entry
-    git log --oneline @{u}..HEAD    # empty, once this handover's own commit is pushed
+`OPEN-WORK.md` is MODIFIED and uncommitted - rank 05 extended and rank 08 added, this session's
+whole reconciliation. Commit it with this file.
 
-CI green on `cd8bd27`, `071b77f` and `6cc4429`, each read from a foreground `ci_wait.py`.
-
-## The results so far
-
-Both arms crossed. Neither reached a ceiling.
-
-| arm | policy                                | new tokens | wall s | nodes | crossing        |
-|-----|---------------------------------------|------------|--------|-------|-----------------|
-| P   | pinned sonnet                         | 540,736    | 2574   | 9     | 81/81 on node 9 |
-| S   | shipped (fable planner, opus workers) | 248,650    | 1475   | 4     | 81/81 on node 4 |
-| C   | one sonnet agent                      | not run    |        |       |                 |
-
-Both pre-registered validity requirements are MET and recorded: the scorer discriminates 0/81 on
-the seed from 81/81 on the reference, and both arms scored every checkpoint with zero failures on
-monotonic series, so `racing_suspected` is false for each.
+**Not mine:** `CLAUDE.md.bak` is still `AD` in the index. It is rank 72 with the reason it must not
+be cleared from here; keep an explicit pathspec on every commit until it is.
 
 ## Decided this session, with the reason
 
-1. **Arm P STANDS as the decomposition arm** (user). Its pinned planner produced a 2-entry first
-   plan where the shipped one produces six, but pinning covers the planner because the
-   pre-registration pins the policy to one row, and the plan a pinned planner produces is the
-   system's behaviour under that policy rather than an apparatus fault.
-2. **The scorer is PINNED for the round** - a `git archive` export of agentswarm at `2f59254` under
-   its own venv, at `~/agentdag-eval/spec-round2/scorer` and `scorer-venv`. Three other sessions
-   were editing agentswarm, and a gate there re-syncs the venv the scorer runs under; a failed
-   checkpoint is recorded rather than fatal, so the damage would have been a MISSED crossing.
-   `cases/spec` is identical between `071f36c` and that export, so it carries the pinned case bytes.
-3. **Scoring lives in agentswarm** (`cases score CASE WORKSPACE`, committed there as `2f59254`).
-   agentdag's interpreter cannot import agentswarm, and a scorer reimplemented here would be a
-   different instrument giving different numbers.
-4. **Checkpoints are taken on node landings and prompt completions**, not on a timer, because the
-   token figure only settles per dispatch - a finer score timeline could not locate a crossing's
-   COST any better.
+- **The spec round 2 is complete and rank 04 is closed.** Arm C crossed 81/81 at 339,482 new tokens
+  and 940 s on its FIRST prompt. The band that fires is "P crosses at higher cost than C" - P spent
+  at least 1.59x the control's tokens and 2.74x its wall clock, "at least" because C's single
+  checkpoint makes its crossing a coarser upper bound and that bias runs against the conclusion. S
+  against C is NOT claimed: its 0.73x margin sits inside that resolution error.
+- **The round cannot decide the thesis, and that is its main result.** A control that finishes in one
+  prompt refutes the case text's claim for the second round running, and a saturating control means
+  a coordinator can at best tie.
+- **The task for rank 05 comes from a published benchmark, not the backlog.** All 20 open items were
+  sized; only three are large and each fails a different criterion. Detail is in rank 05.
+- **The measured quantity is now a SCORE CURVE at a shared ceiling** (final score plus cost to any
+  threshold an arm reaches), because an unsaturated benchmark has no crossing. The checkpoint
+  apparatus already records this as its readings list.
+- **Commits carry NO `Co-Authored-By` trailer**, per the pinned rule, though 16 of the 30 commits
+  before this session do. Raised with the user and NOT answered - see below.
 
-## Decided against, so it is not redone
+## Decided against, and why
 
-* **A fourth arm pinning only the worker rows.** It is the arm that would isolate decomposition
-  from worker tier, and it was rejected: amending after seeing arm P's shape is choosing the design
-  from the data, which is what voided round 1's tier row.
-* **Voiding arm P and re-pinning without the planner.** Same reason, harder: it discards a counted
-  run because its result was inconvenient.
-* **Running arm C alongside arm S.** Wall clock is a measured quantity, so overlapping the arms
-  would confound it. Sequential, as pre-registered.
+- **Commit0** - chosen, set up, then rejected by the user. Apparatus survives with all 16 lite
+  libraries sized.
+- **ProgramBench for the FIRST test** - chosen, then set aside by the user as too big: its own
+  baseline is 6 hours and 1000 steps per instance and this host is under the baseline container spec
+  (16 CPUs and 41 GB against 20 and 60). It stays a live candidate for the REAL measurement.
+- **SWE-bench Verified and SWE-bench Pro** - ruled out as saturated at 96-97 and about 81 percent.
+  Picking either buys back the disease that voided two rounds.
 
-## Two readings I got wrong in flight, both corrected in the note
+## Open, untouched
 
-* A monitor grepping `"event": "result"` matched nothing because the journal now serialises
-  compactly, so several "0 nodes landed" readings were the matcher failing, not the arm.
-* Arm P's 2-entry plan and 0/81 at forty minutes read as a planner that could not decompose. It
-  re-planned and crossed. Both are written into the results section, because the final numbers hide
-  both.
+One line each; `OPEN-WORK.md` holds the detail.
 
-## Still open, untouched
+- An unanswered question to the user: the `Co-Authored-By` contradiction between the pinned rule and
+  this repo's own history. Both commits this session were made without the trailer.
+- Everything else is in the backlog at its own rank.
 
-One line each; `OPEN-WORK.md` carries the detail and is the file to read.
+## Files that matter
 
-* rank 05 - the real comparison on a scratch clone against a single-agent control.
-* rank 06 - the run journal records the operator's OS username.
-* rank 07 - HALF verified this session: the masked-gate block fired on a backgrounded `ci_wait.py`
-  and `gate.py` passed, so the mechanism is live; whether its command set contains `make test` is
-  still untested.
-* rank 25, 30, 38 and below - see the file; none was touched.
+- `docs/probes/2026-09-03-spec-round2.md` - the finished three-arm round, all results under the divider.
+- `OPEN-WORK.md` - ranks 05 and 08 carry this session's whole state.
+- `scripts/eval_run_agentdag.py`, `scripts/eval_run_single_agent.py`, `scripts/eval_checkpoint.py` -
+  the runners and the checkpoint scorer, unchanged and working.
 
-## How to verify this still stands
+**Outside the repo, and not in any git tree** (an agentdag run directory holds credential copies):
 
-    git status --porcelain                     # only the foreign CLAUDE.md.bak entry
-    grep -c '^- \[ \]' OPEN-WORK.md            # 21 open
-    env -u VIRTUAL_ENV make test               # read the RC from the LOG, never a job exit code
-    ls ~/agentdag-eval/spec-round2             # run-armC.sh present, armC-envelope.json absent
+- `~/agentdag-eval/spec-round2/` - the pinned scorer and venv every arm has used. Do not rebuild it.
+- `~/agentdag-eval/smoke-plumbing/` - the passing plumbing run: `setup.py` builds the seed plus BOTH
+  ends of the discrimination control, `run-armC.sh` and `run-armS.sh` are the working arm scripts.
+- `~/agentdag-eval/commit0/` and `~/agentdag-eval/programbench/` - the two set-aside benchmarks,
+  installed with their task tables extracted.
 
-Before pushing a new script here, run `pyright --pythonplatform Windows --pythonpath
-.venv/bin/python` AND `--pythonversion 3.12`: CI checks both, and a local default run checks
-neither. Two pushes went out red this session on Windows-only test defects.
+## How to verify
 
-`PLANS/`, `OPEN-WORK.md` and this file are TRACKED here, so an overwritten handover is recoverable
-from git. `EXECUTION-USER-REVIEW.md` is a SYMLINK into the private research repo and is gitignored.
+    git status --porcelain                 # only the foreign CLAUDE.md.bak, once this is committed
+    env -u VIRTUAL_ENV make test           # the gate; green at 78d7d15 and ff8fd2c
+    cd ~/agentdag-eval/smoke-plumbing && \
+      ~/agentdag-eval/spec-round2/scorer-venv/bin/python setup.py   # floor 1/9, ceiling 9/9, PASS
+
+The gate must not run while an eval arm is in flight: it re-syncs the project `.venv` that the
+runners execute from.
+
+---
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not delete
 it - if this session ends badly it is the only record of where things stood.
