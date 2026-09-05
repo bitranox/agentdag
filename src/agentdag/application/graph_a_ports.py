@@ -71,6 +71,16 @@ class GitPort(Protocol):
 class GatePort(Protocol):
     """The mechanical verification step: something the agent cannot talk its way past."""
 
+    @property
+    def command(self) -> tuple[str, ...]:
+        """The argv this gate runs, so the caller RECORDS what actually ran.
+
+        On the port rather than passed alongside it: a caller that names the command a
+        second time can name a different one, and the journal key, the node's ``input.json``
+        and its brief would then all describe a command the machine never ran.
+        """
+        ...
+
     def run(self, worktree: Path, log: Path) -> int:
         """Run the gate; return its exit code."""
         ...

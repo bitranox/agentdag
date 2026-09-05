@@ -6,6 +6,7 @@ explicit, filtered environment (see :data:`GATE_ENV_ALLOWLIST`) rather than inhe
 the coordinator's whole one.
 
 Contents:
+    * :data:`DEFAULT_GATE_COMMAND` - what a gate runs when nothing configures one.
     * :data:`GATE_ENV_ALLOWLIST` - the only environment variables a gate process gets.
     * :func:`gate_env` - that allowlist intersected with an environment.
     * :func:`withheld_names` - what the allowlist dropped, for the gate log's header.
@@ -22,7 +23,17 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-__all__ = ["GATE_ENV_ALLOWLIST", "MakeTestGate", "gate_env", "withheld_names"]
+__all__ = ["DEFAULT_GATE_COMMAND", "GATE_ENV_ALLOWLIST", "MakeTestGate", "gate_env", "withheld_names"]
+
+DEFAULT_GATE_COMMAND: tuple[str, ...] = ("make", "test")
+"""The gate command a caller that names none gets - this project's own test gate.
+
+Declared once, here, and read by both the port's own default and
+:func:`~agentdag.composition.kernel.build_op_registry`'s, so the description the planner is
+given cannot drift from what an unconfigured gate runs. The value an OPERATOR sees is the
+``[kernel] gate_command`` in the packaged ``60-kernel.toml``, which the CLI reads as its
+fallback; this is the fallback for a caller that builds a gate without going through config
+at all."""
 
 _GATE_LOG_MODE = 0o600
 """``gate.log`` is a store file like every other one under the run directory: created
@@ -57,6 +68,7 @@ GATE_ENV_ALLOWLIST = (
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
+    "PYTHONPATH",
     "UV_CACHE_DIR",
     "UV_TOOL_DIR",
     "UV_TOOL_BIN_DIR",
@@ -67,7 +79,11 @@ GATE_ENV_ALLOWLIST = (
 )
 """The ONLY environment a gate subprocess gets - never the coordinator's whole environment.
 
-Built from what the shipped gate command actually reads. ``make test`` is bmk: the
+Built from what a gate command actually reads. The command is an operator's
+(``[kernel] gate_command``), so the list covers both the shipped one and an interpreter
+invoked directly: ``PYTHONPATH`` is how such a gate reaches a package that is not installed
+into it, and ``UV_CACHE_DIR`` is where uv keeps what it would otherwise re-download every
+run. The shipped ``make test`` is bmk: the
 Makefile shells out to ``uv tool dir`` / ``uv tool install``, so ``PATH``, ``HOME`` (uv's
 cache and tool directories hang off it, as do the ``XDG_*`` overrides of those) and the
 proxy and CA variables a download needs are all load-bearing; ``BMK_PYTHON_CMD`` and
@@ -127,8 +143,8 @@ def withheld_names(environ: Mapping[str, str]) -> tuple[str, ...]:
 class MakeTestGate:
     """Run a project's test gate and report its exit code."""
 
-    def __init__(self, *, command: Sequence[str] = ("make", "test")) -> None:
-        """Store the command to run.
+    def __init__(self, *, command: Sequence[str] = DEFAULT_GATE_COMMAND) -> None:
+        """Store the command to run, refusing one that cannot be run at all.
 
         Gate runs are NOT serialised here. They were, by one host-wide lock file, because
         the build tool rebuilt its shared environment before every target and two gates at
@@ -139,9 +155,27 @@ class MakeTestGate:
         agent nodes but not the gates.
 
         Args:
-            command: The gate command; the default is the project's ``make test``.
+            command: The gate command; the default is :data:`DEFAULT_GATE_COMMAND`.
+
+        Raises:
+            ValueError: ``command`` is empty. There is no runnable empty argv, so a gate
+                built from one could only fail once a node reached it, at which point the
+                run has already spent whatever produced the change being gated.
         """
+        if not tuple(command):
+            raise ValueError("a gate command cannot be empty: there is no argv to run")
         self._command = tuple(command)
+
+    @property
+    def command(self) -> tuple[str, ...]:
+        """The argv this gate runs.
+
+        The coordinator records this as the gate node's ``argv`` rather than being told one
+        separately: a caller that states the command a second time can state it WRONG, and
+        nothing downstream can tell - the journal, the node's ``input.json`` and its brief
+        would all name a command the machine never ran.
+        """
+        return self._command
 
     def run(self, worktree: Path, log: Path) -> int:
         """Run the gate and return its exit code.

@@ -41,9 +41,9 @@ Your plan must validate against this schema:
 
 {schema}
 
-Every entry's "op" must be one of these registered ops. "args" lists what that op's \
-"args" object takes; "emits" lists the key_facts field names a condition may name for an \
-entry using it, and there are no others:
+Every entry's "op" must be one of these registered ops. "does" says what running it means \
+in THIS run; "args" lists what that op's "args" object takes; "emits" lists the key_facts \
+field names a condition may name for an entry using it, and there are no others:
 
 {ops}
 
@@ -233,11 +233,18 @@ def _ops_text(registry: OpRegistry) -> str:
 
 
 def _one_op(op: OpSpec) -> str:
-    """Render one op as its name, its args field names, and its output contract."""
+    """Render one op as its name, what it does, its args field names, and its output contract.
+
+    The description carries what neither of the other two lines can: what running the op
+    MEANS here. ``gate:make-test`` is the case that forced it - the command it runs is
+    configuration (``[kernel] gate_command``), so its name says nothing about what a plan
+    naming it will actually execute, and a planner that has to guess plans around a guess.
+    """
     args = sorted(op.args_model.model_fields)
     emits = sorted(op.output_contract)
     return (
         f"- {op.name}\n"
+        f"    does: {op.description}\n"
         f"    args: {', '.join(args) if args else '(none)'}\n"
         f"    emits: {', '.join(emits) if emits else '(nothing a condition can name)'}"
     )

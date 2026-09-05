@@ -164,7 +164,7 @@ def _done(**key_facts: object) -> NodeOutcome:
 def test_gate_records_the_exit_code_and_the_log(tmp_path: Path) -> None:
     co, rd = coordinator(tmp_path, gate_rc=3)
 
-    r = asyncio.run(co.gate(code("g_test@1", Kind.GATE), argv=("make", "test"), cwd=rd.root))
+    r = asyncio.run(co.gate(code("g_test@1", Kind.GATE), cwd=rd.root))
 
     assert r.status == NodeStatus.FAILED
     assert r.key_facts["rc"] == 3
@@ -175,7 +175,7 @@ def test_gate_records_the_exit_code_and_the_log(tmp_path: Path) -> None:
 def test_gate_records_done_on_exit_code_zero(tmp_path: Path) -> None:
     co, rd = coordinator(tmp_path, gate_rc=0)
 
-    r = asyncio.run(co.gate(code("g_ok@1", Kind.GATE), argv=("make", "test"), cwd=rd.root))
+    r = asyncio.run(co.gate(code("g_ok@1", Kind.GATE), cwd=rd.root))
 
     assert r.status == NodeStatus.DONE
 

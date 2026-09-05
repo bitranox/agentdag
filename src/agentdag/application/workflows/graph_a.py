@@ -244,7 +244,7 @@ async def _branch(
         row = Tally(repo=origin, status="work-failed", head_sha=co.git.head_sha(worktree), test_rc=None)
         outcomes[index] = _BranchOutcome(tally=row, last_node_id=f"w_migrate@{index}")
         return work
-    gate = await co.gate(_test_spec(index, name), argv=("make", "test"), cwd=worktree)
+    gate = await co.gate(_test_spec(index, name), cwd=worktree)
     head = co.git.head_sha(worktree)  # AFTER the gate, so the sha staged for the push is the one it saw
     scan = await co.scan(_scan_spec(index), watched=f"w_migrate@{index}", before=before, write_set=[f"wt/{name}/**"])
     passed = gate.status is NodeStatus.DONE and scan.status is NodeStatus.DONE

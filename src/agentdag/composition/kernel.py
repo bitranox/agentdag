@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..adapters.graph_a.gate_make import MakeTestGate
+from ..adapters.graph_a.gate_make import DEFAULT_GATE_COMMAND, MakeTestGate
 from ..adapters.graph_a.git_cli import GitCli
 from ..adapters.kernel.clock_utc import UtcClock
 from ..adapters.kernel.credential_probe import ApiCredentialProbe
@@ -73,6 +73,7 @@ def wire_kernel(
     max_turns: int,
     deny_bash: Sequence[str],
     deny_tools: Sequence[str],
+    gate_command: Sequence[str],
     notifier: Notifier,
     default_node_tokens: int | None = None,
 ) -> KernelWiring:
@@ -93,6 +94,9 @@ def wire_kernel(
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
         deny_tools: The tool names every node's PreToolUse hook refuses outright. Required,
             like ``deny_bash``: the composition is the one caller that must not forget it.
+        gate_command: The argv every ``gate`` node runs (``[kernel] gate_command``). Required
+            for the same reason: a default here would be a second declaration of what an
+            unconfigured gate runs, free to drift from the packaged config the CLI reads.
         notifier: Where this launch's run events go - resolved by the CLI, which is
             the layer that has both the loaded config naming the sink and the email
             adapter the mail sink sends through; this function takes neither.
@@ -101,6 +105,10 @@ def wire_kernel(
         The wiring for one launch (or relaunch) of the coordinator.
     """
     clock = UtcClock()
+    # One gate object, read twice: the port RUNS the command and the registry DESCRIBES it to
+    # the planner, so building the description from `gate.command` rather than from the
+    # argument again is what keeps the two halves of the same fact from drifting apart.
+    gate = MakeTestGate(command=gate_command)
     executors = {
         "claude": ClaudeExecutor(
             credentials=credential,
@@ -130,11 +138,11 @@ def wire_kernel(
         lock=FileRunLock(),
         clock=clock,
         executors=executors,
-        gate_port=MakeTestGate(),
+        gate_port=gate,
         git=GitCli(),
         scanner=IsolationScanner(),
         policy=policy,
-        registry=build_op_registry(),
+        registry=build_op_registry(gate_command=gate.command),
         scope=_choose_scope(),
         sandbox=NoSandbox(),
         notifier=notifier,
@@ -295,7 +303,12 @@ class _WorkArgs(BaseModel):
 
 
 class _GateMakeTestArgs(BaseModel):
-    """``gate:make-test``'s own args: the ``make test`` argv is fixed by the op, not an arg."""
+    """``gate:make-test``'s own args: none - the argv is the RUN's (``[kernel] gate_command``).
+
+    Deliberately not an arg a plan may set: the gate is the one step the agent that wrote the
+    change cannot influence, and a planner-chosen command is a command the planner can choose
+    to be green.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -407,10 +420,14 @@ def _stop_predicate(entry: Entry, ctx: PlanContext) -> Callable[[], bool] | None
 
 
 def _build_gate_make_test(entry: Entry, ctx: PlanContext) -> Body:
-    """Build ``gate:make-test``'s body: dispatch ``entry`` through :meth:`Coordinator.gate`."""
+    """Build ``gate:make-test``'s body: dispatch ``entry`` through :meth:`Coordinator.gate`.
+
+    Names no command: :meth:`Coordinator.gate` reads the wired gate port's own, so this
+    builder cannot state one that differs from what the run will execute.
+    """
 
     async def body() -> ResultRecord:
-        return await ctx.co.gate(entry.spec, argv=("make", "test"), cwd=ctx.cwd)
+        return await ctx.co.gate(entry.spec, cwd=ctx.cwd)
 
     return body
 
@@ -519,7 +536,7 @@ def _build_plan_entry_guard(entry: Entry, ctx: PlanContext) -> Body:
     return body
 
 
-def build_op_registry() -> OpRegistry:
+def build_op_registry(*, gate_command: Sequence[str] = DEFAULT_GATE_COMMAND) -> OpRegistry:
     """Build the op registry the M6 kernel validates plans against (Task 30).
 
     Every op with a real body today is wired straight to the matching
@@ -534,8 +551,14 @@ def build_op_registry() -> OpRegistry:
     Building this registry touches no live :class:`~agentdag.application.kernel.context.
     Coordinator` - every ``build`` closure above takes one only when its returned
     :data:`~agentdag.application.kernel.registry.Body` is actually invoked (a later
-    task), never at registration time, which is what makes this a plain, no-argument
-    function rather than something that needs a running coordinator to call.
+    task), never at registration time, so this needs no running coordinator to call.
+
+    Args:
+        gate_command: The argv the wired gate runs, which ``gate:make-test``'s description
+            states to the planner. :func:`wire_kernel` passes its OWN gate's ``command``, so
+            production cannot describe one command and run another; the default is here for
+            a caller building a registry without a gate (every test that only needs op names
+            and contracts), and is the same one an unconfigured gate runs.
 
     Returns:
         The registry, with ``work``, ``gate:make-test``, ``scan``, ``reduce:count``,
@@ -545,6 +568,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="work",
+            description="dispatch an agent to make the change the entry's brief describes, in the run's worktree",
             args_model=_WorkArgs,
             output_contract=_WORK_CONTRACT,
             # state: None - a run that accomplished nothing is one where no `work` node ran,
@@ -558,6 +582,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="gate:make-test",
+            description=f"run the project's mechanical test gate ({' '.join(gate_command)}); emits its exit code as rc",
             args_model=_GateMakeTestArgs,
             output_contract=frozenset({"rc"}),  # application/kernel/context.py:499
             # state: rc 0 - `make test` is green before a refactor and green after, so a
@@ -569,6 +594,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="scan",
+            description="diff the run dir against a snapshot; counts writes outside the watched entry's write set",
             args_model=_ScanArgs,
             output_contract=frozenset({"stray"}),  # application/kernel/context.py:584
             # Set from what the body does, not from the brief's `gate:` NAME PREFIX rule, which
@@ -583,6 +609,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="reduce:count",
+            description="count how many of the run's nodes finished done, without dispatching anything",
             args_model=_ReduceCountArgs,
             output_contract=frozenset({"count"}),  # _build_reduce_count's own fold, above
             # state: count 0 - the fold above counts 0 with nothing dispatched, and N once N
@@ -594,6 +621,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="approve",
+            description="suspend the run and ask a person the entry's question; the run continues on their answer",
             args_model=_ApproveArgs,
             output_contract=frozenset({"decision"}),  # application/kernel/context.py:798
             # state: None - a Decision exists ONLY because a person answered THIS payload, so
@@ -605,6 +633,7 @@ def build_op_registry() -> OpRegistry:
     registry.register(
         OpSpec(
             name="plan",
+            description="expand a nested sub-goal into its own plan and run that (the scheduler's own recursion)",
             args_model=_PlanArgs,
             # Empty because the body raises and emits nothing - never a guessed field. A
             # condition can still name a plan entry's `status`, which is reserved.

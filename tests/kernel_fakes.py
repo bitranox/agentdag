@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
     from agentdag.application.graph_a_ports import GatePort
     from agentdag.application.kernel.ports import Executor
+    from agentdag.application.kernel.registry import OpRegistry
 
 __all__ = [
     "CommittingExecutor",
@@ -92,6 +93,11 @@ class RedGate:
     def __init__(self) -> None:
         """Start with no calls recorded."""
         self.calls = 0
+
+    @property
+    def command(self) -> tuple[str, ...]:
+        """What the coordinator records as this gate's argv; nothing here runs it."""
+        return ("red-gate",)
 
     def run(self, worktree: Path, log: Path) -> int:
         """Count the call and report a red gate."""
@@ -540,6 +546,7 @@ def wire(
     executors: Mapping[str, Executor] | None = None,
     policy: OneRowPolicy | None = None,
     gate_port: GatePort | None = None,
+    registry: OpRegistry | None = None,
     parallel: int = 2,
 ) -> Coordinator:
     """Build a coordinator over ``run_dir``, as a relaunch would over an existing one.
@@ -548,6 +555,9 @@ def wire(
     to); a test that must exercise a misconfigured coordinator passes its own, e.g. an
     empty mapping to prove the resolved executor is not wired. ``policy`` defaults to
     ``OneRowPolicy()``; a budget-cap test passes ``LowCeilingPolicy()`` instead.
+
+    ``registry`` defaults to the production one built over the default gate command; an arm
+    about what the planner prompt ADVERTISES passes one built over its own.
 
     ``parallel`` defaults to 2, the smallest bound that lets two entries overlap at all. An arm
     about what a THIRD free slot does has to raise it: at 2 a third dispatch queues behind a
@@ -566,7 +576,7 @@ def wire(
         git=GitCli(),
         scanner=scanner,
         policy=OneRowPolicy() if policy is None else policy,
-        registry=build_op_registry(),
+        registry=build_op_registry() if registry is None else registry,
         sandbox=NoSandbox(),
         parallel=parallel,
     )

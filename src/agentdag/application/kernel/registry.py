@@ -109,6 +109,11 @@ class OpSpec:
             field - the registry's key, matched exactly (``"gate:make-test"`` and a
             hypothetical ``"gate:other-check"`` are two different, independently registered
             ops; there is no prefix-matching mechanism).
+        description: One line saying what an entry naming this op DOES, rendered into the
+            planner's prompt beside the op's args and output contract. A name and a field
+            list say what an op is called and what it emits, never what running it means -
+            and a planner that has to infer that from ``gate:make-test`` cannot know which
+            command this composition wired, so the gate's own description is built from it.
         args_model: Validates :attr:`~agentdag.domain.plan.Entry.args` for an entry naming
             this op. ``extra="forbid"`` so an arg this op does not understand refuses the
             whole plan (decision 1) rather than being silently ignored.
@@ -158,6 +163,7 @@ class OpSpec:
     """
 
     name: str
+    description: str
     args_model: type[BaseModel]
     output_contract: frozenset[str]
     facts_if_no_work: Mapping[str, object] | None

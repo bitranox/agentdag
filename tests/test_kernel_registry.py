@@ -37,6 +37,7 @@ def _build(entry: Entry, ctx: PlanContext) -> Body:
 
 WORK = OpSpec(
     name="work",
+    description="a fixture op: these arms are about registration and lookup, never about dispatch",
     args_model=_NoArgs,
     output_contract=frozenset({"status"}),
     # None, so this fixture stays exempt from the covers-the-contract invariant: these tests
@@ -178,6 +179,7 @@ def test_a_declared_no_work_record_must_cover_the_whole_output_contract() -> Non
     reg = OpRegistry()
     short = OpSpec(
         name="two-fields",
+        description="a fixture op whose declared no-work record leaves one contract field out",
         args_model=_NoArgs,
         output_contract=frozenset({"a", "b"}),
         facts_if_no_work={"a": 0},
@@ -189,6 +191,7 @@ def test_a_declared_no_work_record_must_cover_the_whole_output_contract() -> Non
     reg.register(
         OpSpec(
             name="two-fields",
+            description="the same fixture op, now declaring a value for every contract field",
             args_model=_NoArgs,
             output_contract=frozenset({"a", "b"}),
             facts_if_no_work={"a": 0, "b": False},

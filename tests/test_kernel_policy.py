@@ -196,6 +196,7 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
             max_turns=25,
             deny_bash=(),
             deny_tools=(),
+            gate_command=("make", "test"),
             notifier=NoNotifier(),
         )
     assert "codex" in str(caught.value), "the message must name the row, not just the count"
@@ -210,6 +211,7 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
         max_turns=25,
         deny_bash=(),
         deny_tools=(),
+        gate_command=("make", "test"),
         notifier=NoNotifier(),
     )
 

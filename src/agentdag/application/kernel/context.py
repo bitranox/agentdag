@@ -612,18 +612,18 @@ class Coordinator:
         """
         return self.scanner.snapshot(self.run_dir.root)
 
-    async def gate(self, spec: NodeSpec, *, argv: Sequence[str], cwd: Path) -> ResultRecord:
-        """Dispatch a mechanical gate: run ``argv`` in ``cwd`` and record its exit code.
+    async def gate(self, spec: NodeSpec, *, cwd: Path) -> ResultRecord:
+        """Dispatch a mechanical gate: run :attr:`gate_port`'s command in ``cwd``, record its exit code.
 
-        ``argv`` is what a workflow calls this gate for - the log line, the record's key -
-        but the command actually run is whatever :attr:`gate_port` was built with; a
-        different ``argv`` still makes a different journal key even if the port's own
-        command did not change, because ``argv`` is part of ``input_obj``.
+        The argv comes from the PORT and nowhere else, which is what makes the recorded
+        command the executed one: a caller that states it separately can state a DIFFERENT
+        one, and nothing downstream can tell - the journal key, the node's ``input.json``
+        and its brief would all name a command the machine never ran. It is part of
+        ``input_obj``, so the same node under a differently wired gate is a new dispatch
+        rather than a replay of the old verdict.
 
         Args:
             spec: The gate node's spec.
-            argv: The gate command, recorded for the key and the brief; not itself what
-                :attr:`gate_port` runs (the port carries its own fixed command).
             cwd: The working directory the gate runs in; recorded in the key as a path
                 relative to the run root, like :meth:`work`'s ``cwd``.
 
@@ -641,6 +641,7 @@ class Coordinator:
             raise KernelError(
                 f"cwd {cwd} of node {spec.node_id!r} is outside the run root {self.run_dir.root}"
             ) from exc
+        argv = self.gate_port.command
         input_obj = {"argv": list(argv), "cwd": cwd_rel}
 
         async def body(node_dir: Path) -> NodeOutcome:

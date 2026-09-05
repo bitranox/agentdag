@@ -286,6 +286,11 @@ class FlakyGate:
         self.raising = raising
         self.calls = 0
 
+    @property
+    def command(self) -> tuple[str, ...]:
+        """What the coordinator records as this gate's argv; nothing here runs it."""
+        return ("flaky-gate",)
+
     def run(self, worktree: Path, log: Path) -> int:
         """Count the call, raise while the failure budget lasts, else report success."""
         del worktree, log
@@ -319,7 +324,7 @@ def test_a_transient_code_failure_is_retried_and_the_second_attempt_stands(tmp_p
     gate = FlakyGate(fails=1)
     coordinator = gated(run_dir, gate, policy=RetryingPolicy())
 
-    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 2
     assert record.status == NodeStatus.DONE
@@ -333,7 +338,7 @@ def test_a_red_gate_is_never_retried(tmp_path: Path) -> None:
     gate = RedGate()
     coordinator = gated(run_dir, gate, policy=RetryingPolicy())
 
-    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 1
     assert record.status == NodeStatus.FAILED
@@ -347,7 +352,7 @@ def test_a_config_bug_is_never_retried(tmp_path: Path) -> None:
     gate = FlakyGate(fails=9, raising=KernelError)
     coordinator = gated(run_dir, gate, policy=RetryingPolicy())
 
-    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 1
     assert record.error is not None
@@ -360,7 +365,7 @@ def test_the_attempt_cap_bounds_a_failure_that_never_clears(tmp_path: Path) -> N
     gate = FlakyGate(fails=9)
     coordinator = gated(run_dir, gate, policy=RetryingPolicy())
 
-    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 3  # RetryingPolicy.max_attempts
     assert record.status == NodeStatus.FAILED
@@ -374,7 +379,7 @@ def test_a_policy_allowing_one_attempt_retries_nothing(tmp_path: Path) -> None:
     gate = FlakyGate(fails=1)
     coordinator = gated(run_dir, gate)
 
-    record = asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 1
     assert record.status == NodeStatus.FAILED
@@ -386,7 +391,7 @@ def test_every_attempt_is_journaled_under_its_own_key(tmp_path: Path) -> None:
     run_dir = fresh_run_dir(tmp_path)
     coordinator = gated(run_dir, FlakyGate(fails=1), policy=RetryingPolicy())
 
-    asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
 
     lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
     results = [line for line in lines if isinstance(line, ResultLine)]
@@ -440,11 +445,11 @@ def test_a_red_gate_runs_again_when_a_person_grants_it(tmp_path: Path) -> None:
     journal key can see, and the failure is otherwise served back for ever."""
     run_dir = fresh_run_dir(tmp_path)
     gate = RedGate()
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
     assert gate.calls == 1
 
     granted = grant_last_failure(run_dir, node_id="g_test@1")
-    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 2
     assert record.attempt == 1
@@ -456,8 +461,8 @@ def test_a_relaunch_without_a_grant_serves_the_failure_back(tmp_path: Path) -> N
     """The control the test above needs: without the grant, the second launch runs nothing."""
     run_dir = fresh_run_dir(tmp_path)
     gate = RedGate()
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
-    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 1
     assert record.attempt == 0
@@ -469,12 +474,12 @@ def test_a_grant_is_spent_by_the_attempt_it_authorises(tmp_path: Path) -> None:
     cannot match a second time and an unattended run can never loop on it."""
     run_dir = fresh_run_dir(tmp_path)
     gate = RedGate()
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
     grant_last_failure(run_dir, node_id="g_test@1")
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
     assert gate.calls == 2
 
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 2
 
@@ -484,7 +489,7 @@ def test_a_grant_naming_a_key_whose_record_passed_changes_nothing(tmp_path: Path
     """The scope guard is the RECORD: a grant can only ever buy an attempt for a failure."""
     run_dir = fresh_run_dir(tmp_path)
     gate = FlakyGate(fails=0)
-    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    record = asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
     assert record.status == NodeStatus.DONE
 
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
@@ -493,7 +498,7 @@ def test_a_grant_naming_a_key_whose_record_passed_changes_nothing(tmp_path: Path
             node_id="g_test@1", key=record.input_hash, reason="", by="me", token_id="local", at=stamp(UtcClock())
         )
     )
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
 
     assert gate.calls == 1
 
@@ -507,14 +512,14 @@ def test_a_grant_reaches_only_the_node_it_names(tmp_path: Path) -> None:
     run_dir = fresh_run_dir(tmp_path)
     gate = RedGate()
     twin = gate_spec().model_copy(update={"node_id": "g_test@2"})
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
-    asyncio.run(gated(run_dir, gate).gate(twin, argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(twin, cwd=run_dir.root))
     grant_last_failure(run_dir, node_id="g_test@1")
     calls_before = gate.calls
 
     coordinator = gated(run_dir, gate)
-    asyncio.run(coordinator.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
-    asyncio.run(coordinator.gate(twin, argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(coordinator.gate(gate_spec(), cwd=run_dir.root))
+    asyncio.run(coordinator.gate(twin, cwd=run_dir.root))
 
     assert gate.calls == calls_before + 1
 
@@ -525,12 +530,12 @@ def test_a_replay_after_a_granted_attempt_dispatches_nothing_new(tmp_path: Path)
     decision in the same order and the key sequence still matches the journal's own."""
     run_dir = fresh_run_dir(tmp_path)
     gate = RedGate()
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
     grant_last_failure(run_dir, node_id="g_test@1")
-    asyncio.run(gated(run_dir, gate).gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(gated(run_dir, gate).gate(gate_spec(), cwd=run_dir.root))
 
     replay = gated(run_dir, gate)
-    asyncio.run(replay.gate(gate_spec(), argv=["make", "test"], cwd=run_dir.root))
+    asyncio.run(replay.gate(gate_spec(), cwd=run_dir.root))
 
     journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
     started = [line.key for line in journal.lines() if isinstance(line, StartedLine)]

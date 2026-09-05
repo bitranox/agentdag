@@ -155,6 +155,28 @@ deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "
 #   on nothing and the tool would read as closed while it is open.
 deny_tools = ["WebFetch", "WebSearch", "Task"]
 
+# Purpose: the argv every gate node of a run executes - the mechanical check an agent
+#   cannot satisfy by asserting it did the work
+# Type: array of strings (the program, then its arguments)
+# Default: ["make", "test"]
+# Environment Variable: AGENTDAG___KERNEL__GATE_COMMAND=make,test
+# .env: KERNEL__GATE_COMMAND=make,test
+# Note: it runs in the node's worktree, under a filtered environment (an ALLOWLIST, see
+#   agentdag.adapters.graph_a.gate_make.GATE_ENV_ALLOWLIST) rather than the coordinator's
+#   own, so a command needing a variable that is not on that list will not see it.
+# Note: the run RECORDS what it ran - this exact argv reaches the gate node's input.json,
+#   its journal key and its brief, read off the wired gate rather than restated - and the
+#   planner is told it too, as `gate:make-test`'s description in the planner prompt.
+# Note: a plan cannot choose it. The gate is the one step the agent that wrote the change
+#   has no say over, so the command is the RUN's, resolved once at `run start` and carried
+#   on the run (state.json's `settings`) - a background child, a resume, an approve and a
+#   retry all gate on what the run was started with, never on the config they happen to see.
+# Note: the blank-versus-empty rule is the OPPOSITE of deny_bash's, on purpose. An explicit
+#   empty list (`gate_command = []`) is REFUSED by name before any run directory exists:
+#   there is no argv to run, so it would leave the run with no gate at all. A BLANK value
+#   (an env var set to nothing) falls back to this packaged command, for the same reason.
+gate_command = ["make", "test"]
+
 # Purpose: the label a run records as its actor - `owner` in state.json, and `by` on every
 #   journal line that names who did something (run_started, resume, retry grant, approve
 #   decision, cancel)

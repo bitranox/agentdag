@@ -1015,6 +1015,62 @@ def _config_denylist(
     return tuple(entries)
 
 
+def _packaged_gate_command() -> tuple[str, ...]:
+    """The packaged ``[kernel] gate_command``, as the words a gate would run."""
+    packaged = cast("Sequence[object]", _packaged_kernel_defaults()["gate_command"])
+    return tuple(str(word) for word in packaged)
+
+
+def _config_gate_command(config: Config) -> tuple[str, ...]:
+    """Read ``[kernel] gate_command``, the argv every gate node of this run executes.
+
+    Its blank-versus-empty rule is the OPPOSITE of :func:`_config_denylist`'s, and
+    deliberately: an empty DENYLIST denies nothing, which is a boundary an operator can
+    reasonably choose to widen, while an empty ARGV is not a command at all - nothing can run
+    it, so ``[]`` is refused by name here rather than failing once a node reaches the gate,
+    after whatever produced the change being gated has already been paid for. A BLANK value
+    (an env var set to nothing, ``--set kernel.gate_command=``) falls back to the packaged
+    command, because the alternative reading - a run with no gate - is the one thing this
+    project's gate exists to prevent.
+
+    Args:
+        config: The merged layered configuration.
+
+    Returns:
+        The command's words, at least one, none of them blank.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on an explicitly empty command, a
+            blank word, or a value that is not a list of words at all.
+    """
+    key = "kernel.gate_command"
+    raw = config.get(key, default=_packaged_gate_command())
+    if isinstance(raw, str):
+        if not raw.strip():
+            return _packaged_gate_command()
+        words = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        words = [str(item).strip() for item in cast("Sequence[object]", raw)]
+    else:
+        # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`,
+        # digits and `true`/`false` from an env var or --set, and a mapping would otherwise be
+        # iterated as its KEYS and silently accepted. None of these is an argv.
+        _fail(
+            f"[kernel] gate_command (config key {key}) is {type(raw).__name__}, not a list of "
+            f'words; write a TOML array such as ["make", "test"], or a comma-joined string'
+        )
+    if not words:
+        _fail(
+            f"[kernel] gate_command (config key {key}) is empty: there is no argv to run, so a run "
+            f"configured this way would have no gate. Name the program and its arguments, or remove "
+            f"the override to use the packaged command"
+        )
+    for word in words:
+        if not word:
+            _fail(f"[kernel] gate_command (config key {key}) carries a blank word, which is not part of any argv")
+    return tuple(words)
+
+
 def _resolve_settings(
     ctx: click.Context, *, policy_override: Path | None, parallel_override: int | None
 ) -> RunSettings:
@@ -1035,6 +1091,7 @@ def _resolve_settings(
         deny_tools=_config_deny_tools(config),
         notify=_notify_choice(config),
         credential_file=_configured_credential_file(config),
+        gate_command=_config_gate_command(config),
     )
 
 
@@ -1066,6 +1123,7 @@ def _build_wiring(ctx: click.Context, settings: RunSettings) -> tuple[KernelWiri
         default_node_tokens=settings.default_node_tokens,
         deny_bash=settings.deny_bash,
         deny_tools=settings.deny_tools,
+        gate_command=settings.gate_command,
         notifier=_build_notifier(ctx, settings.notify),
     )
     return wiring, credential_desc

@@ -262,6 +262,7 @@ def test_the_production_wiring_gives_the_executor_a_probe_that_can_actually_ask(
         max_turns=5,
         deny_bash=(),
         deny_tools=(),
+        gate_command=("make", "test"),
         notifier=NoNotifier(),
     )
 

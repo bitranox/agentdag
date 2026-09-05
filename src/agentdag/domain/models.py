@@ -514,6 +514,16 @@ class RunSettings(BaseModel):
     deny_tools: tuple[str, ...]
     notify: str = Field(min_length=1)
     credential_file: str
+    gate_command: tuple[str, ...] = ("make", "test")
+    """The argv every ``gate`` node of this run executes (``[kernel] gate_command``).
+
+    Defaulted, unlike its neighbours, for the ``settings`` blocks written before this field
+    existed: those runs gated on ``make test``, because that was the only thing a gate could
+    run, so the default states what such a run DID. It is frozen at that and does not track
+    the packaged ``[kernel] gate_command``, which is a statement about what a NEW run gates
+    on and cannot change what an old one already ran. A run started since always carries an
+    explicit value - ``run start`` resolves one from config for every run, and
+    ``tests/test_cli_run_settings.py`` pins the whole persisted block."""
 
 
 class RunState(BaseModel):

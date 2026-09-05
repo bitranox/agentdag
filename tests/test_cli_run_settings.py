@@ -10,6 +10,10 @@ builds its wiring from that block, never from the config of whoever happens to r
 The background arms REPLAY the exact argv the CLI built for its child through the real parser,
 with none of the parent's ``--set`` flags: that argv crosses an argument-validation boundary an
 in-process ``--foreground`` test never reaches, and the child has only what the run carries.
+
+The helpers with public names (``started_run_id``, ``suspended_run_id``, ``child_argv``,
+``settings_block``) are the route every settings arm takes into a run's own state and are
+shared with ``test_cli_run_gate_command.py``; the underscore-prefixed ones are this module's.
 """
 
 from __future__ import annotations
@@ -36,21 +40,21 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
 
-def _started_run_id(output: str) -> str:
+def started_run_id(output: str) -> str:
     """The run id a BACKGROUND ``run start`` printed."""
     match = re.search(r"run (\S+) started \(unit", output)
     assert match, output
     return match.group(1)
 
 
-def _suspended_run_id(output: str) -> str:
+def suspended_run_id(output: str) -> str:
     """The run id a FOREGROUND graph-a run printed when it reached its approve."""
     match = re.search(r"run (\S+) suspended at a_push_list", output)
     assert match, output
     return match.group(1)
 
 
-def _child_argv(scope: RecordingScope) -> list[str]:
+def child_argv(scope: RecordingScope) -> list[str]:
     """The argv the CLI handed its background child, minus the interpreter prefix.
 
     Asserts the prefix is the one ``_launch_background`` builds, so a test replays what the
@@ -67,7 +71,7 @@ def _state(tmp_path: Path, run_id: str) -> dict[str, object]:
     return json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
 
 
-def _settings(tmp_path: Path, run_id: str) -> dict[str, object]:
+def settings_block(tmp_path: Path, run_id: str) -> dict[str, object]:
     """The persisted ``settings`` block, or a failure naming its absence."""
     state = _state(tmp_path, run_id)
     assert "settings" in state, state
@@ -106,7 +110,7 @@ def test_run_start_persists_the_resolved_kernel_settings_on_the_run(cli_runner: 
     result = cli_runner.invoke(cli_mod.cli, argv, obj=obj)
 
     assert result.exit_code == 0, result.output
-    state = _state(tmp_path, _started_run_id(result.output))
+    state = _state(tmp_path, started_run_id(result.output))
     assert state["settings"] == {
         "policy_path": str(alt_policy),
         "parallel": 3,
@@ -116,6 +120,7 @@ def test_run_start_persists_the_resolved_kernel_settings_on_the_run(cli_runner: 
         "deny_tools": [],
         "notify": "none",
         "credential_file": "",
+        "gate_command": ["make", "test"],
     }
 
 
@@ -135,7 +140,7 @@ def test_a_background_child_builds_its_wiring_from_the_run_not_from_its_own_conf
 
     calls: list[Mapping[str, object]] = []
     child_services = services_with(CommittingExecutor(), tmp_path, wire_calls=calls)
-    child = cli_runner.invoke(cli_mod.cli, _child_argv(scope), obj=child_services)
+    child = cli_runner.invoke(cli_mod.cli, child_argv(scope), obj=child_services)
 
     assert child.exit_code == 0, child.output
     assert calls, "the child built no wiring at all"
@@ -155,9 +160,9 @@ def test_a_background_child_records_the_run_s_operator_as_the_run_started_actor(
     set_args = ["--set", "kernel.operator=ops-desk"]
     started = cli_runner.invoke(cli_mod.cli, [*set_args, *start_args(tmp_path, foreground=False)], obj=parent)
     assert started.exit_code == 0, started.output
-    run_id = _started_run_id(started.output)
+    run_id = started_run_id(started.output)
 
-    child = cli_runner.invoke(cli_mod.cli, _child_argv(scope), obj=services_with(CommittingExecutor(), tmp_path))
+    child = cli_runner.invoke(cli_mod.cli, child_argv(scope), obj=services_with(CommittingExecutor(), tmp_path))
 
     assert child.exit_code == 0, child.output
     assert (_state(tmp_path, run_id)["owner"], _run_started_by(tmp_path, run_id)) == ("ops-desk", "ops-desk")
@@ -175,7 +180,7 @@ def test_resume_builds_its_wiring_from_the_run_s_settings_not_the_current_config
         obj=services_with(CommittingExecutor(), tmp_path),
     )
     assert started.exit_code == 0, started.output
-    run_id = _suspended_run_id(started.output)
+    run_id = suspended_run_id(started.output)
 
     calls: list[Mapping[str, object]] = []
     resume_services = services_with(CommittingExecutor(), tmp_path, wire_calls=calls)
@@ -195,7 +200,7 @@ def test_a_run_written_before_settings_existed_resolves_them_from_config_and_say
     (tmp_path / "runs").mkdir()
     started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=services_with(CommittingExecutor(), tmp_path))
     assert started.exit_code == 0, started.output
-    run_id = _suspended_run_id(started.output)
+    run_id = suspended_run_id(started.output)
     state_path = tmp_path / "runs" / run_id / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "settings" in state, state  # the precondition: the block IS there before this strips it
@@ -225,8 +230,8 @@ def test_a_persisted_credential_keyfile_that_is_gone_refuses_the_relaunch_by_nam
         cli_mod.cli, [*set_args, *start_args(tmp_path)], obj=services_with(CommittingExecutor(), tmp_path)
     )
     assert started.exit_code == 0, started.output
-    run_id = _suspended_run_id(started.output)
-    assert _settings(tmp_path, run_id)["credential_file"] == str(keyfile)
+    run_id = suspended_run_id(started.output)
+    assert settings_block(tmp_path, run_id)["credential_file"] == str(keyfile)
     keyfile.unlink()
 
     resume_argv = ["run", "resume", run_id, "--runs", str(tmp_path / "runs"), "--foreground"]
@@ -279,8 +284,8 @@ def test_apply_deadlines_tells_a_crashed_run_through_the_sink_that_run_was_start
         cli_runner, tmp_path / "one", runs, spy=spy, root_flags=["--set", "kernel.notify=mail", *_MAIL_FLAGS]
     )
     wants_none = _crash_a_run(cli_runner, tmp_path / "two", runs, spy=spy, root_flags=["--set", "kernel.notify=none"])
-    assert _settings(tmp_path, wants_mail)["notify"] == "mail"
-    assert _settings(tmp_path, wants_none)["notify"] == "none"
+    assert settings_block(tmp_path, wants_mail)["notify"] == "mail"
+    assert settings_block(tmp_path, wants_none)["notify"] == "none"
     assert spy.sent_notifications == []  # nobody was told on the way down, which is the crash sweep's job
 
     sweep_flags = ["--set", "kernel.notify=mail", *_MAIL_FLAGS]

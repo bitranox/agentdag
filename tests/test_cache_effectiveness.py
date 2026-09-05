@@ -75,6 +75,8 @@ class TestGetConfig:
             "deny_bash": ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"],
             # The tools closed to every node by default: the ones that reach the network or spawn sub-agents.
             "deny_tools": ["WebFetch", "WebSearch", "Task"],
+            # The mechanical check every gate node runs; a run carries the one it was started with.
+            "gate_command": ["make", "test"],
             # The actor label every run records; a constant, never the operating account's name.
             "operator": "operator",
         }
