@@ -244,7 +244,7 @@ A run never writes to a real repository.
 
 ### The gate is a separate process, and gates are not serialised
 
-The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
+The gate is the run's own `[kernel] gate_command` - `make test` by default - run in the node's own worktree as a separate process; the coordinator reads its exit code and nothing else. It runs under an allowlisted environment rather than the coordinator's whole one, and the argv it ran is what the node records: its `input.json`, its brief and its journal key all name the command the machine actually executed. A plan cannot choose it, and an empty `gate_command` is refused before a run directory exists, because a run with no gate is the one thing the gate exists to prevent. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
 
 ### One credential per node
 

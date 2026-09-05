@@ -71,7 +71,7 @@ the [documentation index](../README.md).
   - `commands/run.py`  -  run group: start, status, records, resume, approve, cancel, apply-deadlines, and the hidden coordinator entry point
 - `src/agentdag/adapters/graph_a/`  -  Graph A adapter package, one module per port:
   - `git_cli.py`  -  GitPort over the git CLI (mirror, remove_mirror, clone, inspect, push)
-  - `gate_make.py`  -  GatePort: the project's `make test` as a separate child process, given only its allowlisted environment
+  - `gate_make.py`  -  GatePort: the run's `[kernel] gate_command` (`make test` by default) as a separate child process, given only its allowlisted environment; it reports the argv it runs so the caller records what ran
   - `store_fs.py`  -  RunStore: one timestamped run directory holding worktrees, logs, homes, records and done markers
   - `work_claude_sdk.py`  -  WorkPort over the Claude Agent SDK, one isolated client and credential per node
   - `approve_console.py`  -  ApprovePort: the console confirmation asked once before anything is pushed

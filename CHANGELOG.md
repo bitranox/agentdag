@@ -7,6 +7,19 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Added
+- `[kernel] gate_command`: the argv every gate node runs, `["make", "test"]` by shipped default.
+  It is a run setting like the denylists - resolved once at `run start`, written into
+  `state.json`, and read back by the background child, a `resume`, an `approve` and a `retry`, so
+  a command given by `--set`, an environment variable or a profile binds the whole run rather
+  than only the process that typed it. A plan cannot choose it: the gate is the step the agent
+  that wrote the change has no say over. Its blank-versus-empty rule is the opposite of the
+  denylists': an explicit `[]` is refused by name before any run directory exists, because there
+  is no argv to run and the result would be a run with no gate, while a blank value falls back to
+  the packaged command. `PYTHONPATH` joins `GATE_ENV_ALLOWLIST`, which a gate command that is an
+  interpreter rather than `make` needs to reach a package not installed into it.
+- `description` on every registered op, rendered into the planner prompt as a `does:` line beside
+  its args and output contract. `gate:make-test` builds its own from the command this run wired,
+  so a planner is told which gate will actually run instead of inferring one from the op name.
 - `[kernel] deny_tools`: tool names every node is refused outright by a `PreToolUse` hook,
   `WebFetch`, `WebSearch` and `Task` by shipped default - the tools that reach the network or
   spawn a sub-agent. `allowed_tools` on the SDK is an auto-approval list, not a bound, so a deny
@@ -199,6 +212,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- The gate records the command it RAN. `Coordinator.gate` reads the wired gate port's own argv
+  instead of being handed one, so the node's `input.json`, its brief and its journal key all name
+  what the machine executed. They could disagree before: every caller passed the literal
+  `("make", "test")` while the port ran whatever it had been built with.
 - A run carries the settings it was started with. `run start` resolves `[kernel] parallel`,
   `max_turns`, `default_node_tokens`, `deny_bash`, `deny_tools` and `notify`, the `--policy` path
   and the `[credentials]` keyfile choice once, from its own config and options, and writes them to
