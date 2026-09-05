@@ -350,3 +350,45 @@ checkpoint 5 and added five at checkpoint 4 that were still failing at 5.
 `circuit_eval` is re-run whole for this arm under the same settings before the pair is tallied;
 the decision on when is the operator's and is recorded in `OPEN-WORK.md` rank 05. The
 coordinator arm may be built and run on the band verdict above meanwhile.
+
+### Corrected control, `circuit_eval` re-run
+
+Decided by the user 2026-09-05 (three options: re-run now, re-run later interleaved with the
+coordinator arm, or read checkpoint 8 as a harness continuation): re-run now, same settings.
+Launched 15:56 detached, run dir `opus-5_whole-spec_high_20260905T1556`, `END circuit_eval rc=0`
+at 18:07, `LAUNCHER_RC=0`; load averages 21.3 at start and 19.5 at end; token expiry 19:06 was
+not reached. The void run dir keeps its readings for the record under a `VOID-condition-3.txt`
+marker and enters no total.
+
+**Validity gate on the re-run:** all 8 checkpoints executed with no `infrastructure_failure`
+and no `had_error`; every checkpoint has exactly one process and one `result` event, nothing
+orphaned, no steps missing from any stream, so condition 3 did not recur; the token held.
+`scripts/scb_arm_report.py` over the three valid run dirs reports `Void: none`.
+
+| problem        | ck | strict | core  | iso   | peak prompt | new tokens | cost USD | seconds | steps | results | failed own | failed inherited | regression tests | repaired | void |
+|----------------|----|--------|-------|-------|-------------|------------|----------|---------|-------|---------|------------|------------------|------------------|----------|------|
+| `circuit_eval` | 1  | 1.000  | 1.000 | 1.000 | 62,000      | 65,140     | 1.54     | 308     | 10    | 1       | 0          | 0                | 0                | -        |      |
+| `circuit_eval` | 2  | 1.000  | 1.000 | 1.000 | 70,231      | 48,734     | 1.10     | 176     | 11    | 1       | 0          | 0                | 36               | 0        |      |
+| `circuit_eval` | 3  | 1.000  | 1.000 | 1.000 | 118,982     | 97,935     | 2.91     | 632     | 19    | 1       | 0          | 0                | 99               | 0        |      |
+| `circuit_eval` | 4  | 1.000  | 1.000 | 1.000 | 118,828     | 94,179     | 3.08     | 768     | 22    | 1       | 0          | 0                | 205              | 0        |      |
+| `circuit_eval` | 5  | 0.998  | 1.000 | 0.963 | 108,467     | 84,000     | 2.90     | 557     | 29    | 1       | 1          | 0                | 430              | 0        |      |
+| `circuit_eval` | 6  | 0.998  | 1.000 | 1.000 | 117,133     | 92,614     | 3.11     | 689     | 27    | 1       | 0          | 1                | 457              | 0        |      |
+| `circuit_eval` | 7  | 0.998  | 1.000 | 1.000 | 145,020     | 120,839    | 4.64     | 940     | 40    | 1       | 0          | 1                | 508              | 0        |      |
+| `circuit_eval` | 8  | 0.991  | 0.882 | 0.892 | 234,000     | 215,174    | 11.21    | 3012    | 67    | 1       | 4          | 1                | 529              | 0        |      |
+
+**The corrected control over all 17 checkpoints, now tallied:** S = 6, C = 0.890, mean strict
+0.922, repaired 0 of 12 defined; new tokens 1,690,169; cost USD 63.80; 14,003 seconds; peak
+occupancy over 150,000 on 3 checkpoints and over 200,000 on 1 (`circuit_eval` 8 at 234,000).
+
+**Band verdict, exact:** `S = 6`, USABLE, as the bound argument above already settled.
+
+**The reading about the loop fix, over 17:** against the calibration arm's S 5, C 0.828, mean
+strict 0.889, cost 74.73 and 1,901,033 new tokens, the corrected control reads S 6, C 0.890,
+mean strict 0.922, cost 63.80 and 1,690,169 new tokens: one more strict-perfect checkpoint at
+15 percent less cost and 11 percent fewer new tokens, and again ZERO carried defects repaired on
+the 12 defined transitions. On `circuit_eval` the re-run reproduced the calibration arm's shape
+exactly: checkpoints 1 to 4 strict-perfect, then `test_json_errors` introduced and failed at 5
+and carried through 8 unrepaired. The void run had scored 6 of 8 on the same problem, so the
+untallied 8 it suggested for the arm reads as one run's spread, which is why the pair's
+pre-registration says separation, not causation. Its readings stay on record and enter nothing.
+
