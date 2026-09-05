@@ -346,7 +346,10 @@ def cli_run_records(ctx: click.Context, *, run_id: str, runs_option: Path | None
         return
     for record in records:
         charged = sum(record.charged_tokens.values())
-        safe_console.echo(f"{record.node_id:<24} {record.attempt:<4} {record.status.value:<10} {charged}")
+        # A dash, never $0.0000: an executor that reported no cost and one that cost nothing
+        # at the margin are different facts, and a subscription row really is the latter.
+        cost = "-" if record.cost_usd is None else f"${record.cost_usd:.4f}"
+        safe_console.echo(f"{record.node_id:<24} {record.attempt:<4} {record.status.value:<10} {charged:<10} {cost}")
 
 
 @click.command("resume", context_settings=CLICK_CONTEXT_SETTINGS)

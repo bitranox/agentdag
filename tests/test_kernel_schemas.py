@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 from schema_helpers import load, validator
@@ -16,6 +16,7 @@ from agentdag.domain.journal import (
     dump_journal_line,
     parse_journal_line,
 )
+from agentdag.domain.keys import canonical_json, content_hash, record_hash
 from agentdag.domain.models import ApprovePayload, ErrorType, NodeSpec, ResultRecord
 
 
@@ -137,3 +138,76 @@ def test_the_journal_line_schema_covers_every_line_type_the_union_admits() -> No
     consts = {d["properties"]["event"]["const"] for d in load("journal-line")["$defs"].values() if "properties" in d}
 
     assert events <= consts, f"union events with no schema def: {sorted(events - consts)}"
+
+
+_COSTED_RECORD: dict[str, Any] = {
+    "node_id": "n-0001",
+    "attempt": 0,
+    "continuation": 0,
+    "status": "needs_continuation",
+    "artefact_refs": ["wt/root"],
+    "key_facts": {},
+    "typed_fields": [],
+    "charged_tokens": {"opus": 153956},
+    "cost_usd": 5.00020325,
+    "tokens": {"in": 3309463, "out": 49574, "cache_read": 3205081, "cache_write": 104290, "reasoning": None},
+    "duration_s": 784.104462,
+    "executor_used": "claude",
+    "model_used": "opus",
+    "effort_used": "-",
+    "knowledge_used": [],
+    "input_hash": "v2:sha256:" + "0" * 64,
+    "sandbox": {"adapter": "none", "filesystem": False, "network_egress": False, "separate_uid": False},
+}
+"""One real dispatch's record, its figures taken from a stored run and its transcript.
+
+Real rather than invented, and carrying every key such a record carries on disk, so the two
+numbers the benchmark compares - the CLI's own ``total_cost_usd`` and the cache-creation
+component of the input total - are exercised at the magnitudes they actually arrive at, and
+so the round-trip below is over the whole shape rather than a convenient subset of it."""
+
+
+@pytest.mark.os_agnostic
+def test_a_record_carrying_a_cost_and_a_cache_write_round_trips_and_validates() -> None:
+    """Both figures have to survive the WIRE, not merely the Python object.
+
+    Nothing reads a record in memory: the benchmark reads it back off ``record.json`` and the
+    journal, so a field the model holds but the dump drops, or the schema rejects, is a field
+    that does not exist as far as the comparison is concerned.
+    """
+    record = ResultRecord.model_validate(_COSTED_RECORD)
+
+    dumped = json.loads(record.model_dump_json(by_alias=True))
+
+    assert dumped["cost_usd"] == 5.00020325
+    assert dumped["tokens"].get("cache_write") == 104290
+    validator("result-record").validate(dumped)
+    back = ResultRecord.model_validate(dumped)
+    assert back.cost_usd == 5.00020325
+    assert back.tokens is not None
+    assert back.tokens.cache_write == 104290
+
+
+@pytest.mark.os_agnostic
+def test_a_tokens_block_written_before_cache_write_existed_hashes_exactly_as_it_did() -> None:
+    """A record already on disk must dump BYTE-IDENTICALLY, or a resumed run re-does its work.
+
+    ``record_hash`` hashes a dependency record's canonical JSON and that hash feeds
+    ``prefix_hash`` and so every downstream node's journal key. An added ``"cache_write": null``
+    on a record written before the field existed would therefore re-key every node downstream
+    of it, and a resume would re-dispatch work the journal already holds. Hence the field is
+    OMITTED when unset rather than written out as null - the same shape ``sandbox`` uses, and
+    the reason the schema types it ``integer`` and leaves it out of ``required``.
+    """
+    old = dict(_COSTED_RECORD)
+    old["tokens"] = {"in": 3309463, "out": 49574, "cache_read": 3205081, "reasoning": None}
+    old["cost_usd"] = None
+
+    record = ResultRecord.model_validate(old)
+
+    assert record.tokens is not None
+    assert record.tokens.cache_write is None, "unknown, never 0 - nothing measured this dispatch's cache writes"
+    dumped = json.loads(record.model_dump_json(by_alias=True))
+    assert "cache_write" not in dumped["tokens"]
+    assert record_hash(record) == content_hash(canonical_json(old))
+    validator("result-record").validate(dumped)

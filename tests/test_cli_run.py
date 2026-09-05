@@ -43,7 +43,7 @@ from agentdag.composition import AppServices, build_production
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.keys import hash8
-from agentdag.domain.models import ErrorType, NodeError, NodeStatus, ResultRecord, RetryGrant
+from agentdag.domain.models import ErrorType, NodeError, NodeStatus, ResultRecord, RetryGrant, Tokens
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -1108,3 +1108,46 @@ def test_run_retry_allows_a_late_attempt_the_existing_grants_do_reach(cli_runner
     )
 
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.os_agnostic
+def test_run_records_prints_the_dispatch_cost_beside_the_charged_tokens(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The human listing has to show what a node COST, not only what it charged in tokens.
+
+    Charged tokens are one row's count under one model; the comparison this run feeds reports
+    spend in dollars, so an operator reading the listing needs the dollar figure on the same
+    line. A record whose executor reported none prints a dash, never ``$0.0000`` - free at the
+    margin and not-measured are different statements about a node.
+    """
+    (tmp_path / "runs").mkdir()
+    run_id = "20260101T000000Z-abcdef"
+    run_dir = FsRunDir.create(tmp_path / "runs", run_id)
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    for node_id, cost in (("n_costed", 5.00020325), ("n_uncosted", None)):
+        key = "v2:sha256:" + f"{len(node_id):02x}" * 32  # distinct in the LEADING hex
+        journal.append(
+            ResultLine(
+                key=key,
+                record=ResultRecord(
+                    node_id=node_id,
+                    attempt=0,
+                    status=NodeStatus.DONE,
+                    charged_tokens={"opus": 153956},
+                    cost_usd=cost,
+                    tokens=Tokens(**{"in": 10, "out": 2, "cache_read": 1, "cache_write": 3, "reasoning": None}),
+                    input_hash=key,
+                    duration_s=1.0,
+                    executor_used="claude",
+                    model_used="opus",
+                    effort_used="-",
+                ),
+                at="2026-08-22T09:12:03+00:00",
+            )
+        )
+    obj = services_with(CommittingExecutor(), tmp_path)
+
+    result = cli_runner.invoke(cli_mod.cli, ["run", "records", run_id, "--runs", str(tmp_path / "runs")], obj=obj)
+
+    assert result.exit_code == 0, result.output
+    assert re.search(r"n_costed\s+0\s+done\s+153956\s+\$5\.0002", result.output), result.output
+    assert re.search(r"n_uncosted\s+0\s+done\s+153956\s+-", result.output), result.output

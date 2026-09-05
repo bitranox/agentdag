@@ -778,10 +778,10 @@ class _NoTerminalStreamClient:
     two SDK-shape tests need (the probe measured a terminal message always arrives,
     in one of two shapes). This fake covers the ONE branch neither of those reaches:
     ``ClaudeExecutor._run``'s own ``if cap_hit: return self._budget_outcome(request,
-    first_turn_input, {})`` sitting AFTER the ``async with`` block - reached only when
-    the stream closes with no terminal message whatsoever (a connection drop right
-    after the interrupted turn, before the SDK's own terminal message would have
-    arrived).
+    first_turn_input, usage, cost_usd=cost_usd)`` sitting AFTER the ``async with`` block -
+    reached only when the stream closes with no terminal message whatsoever (a connection
+    drop right after the interrupted turn, before the SDK's own terminal message would have
+    arrived), so both the usage and the cost it is handed there are empty.
     """
 
     instances: ClassVar[list[_NoTerminalStreamClient]] = []
@@ -816,9 +816,9 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The one branch neither SDK-shape test reaches: ``_run``'s own
-    ``if cap_hit: return self._budget_outcome(request, first_turn_input, {})`` after
-    the ``async with`` block - a capped dispatch whose stream ends with no terminal
-    ``ResultMessage`` at all. Both
+    ``if cap_hit: return self._budget_outcome(request, first_turn_input, usage,
+    cost_usd=cost_usd)`` after the ``async with`` block - a capped dispatch whose stream
+    ends with no terminal ``ResultMessage`` at all. Both
     ``test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_s_own_shape``
     cases go through a ``ResultMessage`` arriving (one of the two shapes the probe
     measured); this one never gets one, so ``_budget_outcome`` is called with an EMPTY
@@ -1025,9 +1025,9 @@ def test_run_reports_deadline_with_empty_usage_when_the_stream_ends_with_no_term
 ) -> None:
     """The deadline's own equivalent of
     ``test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_no_terminal_message``:
-    ``_run``'s own ``if deadline_hit: return self._deadline_outcome(request, first_turn_input, {})``
-    after the ``async with`` block, reached when the stream ends with no terminal
-    ``ResultMessage`` at all.
+    ``_run``'s own ``if deadline_hit: return self._deadline_outcome(request,
+    first_turn_input, usage, cost_usd=cost_usd)`` after the ``async with`` block, reached
+    when the stream ends with no terminal ``ResultMessage`` at all.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
@@ -1795,3 +1795,152 @@ def test_the_turn_ceiling_is_a_continuation_not_a_fault() -> None:
     )
     assert ok.status is NodeStatus.DONE
     assert ok.key_facts["turns_exhausted"] is False
+
+
+# ---------------------------------------------------------------------------------
+# Task 7: the cost and the cache-write figure, on every exit path.
+#
+# The single-agent control this coordinator is benchmarked against reports its spend as
+# the CLI's own `total_cost_usd`, so a node record has to carry that same figure or the
+# two cannot be compared in one unit. `tokens.in_` is the input TOTAL (input + cache
+# creation + cache read), which cannot say how much of it was a cache WRITE, so that
+# component is carried beside the total rather than derived from it.
+# ---------------------------------------------------------------------------------
+
+_COST_USD = 1.25
+"""The terminal message's own ``total_cost_usd`` for the exit-path arms below.
+
+A value no other figure in this file shares, so a cost read off the wrong field, or a
+default left standing, is visible rather than coincidentally equal."""
+
+_CACHE_WRITE = 4242
+"""The terminal usage's ``cache_creation_input_tokens`` for those arms, distinct from every
+other token figure here for the same reason."""
+
+
+def _terminal_with_cost(*, num_turns: int) -> ResultMessage:
+    """A terminal ``ResultMessage`` carrying both figures Task 7 records.
+
+    Kept apart from :func:`_result` so the arms below state their two figures explicitly
+    and no existing test's charged-token arithmetic moves under it.
+    """
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=num_turns,
+        session_id="s1",
+        total_cost_usd=_COST_USD,
+        usage={"input_tokens": 7, "cache_creation_input_tokens": _CACHE_WRITE, "output_tokens": 3},
+        result="ok",
+    )
+
+
+_EXIT_ARMS: dict[str, tuple[list[AssistantMessage], dict[str, Any], list[datetime]]] = {
+    "normal": ([_turn(10)], {}, [_STARTED]),
+    "handover": (
+        [_turn_of_message("m1", 100), _turn_of_message("m2", 200)],  # turn 2 crosses the 150 ceiling
+        {"token_cap": 100_000, "handover_at_tokens": 150},
+        [_STARTED],
+    ),
+    "budget": ([_turn(500)], {"token_cap": 100}, [_STARTED]),
+    "deadline": ([_turn(1)], {"deadline_s": 10.0}, [_STARTED, _STARTED + timedelta(seconds=11)]),
+}
+"""Every way :meth:`ClaudeExecutor._run` can end WITH a terminal message, one arm each.
+
+Each entry is the stream to replay, the request fields that select that exit, and the clock
+readings the dispatch sees. The fifth exit - no terminal message at all - has no cost to read
+and is the control test below, not an arm here."""
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("arm", "expected_status"),
+    [
+        ("normal", NodeStatus.DONE),
+        ("handover", NodeStatus.NEEDS_CONTINUATION),
+        ("budget", NodeStatus.FAILED),
+        ("deadline", NodeStatus.CANCELLED),
+    ],
+)
+def test_every_exit_path_records_the_dispatch_s_cost_and_its_cache_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arm: str, expected_status: NodeStatus
+) -> None:
+    """All four terminal exits must stamp both figures, not just the ordinary one.
+
+    The three ceiling paths (handover, budget, deadline) build their own outcome rather than
+    translating the SDK's - that is what keeps an interrupted dispatch from reporting itself
+    as a plain success - so each of them is a place the two figures can be forgotten
+    independently, and a run whose expensive nodes are exactly the ones that hit a ceiling
+    would then report a cost of nothing for them.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    turns, overrides, readings = _EXIT_ARMS[arm]
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, _terminal_with_cost(num_turns=len(turns)))
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=(), clock=_SequenceClock(readings))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, **overrides)))
+
+    assert outcome.status is expected_status, "the arm did not take the exit path it names"
+    assert outcome.cost_usd == _COST_USD
+    assert outcome.tokens is not None
+    assert outcome.tokens.cache_write == _CACHE_WRITE
+
+
+@pytest.mark.os_agnostic
+def test_a_dispatch_that_never_reached_a_terminal_message_records_no_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The absent case, decided rather than inherited: no terminal message, no cost.
+
+    ``total_cost_usd`` only ever arrives on a ``ResultMessage``, so a stream that ends without
+    one has no figure to record and the record must say ``None`` - never ``0.0``, which is a
+    real and different statement (a subscription row genuinely costs nothing at the margin).
+    ``cache_write`` is 0 there for the same reason every other token field is: the usage
+    mapping this path is handed is empty.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", _NoTerminalStreamClient)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.error is not None
+    assert outcome.error.type == "budget_exceeded"  # the path really is the interrupted one
+    assert outcome.cost_usd is None
+    assert outcome.tokens is not None
+    assert outcome.tokens.cache_write == 0
+
+
+@pytest.mark.os_agnostic
+def test_the_tokens_block_carries_cache_creation_separately_from_the_input_total() -> None:
+    """``in_`` folds three fields into one number, so cache creation is not recoverable from it.
+
+    50 + 3873 + 119786 has exactly as many decompositions as a reader cares to invent; the
+    record has to state the 3873 itself for a cost or cache-effectiveness question to be
+    answerable from it at all.
+    """
+    usage = {
+        "input_tokens": 50,
+        "cache_creation_input_tokens": 3873,
+        "cache_read_input_tokens": 119786,
+        "output_tokens": 1034,
+    }
+    o = outcome_from_usage(
+        model="sonnet", num_turns=1, is_error=False, text="ok", usage=usage, first_turn_input=3923, cwd_rel="wt/r"
+    )
+    assert o.tokens is not None
+    assert o.tokens.in_ == 50 + 3873 + 119786  # unchanged: still the input TOTAL
+    assert o.tokens.cache_write == 3873
+
+    # A usage mapping this SDK version did not fill in reads 0, the same default every other
+    # field takes at this seam - never None, which is reserved for an executor reporting none.
+    empty = outcome_from_usage(
+        model="sonnet", num_turns=1, is_error=False, text="ok", usage={}, first_turn_input=0, cwd_rel="wt/r"
+    )
+    assert empty.tokens is not None
+    assert empty.tokens.cache_write == 0

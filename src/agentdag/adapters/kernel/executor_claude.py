@@ -108,6 +108,7 @@ __all__ = [
     "input_total",
     "outcome_from_usage",
     "separated_refusal",
+    "tokens_from_usage",
 ]
 
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
@@ -506,6 +507,44 @@ def charged_total(usage: Mapping[str, Any]) -> int:
     )
 
 
+def tokens_from_usage(usage: Mapping[str, Any]) -> Tokens:
+    """Build the record's :class:`Tokens` block from one dispatch's usage mapping.
+
+    The ONE place that translation is written, so every exit path of
+    :meth:`ClaudeExecutor._run` reports the same five fields from the same arithmetic.
+    ``cache_write`` in particular is a field a caller can silently omit - it defaults to
+    ``None`` on the model, meaning "nobody measured it" - and four exit paths each building
+    their own block is exactly the shape where one of them keeps forgetting.
+
+    ``reasoning`` is ``None``: this CLI reports no such figure at all, which is a different
+    statement from the 0 an unreported COUNT gets.
+
+    Args:
+        usage: ``ResultMessage.usage`` or one turn's ``AssistantMessage.usage``; each field
+            defaults to 0 if this SDK version does not emit it.
+
+    Returns:
+        ``in`` = :func:`input_total`, ``out`` = ``output_tokens``, ``cache_read`` =
+        ``cache_read_input_tokens``, ``cache_write`` = ``cache_creation_input_tokens``.
+
+    Example:
+        >>> tokens_from_usage({"input_tokens": 50, "cache_creation_input_tokens": 3873,
+        ...                    "cache_read_input_tokens": 119786, "output_tokens": 1034}).cache_write
+        3873
+        >>> tokens_from_usage({}).cache_write
+        0
+    """
+    return Tokens(
+        **{
+            "in": input_total(usage),
+            "out": int(usage.get("output_tokens", 0)),
+            "cache_read": int(usage.get("cache_read_input_tokens", 0)),
+            "cache_write": int(usage.get("cache_creation_input_tokens", 0)),
+            "reasoning": None,
+        }
+    )
+
+
 def outcome_from_usage(
     *,
     model: str,
@@ -516,6 +555,7 @@ def outcome_from_usage(
     first_turn_input: int,
     cwd_rel: str,
     subtype: str = "",
+    cost_usd: float | None = None,
 ) -> NodeOutcome:
     """Translate one dispatch's terminal usage into the outcome the coordinator branches on.
 
@@ -545,6 +585,10 @@ def outcome_from_usage(
         subtype: ``ResultMessage.subtype``. Only one value is read, and it is read
             BEFORE ``is_error``: ``error_max_turns`` means the dispatch used every turn
             it was allowed, which is a CEILING being reached rather than a fault.
+        cost_usd: ``ResultMessage.total_cost_usd`` - what the CLI itself says this
+            dispatch cost. Defaults to ``None``, which records that no figure was
+            reported and is a different statement from 0 (a subscription row costs
+            nothing at the margin).
 
     Returns:
         ``status=NEEDS_CONTINUATION`` when the turn ceiling was reached;
@@ -561,10 +605,7 @@ def outcome_from_usage(
         ... ).status
         <NodeStatus.DONE: 'done'>
     """
-    in_tokens = input_total(usage)
-    out_tokens = int(usage.get("output_tokens", 0))
-    cache_read = int(usage.get("cache_read_input_tokens", 0))
-    tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+    tokens = tokens_from_usage(usage)
     # The turn ceiling is read BEFORE is_error, because the CLI reports it AS an error
     # (is_error true, subtype "error_max_turns") and it is not one. It is the same class of
     # event as crossing `handover_at_tokens`: a bound the operator set, reached. Treating it
@@ -587,6 +628,7 @@ def outcome_from_usage(
         typed_fields=["turns", "turns_exhausted"],
         tokens=tokens,
         charged_tokens={model: charged_total(usage)},
+        cost_usd=cost_usd,
         executor_used="claude",
         model_used=model,
         effort_used=_NO_VALUE,
@@ -1173,10 +1215,13 @@ class ClaudeExecutor:
         # `terminal` now carries - so a ceiling added later gets one branch here rather
         # than two that can drift apart.
         usage = (terminal.usage or {}) if terminal is not None else {}
+        # The cost is read from the SAME place and under the same rule as `usage`: the terminal
+        # message's METERS are trusted on every one of these paths, its VERDICT on none of them.
+        cost_usd = terminal.total_cost_usd if terminal is not None else None
         if deadline_hit:
-            return self._deadline_outcome(request, first_turn_input, usage)
+            return self._deadline_outcome(request, first_turn_input, usage, cost_usd=cost_usd)
         if cap_hit:
-            return self._budget_outcome(request, first_turn_input, usage)
+            return self._budget_outcome(request, first_turn_input, usage, cost_usd=cost_usd)
         if handover.armed:
             return self._handover_outcome(
                 request,
@@ -1187,6 +1232,7 @@ class ClaudeExecutor:
                 grace_used=handover.grace_used,
                 grace_expired=handover.expired,
                 stopped_by_subtree=handover.by_subtree,
+                cost_usd=cost_usd,
             )
         if terminal is not None:
             return self._outcome_for(request, terminal, first_turn_input, cwd_rel)
@@ -1334,6 +1380,7 @@ class ClaudeExecutor:
             first_turn_input=first_turn_input,
             cwd_rel=cwd_rel,
             subtype=message.subtype or "",
+            cost_usd=message.total_cost_usd,
         )
         if request.effort:
             # Safe to stamp the REQUESTED value here specifically: _options_for already
@@ -1353,6 +1400,7 @@ class ClaudeExecutor:
         grace_used: int,
         grace_expired: bool,
         stopped_by_subtree: bool,
+        cost_usd: float | None,
     ) -> NodeOutcome:
         """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
 
@@ -1383,14 +1431,16 @@ class ClaudeExecutor:
                 expiry behaviour. A live run measured 6 armed dispatches, 2 of them exactly
                 at the threshold, and could classify none of them
                 (RESEARCH ``workflow/design/probes/live-handover.md``).
+            cost_usd: What the terminal message reported this dispatch cost, or ``None``
+                when no terminal message arrived. Read off the SDK's own report even here,
+                where its ``is_error``/``subtype`` are deliberately ignored: what the probe
+                measured as untrustworthy on an interrupted dispatch is its verdict, never
+                its meters, and a handover that stopped a node mid-run still spent money.
 
         Returns:
             A ``NEEDS_CONTINUATION`` outcome carrying the worktree and the trigger figure.
         """
-        in_tokens = input_total(usage)
-        out_tokens = int(usage.get("output_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        tokens = tokens_from_usage(usage)
         return NodeOutcome(
             status=NodeStatus.NEEDS_CONTINUATION,
             artefact_refs=[cwd_rel],
@@ -1409,6 +1459,7 @@ class ClaudeExecutor:
             typed_fields=["context_at_handover", "grace_expired", "stopped_by_subtree"],
             tokens=tokens,
             charged_tokens={request.model: charged_total(usage)},
+            cost_usd=cost_usd,
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
@@ -1474,7 +1525,9 @@ class ClaudeExecutor:
         await client.interrupt()
         return True
 
-    def _budget_outcome(self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]) -> NodeOutcome:
+    def _budget_outcome(
+        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any], *, cost_usd: float | None
+    ) -> NodeOutcome:
         """Build the record a cap-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
         This is the ONLY place that gets to decide a capped node's outcome - never the
@@ -1501,21 +1554,23 @@ class ClaudeExecutor:
             usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
                 produced, or ``{}`` on the rarer path where the stream ended with no
                 terminal message at all.
+            cost_usd: What that same terminal message reported the dispatch cost, or
+                ``None`` when none arrived. Its meters are read even though its verdict is
+                not: a node stopped at a ceiling spent real money, exactly as it spent the
+                real tokens ``usage`` already carries here.
 
         Returns:
             A ``FAILED`` outcome, ``error.type=BUDGET_EXCEEDED``, ``transient=False``,
             ``key_facts["cap_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
         """
-        in_tokens = input_total(usage)
-        out_tokens = int(usage.get("output_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        tokens = tokens_from_usage(usage)
         return NodeOutcome(
             status=NodeStatus.FAILED,
             key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["cap_hit"],
             tokens=tokens,
             charged_tokens={request.model: charged_total(usage)},
+            cost_usd=cost_usd,
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
@@ -1582,7 +1637,7 @@ class ClaudeExecutor:
         return elapsed_s > deadline_s
 
     def _deadline_outcome(
-        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any]
+        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any], *, cost_usd: float | None
     ) -> NodeOutcome:
         """Build the record a deadline-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
@@ -1604,22 +1659,24 @@ class ClaudeExecutor:
             usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
                 produced, or ``{}`` on the rarer path where the stream ended with no
                 terminal message at all.
+            cost_usd: What that same terminal message reported the dispatch cost, or
+                ``None`` when none arrived. Its meters are read even though its verdict is
+                not: a node stopped at a ceiling spent real money, exactly as it spent the
+                real tokens ``usage`` already carries here.
 
         Returns:
             A ``CANCELLED`` outcome (design 2.2: "cancelled: the scheduler stopped it -
             deadline or cancel"), ``error.type=DEADLINE``, ``transient=False``,
             ``key_facts["deadline_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
         """
-        in_tokens = input_total(usage)
-        out_tokens = int(usage.get("output_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        tokens = Tokens(**{"in": in_tokens, "out": out_tokens, "cache_read": cache_read, "reasoning": None})
+        tokens = tokens_from_usage(usage)
         return NodeOutcome(
             status=NodeStatus.CANCELLED,
             key_facts={"deadline_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["deadline_hit"],
             tokens=tokens,
             charged_tokens={request.model: charged_total(usage)},
+            cost_usd=cost_usd,
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,

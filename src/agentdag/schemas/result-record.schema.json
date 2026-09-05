@@ -63,7 +63,7 @@
         "null"
       ],
       "minimum": 0,
-      "description": "DERIVED at read time from tokens and the tier row's usd_per_mtoken; zero-marginal for subscription rows; null when tokens are unknown. Never the stored primary quantity - stored here only as a convenience snapshot."
+      "description": "What the dispatch cost in USD, as the executor itself reported it (the Claude CLI's own total_cost_usd on its terminal message); null when it reported none, which is not the same statement as 0 (a subscription row costs nothing at the margin). Recorded so a coordinator run and a single-agent control run, whose harness reports the same figure, are comparable in one unit."
     },
     "tokens": {
       "type": [
@@ -99,6 +99,11 @@
             "null"
           ],
           "minimum": 0
+        },
+        "cache_write": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cache-creation tokens: what the dispatch spent WRITING the prompt cache, a component of 'in' (the input total) that the total alone cannot recover. Optional, never a required-but-nullable property: a tokens block written before this field existed omits the key entirely, and must keep omitting it on re-dump, because record_hash feeds every downstream node's journal key and an added 'cache_write': null would re-key work already on disk."
         }
       },
       "required": [
@@ -263,7 +268,8 @@
         "in": 8200,
         "out": 640,
         "cache_read": 5100,
-        "reasoning": 0
+        "reasoning": 0,
+        "cache_write": 3000
       },
       "charged_tokens": {
         "sonnet": 8840

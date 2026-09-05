@@ -273,9 +273,16 @@ class Tokens(BaseModel):
     The schema's field name is ``in`` - a Python keyword - so the model attribute is
     ``in_`` with ``in`` kept as the wire alias.
 
+    ``in_`` is the input TOTAL - input plus cache creation plus cache read - which cannot
+    say how much of itself was a cache WRITE, so that component is carried beside it in
+    ``cache_write`` rather than left to be derived from a number that has as many
+    decompositions as a reader cares to invent.
+
     Example:
         >>> Tokens(**{"in": 1, "out": 2, "cache_read": 3, "reasoning": 0}).model_dump(by_alias=True)
         {'in': 1, 'out': 2, 'cache_read': 3, 'reasoning': 0}
+        >>> Tokens(**{"in": 9, "out": 2, "cache_read": 3, "cache_write": 4, "reasoning": 0}).model_dump()["cache_write"]
+        4
     """
 
     model_config = ConfigDict(populate_by_name=True, frozen=True)
@@ -284,6 +291,30 @@ class Tokens(BaseModel):
     out: int | None
     cache_read: int | None
     reasoning: int | None
+    cache_write: int | None = None
+    """Cache-creation tokens for this dispatch: what it spent WRITING the prompt cache.
+
+    ``None`` means nobody measured it - an executor that reports no such figure, or a block
+    written before this field existed - and is why the field is not simply defaulted to 0,
+    which would be a measurement rather than an absence."""
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_cache_write(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Omit ``cache_write`` entirely when unset instead of writing it out as ``null``.
+
+        A tokens block written before this field existed has to dump BYTE-IDENTICALLY, because
+        :func:`~agentdag.domain.keys.record_hash` hashes a dependency record's canonical JSON
+        and that hash feeds :func:`~agentdag.domain.keys.prefix_hash` and so every downstream
+        node's journal key: an added ``"cache_write": null`` would re-key every node downstream
+        of a record already on disk, and a resumed run would re-dispatch work the journal
+        already holds. The schema types the property ``integer`` only and leaves it out of the
+        tokens block's ``required`` list for exactly this reason - optional, never a
+        required-but-nullable property, the same shape ``sandbox`` uses on the record itself.
+        """
+        data = handler(self)
+        if data.get("cache_write") is None:
+            data.pop("cache_write", None)
+        return data
 
 
 class NodeError(BaseModel):
@@ -352,6 +383,15 @@ class NodeOutcome(BaseModel):
     typed_fields: list[str] = Field(default_factory=list)
     tokens: Tokens | None = None
     charged_tokens: dict[str, int] = Field(default_factory=dict)
+    cost_usd: float | None = None
+    """What this dispatch COST, as the executor itself reported it, or ``None`` when it
+    reported none.
+
+    Lives on the outcome rather than only on :class:`ResultRecord` because the executor is
+    the only thing that knows it: the Claude CLI hands back its own ``total_cost_usd`` on the
+    terminal message, and that is the unit a single-agent control's harness reports too, so a
+    coordinator run and a control run are comparable only if every node record carries it."""
+
     executor_used: str
     model_used: str
     effort_used: str
@@ -389,7 +429,6 @@ class ResultRecord(NodeOutcome):
 
     input_hash: str
     duration_s: float
-    cost_usd: float | None = None
     sandbox: SandboxGuarantees | None = None
     """What sandbox boundary was actually in force for this node (Task 19), stamped by
     :meth:`~agentdag.application.kernel.context.Coordinator._dispatch` from the wired
