@@ -951,7 +951,7 @@ def _config_denylist(
             )
         entries = [item.strip() for item in raw.split(",")]
     elif isinstance(raw, (list, tuple)):
-        entries = [str(item).strip() for item in raw]
+        entries = [str(item).strip() for item in cast("Sequence[object]", raw)]
     else:
         # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`,
         # digits and `true`/`false` from an env var or --set, and a mapping would otherwise be
