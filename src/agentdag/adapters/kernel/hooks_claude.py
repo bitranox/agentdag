@@ -101,7 +101,9 @@ def _deny(reason: str) -> HookResult:
     }
 
 
-def deny_outside_write_set(isolation_root: Path, *, allowed: Sequence[str]) -> HookCallback:
+def deny_outside_write_set(
+    isolation_root: Path, *, allowed: Sequence[str], extra_roots: Sequence[Path] = ()
+) -> HookCallback:
     """Build a ``PreToolUse`` hook denying any write outside ``isolation_root``.
 
     Matched (by the caller's ``HookMatcher``) against ``Write|Edit|MultiEdit|
@@ -130,17 +132,31 @@ def deny_outside_write_set(isolation_root: Path, *, allowed: Sequence[str]) -> H
     nothing may write nothing. It is not "unrestricted within the root", which is what
     this hook meant before the write set reached it.
 
+    ``extra_roots`` widens containment to a SECOND kind of root the run does not own (an
+    operator-supplied workspace, :attr:`~agentdag.application.kernel.ports.ExecutorRequest.
+    extra_roots`), and the grant list still decides inside it. A target under one of those is
+    matched by its ABSOLUTE POSIX path rather than a root-relative one, because outside the
+    isolation root there is nothing to be relative TO - and because that keeps the two kinds
+    unconfusable: a relative glob written for the run root can never match an absolute path,
+    so naming a workspace cannot silently widen ``wt/a/**``.
+
     Args:
-        isolation_root: The node's isolation root; a target resolving outside this
-            (after ``realpath``) is denied.
-        allowed: The globs, relative to ``isolation_root``, this node may write to.
-            Matched by :func:`~agentdag.domain.scan.is_covered`, the same matcher the
-            isolation scan judges strays with.
+        isolation_root: The node's isolation root; a target resolving outside this and
+            outside every entry of ``extra_roots`` (after ``realpath``) is denied.
+        allowed: The globs this node may write to - relative to ``isolation_root`` for a
+            target inside it, absolute for one under an extra root. Matched by
+            :func:`~agentdag.domain.scan.is_covered`, the same matcher the isolation scan
+            judges strays with, and built by
+            :func:`~agentdag.adapters.kernel.executor_claude.allowed_writes`.
+        extra_roots: Further roots the node may write inside, subject to ``allowed``.
+            Resolved here with ``realpath``, as ``isolation_root`` already is. Empty is the
+            behaviour this hook had before a run could name a second root.
 
     Returns:
-        The hook callback, closed over ``isolation_root`` and ``allowed``.
+        The hook callback, closed over the resolved roots and ``allowed``.
     """
-    root_real = os.path.realpath(isolation_root)
+    root_real = Path(os.path.realpath(isolation_root))
+    extra_real = tuple(Path(os.path.realpath(root)) for root in extra_roots)
     permitted = tuple(allowed)
 
     async def hook(input_data: dict[str, Any], tool_use_id: str | None, context: object) -> HookResult:
@@ -150,14 +166,37 @@ def deny_outside_write_set(isolation_root: Path, *, allowed: Sequence[str]) -> H
         if not file_path:
             return _deny("no path in tool input; refusing")
         target = Path(os.path.realpath(file_path))
-        if Path(root_real) not in target.parents:
-            return _deny(f"{file_path} resolves to {target}, outside the isolation root {root_real}")
-        rel = target.relative_to(Path(root_real)).as_posix()
-        if not is_covered(rel, permitted):
-            return _deny(f"{file_path} resolves to {rel}, which this node's write set does not cover")
+        contained = _addressed_within(target, root=root_real, extra_roots=extra_real)
+        if contained is None:
+            roots = ", ".join(str(root) for root in (root_real, *extra_real))
+            return _deny(f"{file_path} resolves to {target}, outside this node's roots: {roots}")
+        if not is_covered(contained, permitted):
+            return _deny(f"{file_path} resolves to {contained}, which this node's write set does not cover")
         return {}
 
     return hook
+
+
+def _addressed_within(target: Path, *, root: Path, extra_roots: Sequence[Path]) -> str | None:
+    """Return how ``target`` is addressed inside the first root holding it, or ``None``.
+
+    Args:
+        target: An already-``realpath``-resolved write target.
+        root: The isolation root; a target under it is addressed RELATIVE to it, which is
+            what every write-set glob and the isolation scan's manifest speak in.
+        extra_roots: Roots the run does not own; a target under one is addressed by its own
+            ABSOLUTE POSIX path, there being no relative form outside the isolation root.
+
+    Returns:
+        The path to judge against the grant list, or ``None`` when no root holds ``target``.
+    """
+    # Strictly UNDER a root, never the root itself, for both kinds: a root is a directory and
+    # a write to it as a file is the shape this hook exists to refuse, not a boundary case.
+    if root in target.parents:
+        return target.relative_to(root).as_posix()
+    if any(extra in target.parents for extra in extra_roots):
+        return target.as_posix()
+    return None
 
 
 def deny_bash_commands(patterns: tuple[str, ...]) -> HookCallback:

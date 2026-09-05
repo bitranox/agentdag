@@ -364,6 +364,31 @@ class ExecutorRequest:
     isolation_root: Path
     write_set: tuple[str, ...]
     deny_bash: tuple[str, ...]
+    extra_roots: tuple[Path, ...] = ()
+    """Roots BESIDES :attr:`isolation_root` this node may work in - an operator-supplied
+    workspace the run does not own. Empty is the shape every dispatch had before this field
+    existed: the run root is then the only root, and nothing outside it is reachable.
+
+    A SECOND root rather than a wider first one, because the two are governed differently.
+    Everything under :attr:`isolation_root` is addressed root-relatively - the write set, the
+    isolation scan's manifest, a node's ``artefact_refs`` - and a path outside it has no such
+    form at all. So a path under an extra root is addressed by its ABSOLUTE POSIX form
+    wherever those three would use a relative one, which also makes the two unconfusable: a
+    relative glob can never match an absolute path, so widening the roots cannot silently
+    widen a write set written for the run root.
+
+    Every entry must be ABSOLUTE and already resolved (``expanduser().resolve()``). That is
+    what lets :func:`~agentdag.adapters.kernel.executor_claude.allowed_writes` state the grant
+    as ``<root>/**`` while
+    :func:`~agentdag.adapters.kernel.hooks_claude.deny_outside_write_set` compares a
+    ``realpath``-resolved target against it: an unresolved root would make the two disagree
+    and deny every write in the very directory the node was given.
+
+    A root here is NOT watched by the isolation scan
+    (:meth:`~agentdag.application.kernel.context.Coordinator.scan`), which diffs the run root
+    alone. That is the cost of the second root and it is stated where the scan records it, not
+    only here."""
+
     read_roots: tuple[Path, ...] | None = None
     """The directories this node may READ inside, or ``None`` to leave reads unconfined.
 

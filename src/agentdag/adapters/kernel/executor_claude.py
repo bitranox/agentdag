@@ -68,6 +68,7 @@ import contextlib
 import json
 import os
 from dataclasses import asdict, dataclass, field, is_dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage
@@ -90,7 +91,6 @@ from .hooks_claude import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import datetime
-    from pathlib import Path
 
     from claude_agent_sdk import EffortLevel
     from claude_agent_sdk import HookCallback as _SdkHookCallback
@@ -908,11 +908,21 @@ def allowed_writes(request: ExecutorRequest) -> tuple[str, ...]:
     an artefact a node produces for itself belongs. Nothing else is added - a sibling's
     worktree and the run's own bookkeeping are somebody else's to write.
 
+    Each of ``request.extra_roots`` is granted WHOLESALE, as ``<root>/**`` in absolute POSIX
+    form. Wholesale because an extra root is an operator-supplied workspace the plan works
+    IN, so there is no sub-region of it the run could sensibly withhold; absolute because a
+    path outside the isolation root has no relative form, and because keeping the two forms
+    apart is what stops a run-root glob reaching a workspace or the reverse. The roots are
+    ``realpath``-resolved here, exactly as
+    :func:`~agentdag.adapters.kernel.hooks_claude.deny_outside_write_set` resolves them
+    before comparing, so the grant and the guard cannot state the same directory differently.
+
     Args:
         request: The dispatch request, already carrying the node's write set.
 
     Returns:
-        The globs, relative to ``request.isolation_root``, POSIX-style.
+        The globs: relative to ``request.isolation_root`` for the run's own, POSIX-style,
+        and absolute for each extra root.
 
     Raises:
         KernelError: ``request.node_dir`` is not under ``request.isolation_root``, which
@@ -937,24 +947,37 @@ def allowed_writes(request: ExecutorRequest) -> tuple[str, ...]:
         raise KernelError(
             f"request.node_dir {request.node_dir} is not under request.isolation_root {request.isolation_root}"
         ) from exc
-    return (*request.write_set, f"{node_rel}/**")
+    extra = tuple(f"{Path(os.path.realpath(root)).as_posix()}/**" for root in request.extra_roots)
+    return (*request.write_set, f"{node_rel}/**", *extra)
 
 
 def _cwd_rel(request: ExecutorRequest) -> str:
-    """Compute ``request.cwd`` relative to ``request.isolation_root``, POSIX-style, BEFORE the dispatch.
+    """Name ``request.cwd`` the way this dispatch's records will, BEFORE the dispatch.
+
+    Root-relative POSIX under ``request.isolation_root``, so a run directory that moves
+    still names the same tree; ABSOLUTE POSIX for a cwd under one of
+    ``request.extra_roots``, which has no relative form because it is not under the run
+    root at all. The result is what the node's ``artefact_refs`` carry, so an operator
+    reading a record of a workspace run is given the real path of the tree that was worked
+    on rather than a relative one that resolves nowhere.
 
     Raises:
-        KernelError: ``request.cwd`` is not under ``request.isolation_root`` - a
-            config bug in whatever built the request (design 2.1, C8: a work node's
-            ``cwd`` is always supposed to be a path under its own isolation root),
-            caught before the model call spends anything rather than surfacing as a
-            bare ``ValueError`` after a completed dispatch has already paid for it.
+        KernelError: ``request.cwd`` is under neither ``request.isolation_root`` nor any
+            of ``request.extra_roots`` - a config bug in whatever built the request
+            (design 2.1, C8: a work node's ``cwd`` is always supposed to be a path under a
+            root it was given), caught before the model call spends anything rather than
+            surfacing as a bare ``ValueError`` after a completed dispatch has already paid
+            for it. Naming an extra root widens the roots, never removes the check.
     """
     try:
         return request.cwd.relative_to(request.isolation_root).as_posix()
     except ValueError as exc:
+        if any(root == request.cwd or root in request.cwd.parents for root in request.extra_roots):
+            return request.cwd.as_posix()
+        extra = ", ".join(str(root) for root in request.extra_roots) or "(none)"
         raise KernelError(
-            f"request.cwd {request.cwd} is not under request.isolation_root {request.isolation_root}"
+            f"request.cwd {request.cwd} is not under request.isolation_root "
+            f"{request.isolation_root}, nor under any of request.extra_roots: {extra}"
         ) from exc
 
 
@@ -1293,7 +1316,11 @@ class ClaudeExecutor:
                     HookMatcher(
                         matcher="Write|Edit|MultiEdit|NotebookEdit",
                         hooks=_as_sdk_hooks(
-                            deny_outside_write_set(request.isolation_root, allowed=allowed_writes(request))
+                            deny_outside_write_set(
+                                request.isolation_root,
+                                allowed=allowed_writes(request),
+                                extra_roots=request.extra_roots,
+                            )
                         ),
                     ),
                     *self._read_confinement(request),

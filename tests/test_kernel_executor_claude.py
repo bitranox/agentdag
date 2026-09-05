@@ -1971,3 +1971,99 @@ def test_the_tokens_block_carries_cache_creation_separately_from_the_input_total
     )
     assert empty.tokens is not None
     assert empty.tokens.cache_write == 0
+
+
+@pytest.mark.os_agnostic
+def test_the_executor_grants_an_extra_root_wholesale_beside_the_write_set(tmp_path: Path) -> None:
+    """A workspace is granted as a whole: its globs are ABSOLUTE, so no relative glob reaches it."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    request = _request(tmp_path, write_set=("wt/r/**",), extra_roots=(workspace,))
+
+    allowed = allowed_writes(request)
+
+    assert f"{workspace.as_posix()}/**" in allowed
+    assert "wt/r/**" in allowed  # the run-root grant is unchanged by the extra one
+
+
+@pytest.mark.os_agnostic
+def test_the_write_hook_permits_the_workspace_and_still_refuses_everything_outside_both_roots(
+    tmp_path: Path,
+) -> None:
+    """The composition production wires: the node's grant list plus the roots it is bounded by."""
+    workspace = tmp_path / "ws"
+    (workspace / "src").mkdir(parents=True)
+    request = _request(tmp_path, cwd=workspace, write_set=(), extra_roots=(workspace,))
+    hook = deny_outside_write_set(
+        request.isolation_root, allowed=allowed_writes(request), extra_roots=request.extra_roots
+    )
+
+    assert fire(hook, "Write", {"file_path": str(workspace / "src" / "mod.py")}) is None
+    assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
+    assert fire(hook, "Write", {"file_path": str(tmp_path / "elsewhere.py")}) == "deny"
+    assert fire(hook, "Write", {"file_path": str(request.isolation_root / "wt" / "r" / "mod.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_the_write_hook_refuses_a_workspace_write_the_grant_list_does_not_cover(tmp_path: Path) -> None:
+    """Naming a root is containment; the grant list is still what decides, as it is in-root."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    hook = deny_outside_write_set(tmp_path / "run", allowed=(), extra_roots=(workspace,))
+
+    assert fire(hook, "Write", {"file_path": str(workspace / "mod.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_a_dispatch_in_a_workspace_reports_its_tree_by_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cwd outside the run root has no root-relative form, so the artefact ref is absolute."""
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure([_turn_of_message("m1", 10)], _result(is_error=False, subtype="success", num_turns=1))
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, cwd=workspace, extra_roots=(workspace,))))
+
+    assert outcome.artefact_refs == [workspace.as_posix()]
+
+
+@pytest.mark.os_agnostic
+def test_a_cwd_under_no_named_root_is_still_refused_before_any_dispatch(tmp_path: Path) -> None:
+    """Naming ONE extra root does not open the rest of the filesystem to the node's cwd."""
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    stray = tmp_path / "elsewhere"
+    stray.mkdir()
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    request = _request(tmp_path, cwd=stray, extra_roots=(workspace,))
+
+    with pytest.raises(KernelError, match="isolation_root"):
+        asyncio.run(executor.run(request))
+    assert not (request.node_dir / "transcript.jsonl").exists()
+
+
+@pytest.mark.os_agnostic
+def test_the_write_hook_bounds_by_root_even_when_the_grant_list_would_cover_everything(tmp_path: Path) -> None:
+    """Containment is a bound of its OWN, not a restatement of the grant list.
+
+    Isolated deliberately: for an ordinary grant like ``wt/a/**`` the two agree on every
+    outside path, so an arm using one cannot see whether containment still fires. A node
+    declaring ``**`` separates them - with containment it means "anywhere in the run root",
+    and without it the absolute form of ``/etc/passwd`` matches the same glob.
+    """
+    root = tmp_path / "run"
+    (root / "wt").mkdir(parents=True)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    hook = deny_outside_write_set(root, allowed=("**", f"{workspace.as_posix()}/**"), extra_roots=(workspace,))
+
+    assert fire(hook, "Write", {"file_path": str(root / "wt" / "f.py")}) is None
+    assert fire(hook, "Write", {"file_path": str(workspace / "f.py")}) is None
+    assert fire(hook, "Write", {"file_path": str(tmp_path / "outside.py")}) == "deny"
