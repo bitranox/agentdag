@@ -212,6 +212,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- A config string written as JSON is refused by name rather than read as one word. A `.env`
+  value is delivered as text - unlike an `AGENTDAG___` variable or a `--set`, which the layered
+  config parses first - so `KERNEL__DENY_BASH=["git push"]` used to become a denylist matching
+  that literal and NOT `git push`, a boundary that reads as closed in the file and is open in the
+  run, and `KERNEL__GATE_COMMAND=[]` became a program named `[]`, walking around the empty-command
+  refusal. Both readers now share one shape-reader that refuses a value beginning with `[` or `{`
+  and names the routes that do take an array; the same text through the environment variable is
+  already a list and is unaffected. A member of the list that is not a string is refused too
+  (`["make", null]` would have run `make None`).
 - The gate records the command it RAN. `Coordinator.gate` reads the wired gate port's own argv
   instead of being handed one, so the node's `input.json`, its brief and its journal key all name
   what the machine executed. They could disagree before: every caller passed the literal
