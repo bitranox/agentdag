@@ -36,6 +36,7 @@ def _write_checkpoint(
     total_counts: dict[str, int],
     usage_lines: Sequence[Mapping[str, object]] | None = None,
     tests: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+    steps: int = 3,
 ) -> Path:
     checkpoint = root / name
     (checkpoint / "agent").mkdir(parents=True)
@@ -57,7 +58,7 @@ def _write_checkpoint(
                 "had_error": False,
                 "usage": {
                     "cost": 1.5,
-                    "steps": 3,
+                    "steps": steps,
                     "current_tokens": {"input": 100, "cache_write": 200, "cache_read": 9999},
                 },
             }
@@ -352,3 +353,105 @@ def test_a_checkpoint_after_an_unevaluated_gap_has_no_repair_reading(tmp_path: P
     checkpoints = collect_problem(tmp_path).checkpoints
     assert [c.checkpoint for c in checkpoints] == ["checkpoint_1", "checkpoint_3"]
     assert checkpoints[1].repaired is None
+
+
+def _message(msg_id: str, *, input_tokens: int, cache_write: int) -> dict[str, object]:
+    """One assistant event in the CLI's shape, keyed by its message id."""
+    return {
+        "type": "assistant",
+        "message": {
+            "id": msg_id,
+            "usage": {
+                "input_tokens": input_tokens,
+                "cache_read_input_tokens": 1_000,
+                "cache_creation_input_tokens": cache_write,
+            },
+        },
+    }
+
+
+_INIT: dict[str, object] = {"type": "system", "subtype": "init"}
+_RESULT: dict[str, object] = {"type": "result", "subtype": "success", "num_turns": 1}
+_ORPHANED: dict[str, object] = {
+    "type": "system",
+    "subtype": "task_notification",
+    "status": "stopped",
+    "summary": "Orphaned by a previous Claude Code process exit and reported in an aggregate summary.",
+}
+
+
+def test_new_tokens_are_summed_from_the_stream_not_the_last_result(tmp_path: Path) -> None:
+    """The harness records only the LAST result event's usage as the checkpoint's.
+
+    A background task waking the model emits a fresh result, so a checkpoint with several
+    result events reads a single wake-up's tokens off the record (measured: 409 against a
+    stream summing to 180,760). The protocol's unit is the sum over the checkpoint.
+    """
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 1},
+        total_counts={"Core": 1},
+        usage_lines=[
+            _INIT,
+            _message("msg_1", input_tokens=10, cache_write=1_000),
+            _RESULT,
+            _INIT,
+            _message("msg_2", input_tokens=20, cache_write=2_000),
+            _RESULT,
+        ],
+        steps=2,
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.new_tokens == 3_030
+    assert reading.result_events == 2
+    assert reading.bound_hit is False
+
+
+def test_a_repeated_message_id_is_charged_once_in_new_tokens(tmp_path: Path) -> None:
+    """The CLI repeats one message's usage per content block; the sum must not."""
+    block = _message("msg_1", input_tokens=5, cache_write=20)
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 1},
+        total_counts={"Core": 1},
+        usage_lines=[block, block, block],
+        steps=1,
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.new_tokens == 25
+
+
+def test_an_orphaned_task_marks_the_turn_bound_hit(tmp_path: Path) -> None:
+    """A process exit that strands a background task is the bound hit with work in flight."""
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 1},
+        total_counts={"Core": 1},
+        usage_lines=[_ORPHANED, _INIT, _message("msg_1", input_tokens=1, cache_write=1), _RESULT],
+        steps=1,
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.orphaned_tasks == 1
+    assert reading.bound_hit is True
+
+
+def test_steps_missing_from_the_stream_mark_the_turn_bound_hit(tmp_path: Path) -> None:
+    """A harness retry replaces the stream, so its step count outruns the messages left in it."""
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "checkpoint_1",
+        pass_counts={"Core": 1},
+        total_counts={"Core": 1},
+        usage_lines=[_INIT, _message("msg_1", input_tokens=1, cache_write=1), _RESULT],
+        steps=166,
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.steps_missing_from_stream == 165
+    assert reading.bound_hit is True

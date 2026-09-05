@@ -204,3 +204,149 @@ Hard-problem arm, and does not decide replication. Those follow the pair's resul
 ---
 
 ## Results
+
+### Corrected control
+
+Run 2026-09-04/05 through `scripts/scb_run_arm.py`, one problem at a time in the pre-registered
+order, each in its own run directory under the eval runs folder (outside every git work tree):
+`circuit_eval` in `opus-5_whole-spec_high_20260904T2353` (23:53 to 02:31), `database_migration`
+in `opus-5_whole-spec_high_20260905T0412` (04:12 to 05:16) and `dynamic_config_service_api` in
+`opus-5_whole-spec_high_20260905T0516` (05:16 to 06:17), all CEST. Every run's
+`problem_catalog.json` records the derived catalog as its source and every `config.yaml` names
+`scripts/scb_prompts/whole-spec.jinja`. A fourth directory,
+`VOID-interrupted-opus-5_whole-spec_high_20260905T0352`, is a `database_migration` launch the
+operator stopped twenty minutes in because it had gone out session-tied; it is void by operator
+action and excluded from everything below. Every number here was computed by
+`scripts/scb_arm_report.py` over `scripts/slopcodebench_readings.py`; none was read off a log by
+eye.
+
+#### Validity gate, applied before any tally
+
+1. Tests executed: every one of the 17 checkpoints carries pass and total counts in every
+   category; no `infrastructure_failure`.
+2. No auth-failure termination: no checkpoint has `had_error`; every result event in every
+   stream is a `success`.
+3. **Turn bound: `circuit_eval` checkpoint 8 hit it with work in flight, so `circuit_eval` is
+   VOID as a problem.** The first CLI process reached the 100-turn bound at 02:15:31 with three
+   background `Monitor` tasks running; the harness retried it with `--continue` and the prompt
+   "Continue from where you left off.", and the retry's stream opens with all three tasks
+   reported "Orphaned by a previous Claude Code process exit". The retry ran 66 more turns to
+   an ordinary `end_turn`. The harness's step counter shows the boundary (100, then a reset of
+   the checkpoint's cost to 0, then 101 to 166). Checkpoint 7 of the same problem is NOT this:
+   its five result events are one 96-turn run plus four one-turn wake-ups, each fired when a
+   background `Monitor` task finished, every one a `success` ending `end_turn` with the agent
+   stating the work was complete, and nothing orphaned. Both readings are made by the readings
+   script (`bound_hit`, `result_events`, `orphaned_tasks`, `steps_missing_from_stream`), not by
+   eye. The other 15 checkpoints have one process and one result each.
+4. Token expiry: `circuit_eval` finished at 02:31 against an expiry of 03:14; the launcher then
+   refused `database_migration` because its expected duration outran the remaining validity, the
+   token was refreshed (new expiry 11:10), and the last two problems ran inside it.
+
+Per the pre-registration a void problem is not tallied and not reported as a null result. The
+tallied figures below are over the 9 checkpoints of `database_migration` and
+`dynamic_config_service_api`; `circuit_eval`'s rows are shown, marked VOID, and its re-run is
+pending.
+
+#### Readings
+
+| problem                      | ck | strict | core  | iso   | peak prompt | new tokens | cost USD | seconds | steps | results | failed own | failed inherited | regression tests | repaired | void |
+|------------------------------|----|--------|-------|-------|-------------|------------|----------|---------|-------|---------|------------|------------------|------------------|----------|------|
+| `circuit_eval`               | 1  | 1.000  | 1.000 | 1.000 | 70,756      | 77,429     | 1.88     | 376     | 13    | 1       | 0          | 0                | 0                | -        | VOID |
+| `circuit_eval`               | 2  | 1.000  | 1.000 | 1.000 | 65,424      | 43,989     | 1.12     | 229     | 12    | 1       | 0          | 0                | 36               | 0        | VOID |
+| `circuit_eval`               | 3  | 1.000  | 1.000 | 1.000 | 132,769     | 116,800    | 4.10     | 971     | 36    | 1       | 0          | 0                | 99               | 0        | VOID |
+| `circuit_eval`               | 4  | 1.000  | 1.000 | 1.000 | 91,486      | 70,515     | 2.00     | 510     | 20    | 1       | 0          | 0                | 205              | 0        | VOID |
+| `circuit_eval`               | 5  | 1.000  | 1.000 | 1.000 | 115,872     | 91,509     | 3.38     | 791     | 33    | 1       | 0          | 0                | 430              | 0        | VOID |
+| `circuit_eval`               | 6  | 1.000  | 1.000 | 1.000 | 108,338     | 83,871     | 2.90     | 702     | 29    | 1       | 0          | 0                | 457              | 0        | VOID |
+| `circuit_eval`               | 7  | 0.998  | 1.000 | 0.952 | 197,470     | 180,760    | 11.25    | 1457    | 100   | 5       | 1          | 0                | 508              | 0        | VOID |
+| `circuit_eval`               | 8  | 0.995  | 0.882 | 0.946 | 331,865     | 311,155    | 13.88    | 3603    | 166   | 2       | 2          | 1                | 529              | 0        | VOID |
+| `database_migration`         | 1  | 1.000  | 1.000 | 1.000 | 58,973      | 29,982     | 1.04     | 253     | 8     | 1       | 0          | 0                | 0                | -        |      |
+| `database_migration`         | 2  | 0.984  | 1.000 | 0.957 | 73,154      | 46,090     | 1.36     | 291     | 14    | 1       | 1          | 0                | 39               | 0        |      |
+| `database_migration`         | 3  | 0.977  | 1.000 | 1.000 | 131,196     | 100,051    | 3.90     | 1054    | 27    | 1       | 0          | 1                | 62               | 0        |      |
+| `database_migration`         | 4  | 0.940  | 0.833 | 0.833 | 147,730     | 123,601    | 5.12     | 1103    | 42    | 1       | 5          | 1                | 87               | 0        |      |
+| `database_migration`         | 5  | 0.912  | 0.333 | 0.750 | 115,667     | 91,096     | 3.21     | 836     | 25    | 1       | 5          | 6                | 117              | 0        |      |
+| `dynamic_config_service_api` | 1  | 1.000  | 1.000 | 1.000 | 94,987      | 70,130     | 2.32     | 526     | 14    | 1       | 0          | 0                | 0                | -        |      |
+| `dynamic_config_service_api` | 2  | 0.989  | 1.000 | 0.978 | 123,830     | 99,337     | 3.69     | 798     | 28    | 1       | 1          | 0                | 47               | 0        |      |
+| `dynamic_config_service_api` | 3  | 0.329  | 0.417 | 0.329 | 184,442     | 160,339    | 6.33     | 1036    | 43    | 1       | 5          | 0                | 0                | -        |      |
+| `dynamic_config_service_api` | 4  | 0.556  | 0.667 | 0.556 | 171,217     | 150,928    | 6.35     | 1023    | 55    | 1       | 21         | 0                | 0                | -        |      |
+
+Column notes as in the calibration document, plus: `results` is the number of `result` events
+in the checkpoint's stream (more than one means background-task wake-ups or a harness retry);
+`repaired` is `-` where the reading is not measurable. `new tokens` is now summed from the
+stream keyed by message id, because the harness records only the LAST result event's usage as
+the checkpoint's (checkpoint 7 reads 409 that way against 180,760 from the stream); on every
+single-result checkpoint the two agree exactly, and the calibration arm's figures are unchanged
+by the correction. Checkpoint 8's `new tokens` and `cost USD` are the retry's alone: the harness
+replaced the first process's stream and cost record, and its own per-step pricing had that
+process at 16.39 USD when it hit the bound. That row is void and enters no total.
+
+**Tallied, 9 checkpoints:** S = 2, C = 0.806, mean strict 0.854, repaired 0 of 5 defined; new
+tokens 871,554; cost USD 33.32; 6,920 seconds; peak occupancy over 150,000 on 2 checkpoints and
+over 200,000 on none.
+
+Untallied, all 17: S = 8, C = 0.890, mean strict 0.922, repaired 0 of 12 defined; new tokens
+1,847,582; cost USD 73.83; peak over 150,000 on 4 and over 200,000 on 1 (checkpoint 8, the
+void one, at 331,865). These are shown so the exclusion is visible; nothing below rests on them.
+
+#### Band verdict
+
+`S = 2` on the tallied checkpoints. The band is decided whatever the pending re-run returns:
+the 8 void checkpoints can add at most 8, so `S <= 10` on any outcome and `S <= 11` holds.
+**USABLE.** The coordinator arm may proceed on this subset. The exact `S` over 17 is left open
+until `circuit_eval` has been re-run whole for this arm.
+
+#### The reading about the loop fix
+
+The pre-registration says this arm's `S` against the calibration arm's is a reading about the
+correction, in either direction, and not a verdict. On the 9 checkpoints both arms hold valid,
+computed by the same script over the calibration run directories `..._20260904T1427` and
+`..._20260904T1920`:
+
+| arm               | S | C     | mean strict | repaired | new tokens | cost USD | seconds |
+|-------------------|---|-------|-------------|----------|------------|----------|---------|
+| calibration       | 1 | 0.676 | 0.791       | 0 of 5   | 1,080,596  | 42.36    | 7,628   |
+| corrected control | 2 | 0.806 | 0.854       | 0 of 5   | 871,554    | 33.32    | 6,920   |
+
+The corrected control's strict rate is higher on 8 of the 9 checkpoints and lower on one
+(`dynamic_config_service_api` 3: 0.342 to 0.329), at 19 percent fewer new tokens. Over all 17,
+untallied, `S` reads 5 to 8. It is one run per arm, so this is separation, not causation.
+
+**It still never goes back.** With the whole specification in front of it, told that every
+earlier part must keep working, and free to write its own tests, the agent repaired 0 of the
+carried-forward defects on every one of the 5 defined transitions (0 of 12 over all 17). The
+opportunity was smaller than the calibration arm's - summing the previous row's `failed own`
+and `failed inherited` over the five defined transitions gives 8 failures it could have cleared
+against the calibration arm's 42 - because it left fewer defects behind in the first place, but
+none of the 8 was cleared. `database_migration` carried one failure from checkpoint 2 through
+checkpoint 5 and added five at checkpoint 4 that were still failing at 5.
+
+#### Conditions the readings were taken under
+
+- **Host load.** `arm.log` records load averages of 29.6 at `circuit_eval`'s start and 20.7 at
+  its end, 25.7 and 24.2 around `database_migration`, and 24.2 and 22.1 around
+  `dynamic_config_service_api`, on a 16-CPU host. The per-checkpoint `seconds` column is not
+  comparable to a quiet-host arm without this caveat; cost and token readings are unaffected.
+- **CLI version and model.** Every `init` event in every stream reports `claude_code_version`
+  2.1.260 and model `claude-opus-5`, matching the held-fixed table.
+- **Tool use.** Across the 17 checkpoints the agent invoked Bash 527 times, Monitor 7 times
+  (all on `circuit_eval` 7 and 8), Write 6, Edit 4 and Read once. The calibration arm never
+  started a background task; this one did, and that is what put checkpoint 8 over the bound.
+  `Task` was never used.
+
+#### Two premises corrected by the measurement, recorded for the pair
+
+- The pre-registration's turn-bound asymmetry ("a control process at 100 turns stops") is
+  wrong as written. Read at source in the harness (`agent_runner/agent.py:run_checkpoint`,
+  `agents/claude_code/agent.py:retry`), a process that reports a max-turns error raises an
+  `AgentError`, and the harness retries with `--continue` and "Continue from where you left
+  off." up to `max_retries` more times, default 2. The control therefore also continues past
+  100 turns, up to three processes per checkpoint; what it cannot do is carry a background task
+  across the boundary. The pair's write-up must state the asymmetry this way.
+- A retried checkpoint is unmeasurable on cost and tokens from the harness's record alone: the
+  retry replaces the stream and the cost figure. Void condition 3 stands on its own reasoning,
+  but this is a second, independent reason such a checkpoint cannot enter a tally.
+
+#### What follows
+
+`circuit_eval` is re-run whole for this arm under the same settings before the pair is tallied;
+the decision on when is the operator's and is recorded in `OPEN-WORK.md` rank 05. The
+coordinator arm may be built and run on the band verdict above meanwhile.

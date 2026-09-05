@@ -29,13 +29,27 @@ whether or not the earlier defects survive, and the first checkpoint of a proble
 in at all: both read ``None``, and folding either in as a 0 would report a measurement that never
 happened.
 
-Two traps in the token stream, both of which silently inflate a total:
+Three traps in the token accounting, each of which silently moves a total:
 
 * the ``result`` event's usage is the CUMULATIVE dispatch total, so including it in a per-request
   peak reports a context far larger than any single request ever held (measured: 331,679 against
   a true peak of 55,011);
 * the CLI repeats one ``message_id`` and its usage once per CONTENT BLOCK, so summing per event
-  double counts. Peaks take a max and are unaffected; sums dedupe by ``message_id``.
+  double counts. Peaks take a max and are unaffected; sums dedupe by ``message_id``;
+* the harness records the LAST result event's usage as the checkpoint's. A background task that
+  finishes wakes the model for one more turn and emits a fresh ``result``, so a checkpoint with
+  several result events reads a single wake-up's tokens off ``inference_result.json`` (measured:
+  409 against a stream summing to 180,760). ``new_tokens`` is therefore summed from the stream,
+  never read from the record; the record's ``cost`` is the CLI's session-cumulative figure and
+  survives the same shape.
+
+**Void condition 3 is read from the stream, not by eye.** A CLI process that hits its turn bound
+with work in flight leaves two marks: the harness retries with ``--continue``, which REPLACES the
+stream with the retry's own (so the harness's step count outruns the messages left in it), and
+the retry's first events report every background task the exited process stranded as "Orphaned
+by a previous Claude Code process exit". Either mark, or an ``error_max_turns`` result where the
+stream survived, is ``bound_hit``. A wake-up inside one process is NOT that: its result is a
+``success`` and nothing is orphaned.
 """
 
 from __future__ import annotations
@@ -51,10 +65,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CheckpointReading",
     "ProblemReading",
+    "StreamReading",
     "collect_problem",
     "collect_run",
     "peak_prompt_tokens",
     "read_checkpoint",
+    "read_stream",
 ]
 
 
@@ -86,12 +102,27 @@ class CheckpointReading:
     """Failed tests in groups carried forward from an earlier checkpoint."""
     regression_total: int
     """Regression tests this checkpoint was scored against; 0 means it carries no suite."""
+    result_events: int
+    """``result`` events in the stream: one per process, plus one per background-task wake-up."""
+    init_events: int
+    """``init`` events in the stream: one per process start or wake-up."""
+    orphaned_tasks: int
+    """Background tasks a retry reported stranded by the previous process's exit."""
+    max_turns_results: int
+    """``error_max_turns`` results, present only where a bound-hit process's stream survived."""
+    steps_missing_from_stream: int
+    """Harness steps beyond the messages left in the stream: a retry replaced the stream."""
     repaired: int | None = None
     """Inherited failures cleared since the previous checkpoint, or None where not measurable.
 
     Stamped by ``collect_problem``, because it depends on the PREVIOUS checkpoint and one
     checkpoint's ``evaluation.json`` cannot supply that.
     """
+
+    @property
+    def bound_hit(self) -> bool:
+        """Whether a CLI process hit its turn bound with work in flight (void condition 3)."""
+        return self.orphaned_tasks > 0 or self.max_turns_results > 0 or self.steps_missing_from_stream > 0
 
 
 @dataclass(frozen=True)
@@ -169,26 +200,69 @@ def _failed_split(metrics: dict[str, Any], *, checkpoint: str) -> tuple[int, int
     return own, inherited
 
 
-def peak_prompt_tokens(stdout_jsonl: Path) -> int:
-    """Largest single request's prompt size, excluding the cumulative ``result`` event.
+@dataclass(frozen=True)
+class StreamReading:
+    """What one checkpoint's ``agent/stdout.jsonl`` says, independent of the harness's record."""
 
-    A ``result`` event carries the whole dispatch's totals, so counting it as a request reports
-    an occupancy no single request ever had.
+    peak_prompt_tokens: int
+    new_tokens: int
+    distinct_messages: int
+    result_events: int
+    init_events: int
+    orphaned_tasks: int
+    max_turns_results: int
+
+
+_EMPTY_STREAM = StreamReading(0, 0, 0, 0, 0, 0, 0)
+_ORPHANED_MARK = "Orphaned by a previous Claude Code process exit"
+
+
+def read_stream(stdout_jsonl: Path) -> StreamReading:
+    """Fold the CLI's event stream into the readings only it can supply.
+
+    ``result`` events carry the whole dispatch's totals and are excluded from the peak; a repeated
+    ``message_id`` (one event per content block) is charged once in ``new_tokens``.
     """
     if not stdout_jsonl.is_file():
-        return 0
-    peak = 0
+        return _EMPTY_STREAM
+    peak = new_tokens = results = inits = orphaned = max_turns = 0
+    charged: set[str] = set()
     for line in stdout_jsonl.read_text(errors="replace").splitlines():
         try:
             payload: object = json.loads(line)
         except json.JSONDecodeError:
             continue
-        usage = _request_usage(payload)
+        if not isinstance(payload, dict):
+            continue
+        event = cast("dict[str, object]", payload)
+        kind, subtype = event.get("type"), event.get("subtype")
+        results += kind == "result"
+        max_turns += kind == "result" and subtype == "error_max_turns"
+        inits += kind == "system" and subtype == "init"
+        orphaned += kind == "system" and _ORPHANED_MARK in str(event.get("summary", ""))
+        usage = _request_usage(event)
         if usage is None:
             continue
         prompt = _int_field(usage, "input_tokens") + _int_field(usage, "cache_read_input_tokens")
         peak = max(peak, prompt + _int_field(usage, "cache_creation_input_tokens"))
-    return peak
+        message_id = _message_id(event)
+        if message_id in charged:
+            continue
+        charged.add(message_id)
+        new_tokens += _int_field(usage, "input_tokens") + _int_field(usage, "cache_creation_input_tokens")
+    return StreamReading(peak, new_tokens, len(charged), results, inits, orphaned, max_turns)
+
+
+def peak_prompt_tokens(stdout_jsonl: Path) -> int:
+    """Largest single request's prompt size, excluding the cumulative ``result`` event."""
+    return read_stream(stdout_jsonl).peak_prompt_tokens
+
+
+def _message_id(event: dict[str, object]) -> str:
+    """The event's message id, or a per-event token for an event that carries none."""
+    message = event.get("message")
+    message_id = cast("dict[str, object]", message).get("id") if isinstance(message, dict) else None
+    return message_id if isinstance(message_id, str) else f"anonymous:{id(event)}"
 
 
 def _request_usage(payload: object) -> dict[str, object] | None:
@@ -223,7 +297,8 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
     total_counts: dict[str, int] = metrics.get("total_counts", {})
     pass_counts: dict[str, int] = metrics.get("pass_counts", {})
     usage: dict[str, Any] = result.get("usage", {})
-    current: dict[str, Any] = usage.get("current_tokens", {})
+    stream = read_stream(checkpoint_dir / "agent" / "stdout.jsonl")
+    steps = int(usage.get("steps", 0) or 0)
     failed_own, failed_inherited = _failed_split(metrics, checkpoint=checkpoint_dir.name)
     return CheckpointReading(
         problem=problem,
@@ -237,14 +312,19 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
         core_passed=pass_counts.get("Core", 0),
         cost=float(usage.get("cost", 0.0) or 0.0),
         elapsed=float(result.get("elapsed", 0.0) or 0.0),
-        steps=int(usage.get("steps", 0) or 0),
-        new_tokens=int(current.get("input", 0) or 0) + int(current.get("cache_write", 0) or 0),
-        peak_prompt_tokens=peak_prompt_tokens(checkpoint_dir / "agent" / "stdout.jsonl"),
+        steps=steps,
+        new_tokens=stream.new_tokens,
+        peak_prompt_tokens=stream.peak_prompt_tokens,
         had_error=bool(result.get("had_error", False)),
         infrastructure_failure=bool(metrics.get("infrastructure_failure", False)),
         failed_own=failed_own,
         failed_inherited=failed_inherited,
         regression_total=total_counts.get("Regression", 0),
+        result_events=stream.result_events,
+        init_events=stream.init_events,
+        orphaned_tasks=stream.orphaned_tasks,
+        max_turns_results=stream.max_turns_results,
+        steps_missing_from_stream=max(0, steps - stream.distinct_messages),
     )
 
 
