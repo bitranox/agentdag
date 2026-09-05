@@ -1,141 +1,153 @@
-# STALE - read 2026-09-05 03:50 CEST, work continued
+# Handover, written 2026-09-05 05:20 CEST
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where the last session stopped and what it decided.
 
 ## The next action
 
-**`OPEN-WORK.md` rank 05, the top-ranked open item: relaunch the corrected control's two
-remaining problems.** Nothing is running. The credential has already rolled (check
-`claudeAiOauth.expiresAt` in `~/.claude/.credentials.json`; it read 11:10 on 2026-09-05 when this
-was written), so start at once, from the repo root:
+**`OPEN-WORK.md` rank 05, the top-ranked open item: the corrected control is RUNNING, detached;
+when it completes, read it.** The detached wrapper is
+`~/agentdag-eval/slopcodebench/relaunch_detached.sh` (outside git; its header holds the stop
+procedure). Judge it ONLY by the lines in
+`~/agentdag-eval/slopcodebench/runs/corrected-control-logs/arm.log`: one `END <problem> rc=N`
+per problem, then `ARM COMPLETE` and a `LAUNCHER_RC=0` line the wrapper appends. Never by a
+process being gone, never by a task notification. It survives a session end, so re-arm a
+watcher on that file in the new session (a Monitor tailing it for `END |ARM COMPLETE|LAUNCHER_RC`
+plus a liveness check that the wrapper pid from `pgrep` by exe, not argv, is alive).
 
-```
-.venv/bin/python scripts/scb_run_arm.py \
-  --config ~/agentdag-eval/slopcodebench/run-corrected-control.yaml \
-  --harness ~/agentdag-eval/slopcodebench/slop-code-bench \
-  --problems-path ~/agentdag-eval/slopcodebench/scb-problems-cumulative \
-  --log-dir ~/agentdag-eval/slopcodebench/runs/corrected-control-logs \
-  --problem database_migration:3127 --problem dynamic_config_service_api:4501
-```
+Start of the relaunch: 04:12:07 on `database_migration` (3 of its checkpoints evaluated by
+04:50, so expect roughly 1.5 h for it under load 26-59), then `dynamic_config_service_api`
+(expected 4501 s nominal). The credential expires 11:10; the launcher stops with `REFRESH
+NEEDED` and exit 3 before any problem the token cannot cover, and a relaunch then needs only
+the remaining `--problem` arguments.
 
-Run it as a tracked background task and watch `corrected-control-logs/arm.log` for `END <problem>
-rc=N` lines and `ARM COMPLETE` (or `REFRESH NEEDED`, if the token were to expire again; at 8 hours
-it should not). Expect roughly 1h to 1.5h per problem under the host's current load. Do not run
-`make test` while a problem is being timed: the bmk gate resyncs the venv the launcher runs from.
+When `ARM COMPLETE`: `scripts/slopcodebench_readings.py` over the THREE run dirs
+(`opus-5_whole-spec_high_20260904T2353` for `circuit_eval`, `..._20260905T0412` for
+`database_migration`, and the third the launcher creates), NOT the
+`VOID-interrupted-opus-5_whole-spec_high_20260905T0352` dir, which is the run this session
+stopped at twenty minutes and is void under the pre-registration. Read the band verdict off
+`docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, write the results BELOW its divider
+in the shape of `docs/probes/2026-09-04-slopcodebench-control.md` `## Results`, run `make
+test` (allowed once no problem is being timed), push. SATURATED (`S >= 12`) stops the adapter
+build (Tasks 7-11 of `PLANS/2026-09-04-corrected-pair-plan.md`); Task 10 carries
+`kernel.deny_tools = []` for the coordinator arm. A non-zero `rc` means re-run that problem
+whole under the void rules.
 
-When `ARM COMPLETE`: `scripts/slopcodebench_readings.py` over the THREE run dirs (the finished
-`opus-5_whole-spec_high_20260904T2353` plus the two new ones), read the band verdict off
-`docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, write the results BELOW its divider in
-the shape of `docs/probes/2026-09-04-slopcodebench-control.md` `## Results`, gate, push.
-SATURATED (`S >= 12`) stops the adapter build (Tasks 7-11 of
-`PLANS/2026-09-04-corrected-pair-plan.md`) and moves the pair to the catalog's Hard problems under
-a new pre-registration. Task 10 of that plan now carries a line the coordinator arm needs:
-`kernel.deny_tools = []`, because the kernel closes `Task` by default since this session.
+**`make test` stays OFF while a problem is being timed**: the bmk gate resyncs the venv the
+launcher runs from. This session ran every gate the bmk one composes directly from `.venv`
+instead (pyright, lint-imports, bandit, ruff, the full non-integration pytest through
+`gate.py`), all green; the two pushes went out on that plus CI.
 
 ## In flight
 
-- Nothing. The control's first problem finished (rc 0, 8 of 8 checkpoints, $40.51, 2h24m); the
-  launcher exited; the watcher and timers this session armed died with it.
-- No agent of mine is alive. The one reviewer dispatched tonight reported and its findings are
-  applied.
+- The detached arm above. No agent of mine is alive; the reviewer reported and its one finding
+  is fixed and pushed.
+- CI on `c566e7b` was still running when this was written. Check it before trusting the push:
+  `uv run <compuse-toolbox>/scripts/ci_wait.py --sha c566e7b34bb0063464fa902c48449c81f86d0b1d`.
+  The handover commit after it needs the same.
 
 ## Committed, or not
 
-Everything in agentdag is committed and pushed: `origin/main` is at `cbb2781` and CI plus CodeQL
-were green on it and on `5aefbde` before it. Check with `git status --porcelain` and `git status
--sb` rather than trusting this line.
+Everything in agentdag is committed; `origin/main` was at `c566e7b` plus this handover commit.
+Verify with `git status --porcelain` and `git status -sb`. CI was green on `d88b476` and
+`2210ebc` earlier in the session.
 
-**Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72); keep an explicit pathspec on
-every commit.
+**Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72); keep an explicit pathspec
+on every commit.
 
-**RESEARCH sibling repo** (`../RESEARCH`): 29 commits ahead of its remote, of which two are this
-session's (the sealed E1 model read placed beside its key; the P4 probe note pointing at row 3). I
-did not push it because the other 27 are not mine to publish wholesale. One foreign modified file
-sits in its tree too.
+**RESEARCH sibling** (`../RESEARCH`): 30 ahead of its remote, one foreign modified file; now
+rank 73, blocked on the user.
 
-Gitignored, so not in git: `EXECUTION-USER-REVIEW.md` (this night's decisions on top, user and own
-in separate sections), `.bitranox/sdd/progress.md` and the task reports from the previous session.
+Gitignored, so not in git: `EXECUTION-USER-REVIEW.md` (this session's entry on top: the user's
+route 1 decision in its own section, then mine), `.bitranox/sdd/progress.md`.
 
 ## Decided this session, with the reason
 
-- **C1 closed under option (c)** (user, after (a) collapsed: the only scorer named was the user,
-  who is the anchored reader). Not run as designed; the panel's other 24 verdicts DISCARDED on a
-  post-hoc finding that its executability lens is a per-arm constant across all 14 pairs while
-  coverage and proportion vary, and a sealed second reader spreads arm A. Record: mid plan C1
-  section. Follow-up is rank 39. The packet was NOT repaired: the absent briefs are E1's arm
-  condition by design.
-- **Rank 30: the P4 duplicate-execution finding is measured evidence in differentiator row 3**,
-  not a row of its own and not a Partially-ships entry (user).
-- **Rank 33: the run's actor is `[kernel] operator`, default `operator`** (user). Blank and the
-  reserved `system` are refused. A structural test fails if production code reads the OS user.
-- **Rank 38: the boundary is the existing hooks, hardened and stated** (user). `[kernel]
-  deny_tools` closes WebFetch, WebSearch, Task by default; both denylists refuse a blank value and
-  honour an explicit `[]`; README states the boundary in one paragraph and names Bash as the hole.
-  The real sandbox adapter is rank 37.
-- **The review's critical finding is stated, not fixed** (own): a background launch's coordinator
-  re-reads config from files alone, so env, `--set` and `--profile` values bind the launching
-  command, not the run. Pre-existing for every kernel key. README and CHANGELOG say so; rank 41
-  holds the fix, with persist-on-the-run recommended.
+- **The 03:52 relaunch was stopped at twenty minutes and relaunched detached at 04:12** (own).
+  It had gone out as a `run_in_background` task, as the previous handover said; the tree-top
+  store's measured fact is that such a tree is reaped on session end, and the harness runs the
+  agent as a `docker exec` leaf with no SIGTERM handler, so a reap would have left it spending
+  tokens in an orphaned container. SIGINT was a no-op (a background task starts with SIGINT
+  ignored, Python keeps it); SIGTERM to the process group plus `docker stop` of the per-run
+  container ended it cleanly. The partial run dir is renamed VOID and excluded.
+- **Rank 41 under route 1** (user): a run persists the resolved settings on itself at start
+  and every later launch reads them back. Built and pushed (`06a93fe`, `c566e7b`). My calls
+  inside it: the credential keyfile CHOICE is persisted too and a vanished keyfile refuses the
+  relaunch by name; a pre-settings state file falls back to config and says so; the mail
+  sink's `[email]` section is not persisted (a password) but the choice is; the deadline sweep
+  announces a crashed run through the run's own sink, falling back to its own with a printed
+  line when the run's mail sink cannot be built on that host.
+- **Rank 34 closed** (own): the masked-gate block fired live on a backgrounded `ci_wait` twice
+  on this harness, and driving the hook with the harness's own stdin payload blocks a
+  backgrounded `make test` by name while three controls pass.
+- **Rank 59 opened, not decided**: a resume line now names the run's owner rather than the
+  relaunching operator. The reviewer called it a tradeoff; nothing reads that field today.
 
 ## Decided against, and why
 
-- Repairing the C1 packet's missing briefs: the panel judged exactly that material.
-- Refusing an explicit empty denylist: the pre-registered corrected pair needs `deny_tools = []`
-  for its coordinator arm, so `[]` is an operator statement and only a BLANK is refused.
-- A known-tool allowlist for `deny_tools`: it would go stale with every CLI release; a shape check
-  on the CLI's exact-string matcher class is what keeps whole-name matching.
+- Persisting the `[email]` section on the run: it holds the SMTP password, and a run directory
+  is copied out as evidence.
+- Refusing a pre-settings run directory outright: old run dirs are the evidence for shipped
+  probe notes, and the precedent for an added state field is a documented `None`.
+- Re-dispatching the reviewer with a pinned model tier after the gate flagged the omission:
+  the report was already useful; noted in the review log instead.
 
 ## Open, untouched
 
 One line each; `OPEN-WORK.md` holds the detail.
 
-- Rank 32 waits on the control's verdict (adapter requirement recorded on the line).
-- Rank 34's remaining arm needs no timed arm running; it was blocked all night.
-- Ranks 37, 39, 40, 41 are new or re-scoped tonight and sit at their ranks.
+- Rank 32 waits on the control's verdict.
+- Rank 37's next action is a design note (guarantees and refuting probes) before any code; it
+  was about to be started when rank 41 was decided instead, and was not begun.
+- Ranks 39, 40 sit as before; 59 and 73 are new this session.
 - Everything from 50 down was not touched.
 
 ## Lessons for the next nap
 
-- When a backlog line calls an experiment's material handicapped, read the packet's own preamble
-  first: the handicap was the arm condition by design, and repairing it would have broken the
-  comparison.
-- When the only executor named for a decision is the person the decision excluded, say so once,
-  offer the fallback, and do not proceed under the original option.
-- When a config key is added to a CLI that relaunches itself in the background, test the
-  BACKGROUND path: an in-process test shares the launcher's config and cannot see that the child
-  re-reads it from files alone.
-- When a scorer returns a constant, check its neighbouring lenses on the same data: constant on
-  both arms over all 14 while two other lenses varied localises the defect to that lens.
-- When a reviewer without a shell cites a doc-only mechanism, fetch the doc before writing the
-  mechanism into a docstring; it was right, and the docstring now cites it.
-- tooling: `gate.py --name` must follow the `--gate` it labels; the usage error reads as a red
-  gate in a background task.
-- tooling: `anchor_edit.py` takes one anchor per call; a batch mode is queued in contrib_queue.
+- When a handover tells you to run a long job as a tracked background task, check the store
+  first: the measured reap-on-session-end fact contradicted it, and ground truth wins over the
+  channel; relaunch detached before the cost grows, not after.
+- When a harness runs its agent as a `docker exec` leaf, killing the client tree leaves the
+  agent spending tokens inside the container; stop the container by id after the tree.
+- When a process tree was started as a background task, SIGINT is ignored all the way down;
+  reach for SIGTERM on the process group and expect no cleanup handler unless you read one.
+- When a test's precondition is "this host lacks X", set it explicitly with an override rather
+  than assuming the machine: this box carries an SMTP section for the integration tests.
+- When a fake substitutes a collaborator at one seam, a code path that builds the collaborator
+  itself bypasses the fake; add the seam the path actually crosses (here `send_notification`).
+- When the RED fails on a precondition the feature has not created yet, re-read its failure
+  after the first GREEN step, then prove it by a killed mutation before calling it verified.
+- tooling: dispatch a reviewer with an explicit model tier; the gate only says so afterwards.
+- Carried from the 03:20 handover, not yet napped: when a backlog line calls an experiment's
+  material handicapped, read the packet's own preamble first; when the only executor named for
+  a decision is the person it excluded, say so once and offer the fallback; when a config key
+  is added to a CLI that relaunches itself, test the BACKGROUND path; when a scorer returns a
+  constant, check its neighbouring lenses; when a shell-less reviewer cites a doc-only
+  mechanism, fetch the doc first; tooling: `gate.py --name` must follow its `--gate`, and
+  `anchor_edit.py` takes one anchor per call.
 
 ## Files that matter
 
+- `~/agentdag-eval/slopcodebench/relaunch_detached.sh`, `.../runs/corrected-control-logs/arm.log`
+  - the arm and its verdict lines, outside git.
 - `docs/probes/2026-09-05-slopcodebench-corrected-pair.md` - the pre-registration; nothing above
   its divider may change.
 - `docs/probes/2026-09-04-slopcodebench-control.md` - the calibration arm, the results shape.
-- `PLANS/2026-09-04-corrected-pair-plan.md` - Tasks 7-13 pending; Task 10 carries the
-  `deny_tools = []` line.
-- `PLANS/build-plan-mid.md` (C1 section) and `PLANS/build-plan-high.md` (row 3, its paragraph,
-  risk 2) - tonight's decision records.
-- `src/agentdag/adapters/cli/commands/run.py` (`_operator_label`, `_config_denylist`,
-  `_ENV_ALLOWLIST`), `src/agentdag/adapters/kernel/hooks_claude.py` (`deny_closed_tools`),
-  `src/agentdag/adapters/config/defaultconfig.d/60-kernel.toml` - the boundary as shipped.
-- `tests/test_cli_run_operator.py`, `tests/test_cli_run_denylists.py`,
-  `tests/test_kernel_executor_port.py` - the tests that pin it.
-- `~/agentdag-eval/slopcodebench/` - outside git: run config, catalog, run dirs, arm log.
+- `PLANS/2026-09-04-corrected-pair-plan.md` - Tasks 7-13 pending.
+- `src/agentdag/adapters/cli/commands/run.py` (`_resolve_settings`, `_settings_of`,
+  `_build_wiring`, `_crash_sink_for`, `_credential_from`), `src/agentdag/domain/models.py`
+  (`RunSettings`), `src/agentdag/application/kernel/run.py` (`_write_state` carries it).
+- `tests/test_cli_run_settings.py` - the nine tests that pin route 1.
 
 ## How to verify
 
-- `make test` green (last run before the push of `cbb2781`).
-- `scripts/slopcodebench_readings.py` over the three calibration run dirs still reads S=5 of 17,
-  C=0.828, repaired_defined=12, repaired_total=0.
-- `tests/test_cli_run_operator.py::test_no_production_module_reads_the_operating_account_name`
-  fails on a planted `getpass.getuser(` in any `src/` file (proved tonight).
+- `scripts/slopcodebench_readings.py` over the three calibration run dirs still reads S=5 of
+  17, C=0.828, repaired_defined=12, repaired_total=0.
+- `.venv/bin/python -m pytest tests/test_cli_run_settings.py -p no:cacheprovider -q` is 9
+  passed; the full non-integration suite was 1239 passed through `gate.py`.
+- `tests/test_cli_run_settings.py::test_apply_deadlines_tells_a_crashed_run_through_the_sink_that_run_was_started_with`
+  fails with two mails instead of one against a sweep that uses its own sink (proved this
+  session).
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 delete it - if this session ends badly it is the only record of where things stood.
