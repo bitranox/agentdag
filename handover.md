@@ -123,6 +123,10 @@ New this session:
 - An implementer that commissions its OWN adversarial reviewer before reporting caught real defects
   twice this session that its own mutation battery could not - both times a false statement in
   prose.
+- When judging whether a dispatched subagent is still alive, do NOT read its transcript file's size
+  or mtime: the harness does not flush it, so a working agent's file sat at 160 bytes unchanged for
+  15 minutes. An implementer nearly wrote off a reviewer on that reading, and that reviewer then
+  returned a real defect. (Found by a subagent; it is not in the controller's transcript.)
 
 ## Files that matter
 
