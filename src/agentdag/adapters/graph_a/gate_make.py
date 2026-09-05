@@ -206,7 +206,10 @@ class MakeTestGate:
             The gate's exit code; ``0`` means the change passed.
 
         """
-        # Suppression below: the gate command comes from the composition root, never user text.
+        # Suppression below: argv is a list run with shell=False, so there is no shell to inject
+        # metacharacters into, and the argv itself is the OPERATOR's own [kernel] gate_command,
+        # never a node's or a plan's - _GateMakeTestArgs is extra="forbid" with no fields, so
+        # nothing a plan entry or a dispatched node writes can reach this call.
         proc = subprocess.run(  # nosec B603  # noqa: S603
             list(self._command),
             cwd=worktree,
