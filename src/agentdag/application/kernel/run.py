@@ -392,9 +392,11 @@ def _write_state(
 ) -> None:
     """Write ``state.json`` for this launch, keeping what only the first start decides.
 
-    ``args`` and ``owner`` are read back from an existing state file rather than
-    rewritten: they are the run's identity, and a relaunch by somebody else with a
-    re-parsed argument set must not silently redefine what the run IS.
+    ``args``, ``owner`` and ``settings`` are read back from an existing state file rather
+    than rewritten: they are the run's identity and what it was started with, and a
+    relaunch by somebody else with a re-parsed argument set or a different config must
+    not silently redefine what the run IS. ``settings`` is written by the CLI at start and
+    only ever carried here; a state file from before it existed carries ``None``.
     ``tokens_by_row`` is the opposite - it is OVERWRITTEN with the coordinator's own
     totals, which are rebuilt from zero on every launch by charging every record the
     launch touched, served ones included. Adding them to what the file already held
@@ -413,6 +415,7 @@ def _write_state(
             workflow=co.workflow,
             args=existing.args if existing is not None else _args_of(co),
             owner=existing.owner if existing is not None else by,
+            settings=existing.settings if existing is not None else None,
             status=status,
             cursor=cursor,
             cursor_payload_hash=cursor_payload_hash,

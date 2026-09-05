@@ -46,21 +46,26 @@ Eight verbs over one run directory (design 3.1/3.4, Task 17; ``cancel``,
     process a background :attr:`~agentdag.application.kernel.ports.Scope` starts - never
     typed by hand.
 
-The CLI never reads a credential's own content: :func:`_resolve_credential` only checks
-whether a keyfile PATH exists on disk, the token/copy itself is read later by the
-executor, inside the coordinator process, at the point it actually dispatches a node. A
+The CLI never reads a credential's own content: :func:`_configured_credential_file` and
+:func:`_credential_from` only check whether a keyfile PATH exists on disk; the token/copy
+itself is read later by the executor, inside the coordinator process, at the point it
+actually dispatches a node. A
 background launch's child process starts with :data:`_ENV_ALLOWLIST` alone, not this
 process's own environment, so the operator's secrets never reach it as inherited env vars.
 
 ``--parallel``/``--policy`` (``run start``'s own options, or config ``kernel.parallel``)
 and ``kernel.max_turns``/``kernel.deny_bash`` are COORDINATOR-level: they apply
-uniformly to whichever workflow a run drives, resolved once by :func:`_build_wiring` and
-never read from a workflow's own typed args (a workflow's ``args_model``, e.g. graph A's
-``GraphAArgs``, carries only what the WORKFLOW itself needs - ``repos_file``,
-``brief_file``, ``scratch``, ``model`` - not a scheduling knob the coordinator already
-owns). A background relaunch's ``_coordinate`` re-derives them from config UNLESS
-``run start`` forwards its own ``--parallel``/``--policy`` into ``_coordinate``'s argv,
-which it does exactly when they were given (see :func:`_launch_background`).
+uniformly to whichever workflow a run drives, resolved once by :func:`_resolve_settings`
+at ``run start`` and never read from a workflow's own typed args (a workflow's
+``args_model``, e.g. graph A's ``GraphAArgs``, carries only what the WORKFLOW itself
+needs - ``repos_file``, ``brief_file``, ``scratch``, ``model`` - not a scheduling knob
+the coordinator already owns). The resolved settings are PERSISTED on the run
+(``state.json``'s ``settings``, :class:`~agentdag.domain.models.RunSettings`), and every
+later launch of that run - the background ``_coordinate`` child, ``resume``, ``approve``,
+``retry`` - builds its wiring from them (:func:`_settings_of`), never from the config of
+the process that happens to relaunch it: a background child loads config from files
+alone, so a value given by env, ``--set`` or ``--profile`` would otherwise bind only the
+command that typed it.
 
 Contents:
     * :func:`resolve_notifier` - the sink ``kernel.notify`` names, shared with ``notify-test``.
@@ -108,6 +113,7 @@ from agentdag.domain.models import (
     NodeStatus,
     ResultRecord,
     RetryGrant,
+    RunSettings,
     RunState,
     RunStatus,
 )
@@ -189,7 +195,7 @@ environment: a launch by an interactive shell must not hand a spawned run its se
 
 ``HOME`` is the OPERATOR's home directory here ON PURPOSE, not a scrubbed placeholder:
 the COORDINATOR process itself (never a dispatched Claude node) reads it to resolve
-:func:`_resolve_credential`'s copy-source path (``~/.claude/.credentials.json``) and its
+:func:`_credential_from`'s copy-source path (``~/.claude/.credentials.json``) and its
 own config search path (``~/.config/agentdag``). A dispatched node's own env does NOT
 inherit this ``HOME`` - see the next paragraph.
 
@@ -243,11 +249,9 @@ _POLICY_OPTION = option(
     default=None,
     help="An alternate tier policy YAML (default: the shipped table).",
 )
-"""Shared with ``_coordinate`` (:func:`cli_run_coordinate`), which is exactly HOW a
-background relaunch keeps these two coordinator-level knobs: :func:`cli_run_start`
-forwards its own values into ``_coordinate``'s argv when they were given
-(:func:`_launch_background`'s caller), rather than the relaunch silently re-deriving
-config-only defaults that could differ from what the operator actually asked for."""
+"""``run start``'s two coordinator-level overrides. Both are resolved into the run's
+persisted settings (:func:`_resolve_settings`) before anything is launched, which is how a
+background relaunch keeps them: ``_coordinate`` reads the run, not an argv."""
 
 
 @click.group("run", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -279,7 +283,8 @@ def cli_run_start(
     args = _validated_args(workflow, _parsed_arg_pairs(args_kv))
     runs_dir = _resolve_runs_dir(config, runs_option)
     _require_writable_runs_dir(runs_dir)
-    wiring, credential_desc = _build_wiring(ctx, policy_override=policy_option, parallel_override=parallel_option)
+    settings = _resolve_settings(ctx, policy_override=policy_option, parallel_override=parallel_option)
+    wiring, credential_desc = _build_wiring(ctx, settings)
     safe_console.echo(f"credential: {credential_desc}")
     owner = _operator_label(config)
     run_id = _mint_run_id()
@@ -292,26 +297,15 @@ def cli_run_start(
             owner=owner,
             status=RunStatus.RUNNING,
             policy_version=wiring.policy.version,
+            settings=settings,
         )
     )
     if foreground:
-        outcome = _run_foreground(
-            ctx,
-            run_id=run_id,
-            runs_dir=runs_dir,
-            resume_reason=None,
-            policy_override=policy_option,
-            parallel_override=parallel_option,
-        )
-        _print_outcome(run_id, outcome)
+        _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_dir, resume_reason=None))
         return
     scope_desc = "systemd user scope" if isinstance(wiring.scope, SystemdScope) else "plain subprocess"
     safe_console.echo(f"scope: {scope_desc}")
     argv = [sys.executable, "-m", "agentdag", "run", "_coordinate", run_id, "--runs", str(runs_dir)]
-    if parallel_option is not None:
-        argv += ["--parallel", str(parallel_option)]
-    if policy_option is not None:
-        argv += ["--policy", str(policy_option)]
     _launch_background(
         wiring.scope, unit=scope_unit(run_id), argv=argv, env=_clean_env(), cwd=run_dir.root, run_id=run_id
     )
@@ -414,10 +408,11 @@ def cli_run_retry(
     config = get_cli_context(ctx).config
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
-    status = run_dir.read_state().status
+    state = run_dir.read_state()
+    status = state.status
     if status in (RunStatus.CANCELLED, RunStatus.CANCELLING):
         _fail(f"run {run_id} is {status.value}; nothing to retry")
-    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, _settings_of(ctx, run_id=run_id, state=state))
     grant = RetryGrant(
         node_id=node_id,
         key=_grantable_key_of(run_dir, run_id=run_id, node_id=node_id, max_attempts=wiring.policy.max_attempts),
@@ -466,10 +461,11 @@ def _refuse_an_unreachable_grant(
 
     A grant names one exact key, but how far a relaunch walks is decided by the policy resolved
     at THAT launch: the automatic rule stops once ``attempt + 1`` reaches ``max_attempts``, and
-    the only thing that carries it further is a grant on the previous attempt's key. Nothing
-    records which table a run started under, and neither this verb nor ``_relaunch`` forwards
-    ``--policy``, so a run started under a higher ceiling leaves records the current ceiling can
-    no longer walk to. The grant would fold and never be matched, and the write-once refusal
+    the only thing that carries it further is a grant on the previous attempt's key. The run
+    records the policy PATH it started under and every launch reads it back, but the file at
+    that path can be edited in place, so a run started under a higher ceiling can still leave
+    records the ceiling now at that path can no longer walk to. The grant would fold and never
+    be matched, and the write-once refusal
     would then block a second one - the node unreachable from this CLI's own surface. Refusing
     here is the moment the operator can still do something about it.
 
@@ -538,7 +534,7 @@ def cli_run_cancel(ctx: click.Context, *, run_id: str, runs_option: Path | None)
         safe_console.echo(f"run {run_id} cancelled (verified: true)")
         return
     safe_console.echo(f"run {run_id} cancelling")
-    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, _settings_of(ctx, run_id=run_id, state=run_dir.read_state()))
     journal = wiring.journal_factory(run_dir.journal_path, run_dir.audit_path)
     resolved = resolve_cancel(
         run_dir, journal, scope=wiring.scope, lock=wiring.lock, clock=wiring.clock, holder=current_holder()
@@ -626,7 +622,7 @@ def cli_run_apply_deadlines(
     """
     config = get_cli_context(ctx).config
     runs_dir = _resolve_runs_dir(config, runs_option)
-    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, _resolve_settings(ctx, policy_override=None, parallel_override=None))
     applied = 0
     crashed = 0
     failed_relaunches = 0
@@ -672,34 +668,15 @@ def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring) -> int:
 @argument("run_id")
 @option("--runs", "runs_option", type=click.Path(file_okay=False, path_type=Path), required=True)
 @option("--reason", "reason_option", type=click.Choice(_COORDINATE_REASONS), default=None)
-@_PARALLEL_OPTION
-@_POLICY_OPTION
 @click.pass_context
-def cli_run_coordinate(
-    ctx: click.Context,
-    *,
-    run_id: str,
-    runs_option: Path,
-    reason_option: str | None,
-    parallel_option: int | None,
-    policy_option: Path | None,
-) -> None:
+def cli_run_coordinate(ctx: click.Context, *, run_id: str, runs_option: Path, reason_option: str | None) -> None:
     """Hidden: drive an EXISTING run's coordinator in-process. Not for direct use.
 
-    ``--parallel``/``--policy`` are what ``run start``'s own background launch forwards
-    here when it was given them (see :data:`_PARALLEL_OPTION`/:data:`_POLICY_OPTION`'s
-    shared docstring); absent, both fall back to config, exactly as every other
-    relaunch path (``resume``, ``approve``) already does.
+    Takes no ``--parallel``/``--policy``: the run carries the settings it was started with,
+    and :func:`_run_foreground` reads them off its ``state.json``, exactly as every other
+    relaunch path (``resume``, ``approve``, ``retry``) does.
     """
-    outcome = _run_foreground(
-        ctx,
-        run_id=run_id,
-        runs_dir=runs_option,
-        resume_reason=reason_option,
-        policy_override=policy_option,
-        parallel_override=parallel_option,
-    )
-    _print_outcome(run_id, outcome)
+    _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_option, resume_reason=reason_option))
 
 
 # --------------------------------------------------------------------------------------
@@ -781,15 +758,35 @@ def _validate_run_id(run_id: str) -> None:
         _fail(f"{run_id!r} is not a valid run id")
 
 
-def _resolve_credential(config: Config) -> tuple[CredentialSource, str]:
-    """Pick the OAuth-token keyfile named in config if it exists, else a credential copy.
+def _configured_credential_file(config: Config) -> str:
+    """The OAuth-token keyfile path config names, when it names an existing file, else ``""``.
 
-    Only checks whether the keyfile PATH exists - never reads its content, which the
-    executor reads fresh inside the coordinator process, at each node's dispatch.
+    Decided ONCE, at ``run start``, and persisted on the run: a path that names no file
+    selects the credential copy, exactly as it always has, and the choice then travels with
+    the run. Only the PATH is checked - the content is read by the executor, inside the
+    coordinator process, at each node's dispatch.
     """
     token_file = str(config.get("credentials.claude_oauth_token_file", default=""))
-    if token_file and Path(token_file).is_file():
-        return OAuthTokenFile(path=Path(token_file)), f"OAuth token keyfile at {token_file}"
+    return token_file if token_file and Path(token_file).is_file() else ""
+
+
+def _credential_from(credential_file: str) -> tuple[CredentialSource, str]:
+    """The credential source a run's persisted ``credential_file`` names, and its description.
+
+    A persisted keyfile that is GONE is refused by name rather than silently replaced by a
+    credential copy: the run was started on that keyfile, and a relaunch that authenticates
+    its nodes some other way has changed the run without anyone choosing that.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` when the keyfile no longer exists.
+    """
+    if credential_file:
+        if not Path(credential_file).is_file():
+            _fail(
+                f"the run's credential keyfile {credential_file} is gone; restore it, or start a new run "
+                "under the credential you mean"
+            )
+        return OAuthTokenFile(path=Path(credential_file)), f"OAuth token keyfile at {credential_file}"
     home_copy = Path.home() / ".claude" / ".credentials.json"
     return CredentialCopy(source_path=home_copy), f"a private copy of {home_copy}"
 
@@ -806,12 +803,30 @@ def resolve_notifier(ctx: click.Context) -> Notifier:
     is the failure this whole port exists to prevent - discovered, otherwise, on the run
     they most needed it for.
     """
-    cli = get_cli_context(ctx)
-    choice = str(cli.config.get("kernel.notify", default=_packaged_kernel_defaults()["notify"])).strip().lower()
+    return _build_notifier(ctx, _notify_choice(get_cli_context(ctx).config))
+
+
+def _notify_choice(config: Config) -> str:
+    """Read ``kernel.notify``, normalised, refusing anything but the two sinks by name."""
+    choice = str(config.get("kernel.notify", default=_packaged_kernel_defaults()["notify"])).strip().lower()
+    if choice not in ("none", "mail"):
+        _fail(f"kernel.notify is {choice!r}; it must be 'none' or 'mail'")
+    return choice
+
+
+def _build_notifier(ctx: click.Context, choice: str) -> Notifier:
+    """Build the sink ``choice`` names.
+
+    The CHOICE travels with the run (:class:`~agentdag.domain.models.RunSettings`); the mail
+    sink's SMTP settings come from THIS process's ``[email]`` config, which a run does not
+    carry because it holds a password. A background child whose files lack them fails here,
+    by name, rather than sending nothing.
+    """
     if choice == "none":
         return NoNotifier()
     if choice != "mail":
         _fail(f"kernel.notify is {choice!r}; it must be 'none' or 'mail'")
+    cli = get_cli_context(ctx)
     email_config = cli.services.load_email_config_from_dict(cli.config.as_dict())
     if not email_config.smtp_hosts:
         _fail("kernel.notify is 'mail' but email.smtp_hosts is empty - configure it, or set kernel.notify = 'none'")
@@ -968,25 +983,58 @@ def _config_denylist(
     return tuple(entries)
 
 
-def _build_wiring(
+def _resolve_settings(
     ctx: click.Context, *, policy_override: Path | None, parallel_override: int | None
-) -> tuple[KernelWiring, str]:
-    """Resolve config/CLI overrides into a fresh :class:`KernelWiring`, and the chosen credential's description."""
+) -> RunSettings:
+    """Resolve this process's config and ``run start``'s overrides into the settings a run carries.
+
+    The one place config is read for a run's wiring. Every refusal a key carries (a blank
+    denylist, a bad notify sink) fires here, before any run directory exists.
+    """
     config = get_cli_context(ctx).config
-    services = get_cli_context(ctx).services
-    credential, credential_desc = _resolve_credential(config)
     policy_path = policy_override if policy_override is not None else _shipped_policy_path()
     default_parallel = _config_int(config, "kernel.parallel", "parallel")
-    parallel = parallel_override if parallel_override is not None else default_parallel
-    wiring = services.wire_kernel(
-        policy_path=policy_path,
-        credential=credential,
-        parallel=parallel,
+    return RunSettings(
+        policy_path=str(policy_path),
+        parallel=parallel_override if parallel_override is not None else default_parallel,
         max_turns=_config_int(config, "kernel.max_turns", "max_turns"),
         default_node_tokens=_config_int(config, "kernel.default_node_tokens", "default_node_tokens"),
         deny_bash=_config_deny_bash(config),
         deny_tools=_config_deny_tools(config),
-        notifier=resolve_notifier(ctx),
+        notify=_notify_choice(config),
+        credential_file=_configured_credential_file(config),
+    )
+
+
+def _settings_of(ctx: click.Context, *, run_id: str, state: RunState) -> RunSettings:
+    """The settings a launch of ``run_id`` wires from: the run's own, or config for a run that predates them.
+
+    A ``state.json`` written before the ``settings`` block existed carries none; such a run
+    resolves them from the current config, as every launch did then, and says so on the
+    console rather than leaving the reader to guess which config a relaunch ran under.
+    """
+    if state.settings is not None:
+        return state.settings
+    safe_console.echo(
+        f"run {run_id}: state.json carries no settings block (written before one existed); "
+        "resolving them from the current config"
+    )
+    return _resolve_settings(ctx, policy_override=None, parallel_override=None)
+
+
+def _build_wiring(ctx: click.Context, settings: RunSettings) -> tuple[KernelWiring, str]:
+    """Build a fresh :class:`KernelWiring` from ``settings``, and the chosen credential's description."""
+    services = get_cli_context(ctx).services
+    credential, credential_desc = _credential_from(settings.credential_file)
+    wiring = services.wire_kernel(
+        policy_path=Path(settings.policy_path),
+        credential=credential,
+        parallel=settings.parallel,
+        max_turns=settings.max_turns,
+        default_node_tokens=settings.default_node_tokens,
+        deny_bash=settings.deny_bash,
+        deny_tools=settings.deny_tools,
+        notifier=_build_notifier(ctx, settings.notify),
     )
     return wiring, credential_desc
 
@@ -1064,15 +1112,7 @@ def _launch_background(
     safe_console.echo(f"run {run_id} started (unit {handle.unit}, log {handle.log_path})")
 
 
-def _run_foreground(
-    ctx: click.Context,
-    *,
-    run_id: str,
-    runs_dir: Path,
-    resume_reason: str | None,
-    policy_override: Path | None = None,
-    parallel_override: int | None = None,
-) -> RunOutcome:
+def _run_foreground(ctx: click.Context, *, run_id: str, runs_dir: Path, resume_reason: str | None) -> RunOutcome:
     """Read RUN_ID's workflow and args off its own state, then drive the coordinator to an exit.
 
     Always reads ``workflow``/``args`` from ``state.json`` rather than taking them as
@@ -1082,18 +1122,17 @@ def _run_foreground(
     background relaunch (a fresh OS process with none of this session's parsed objects)
     bootstraps from the same place every other caller does.
 
-    ``policy_override``/``parallel_override`` default to ``None`` (config only) for
-    ``resume``/``approve``, which carry no such CLI options of their own; ``start
-    --foreground`` and ``_coordinate`` pass their OWN ``--parallel``/``--policy``
-    through, so this ends up building the SAME wiring :func:`cli_run_start` already
-    built once for the state pre-write, rather than silently re-deriving config-only
-    defaults that could disagree with what the operator actually asked for.
+    The wiring is built from the run's persisted settings (:func:`_settings_of`), so every
+    caller - ``start --foreground``, ``_coordinate``, ``resume``, ``approve``, ``retry`` -
+    runs the SAME wiring :func:`cli_run_start` built for the state pre-write, rather than
+    re-deriving config-only defaults from whichever process happens to relaunch the run.
+    The actor on the run's own journal lines is its ``owner`` for the same reason.
     """
     run_dir = _open_run_dir(runs_dir, run_id)
     state = run_dir.read_state()
     workflow = get_workflow(state.workflow)
     args = workflow.args_model.model_validate(state.args)
-    wiring, _credential_desc = _build_wiring(ctx, policy_override=policy_override, parallel_override=parallel_override)
+    wiring, _credential_desc = _build_wiring(ctx, _settings_of(ctx, run_id=run_id, state=state))
     # The startup sweep (M3): a fresh run's own unit was never started under any scope
     # kind, so this is always a safe no-op for `start --foreground`; for a relaunch of an
     # EXISTING run (resume, approve, or this in-process path of _coordinate itself) it
@@ -1119,7 +1158,7 @@ def _run_foreground(
                 registry=wiring.registry,
                 sandbox=wiring.sandbox,
                 parallel=wiring.parallel,
-                by=_operator_label(get_cli_context(ctx).config),
+                by=state.owner,
                 token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
                 resume_reason=resume_reason,
                 notifier=wiring.notifier,
@@ -1148,16 +1187,14 @@ def _print_outcome(run_id: str, outcome: RunOutcome) -> None:
 def _relaunch(ctx: click.Context, *, run_dir: FsRunDir, runs_dir: Path, reason: str, foreground: bool) -> None:
     """Relaunch ``run_dir``'s coordinator, in-process or under a fresh background scope.
 
-    ``resume``/``approve`` carry no ``--parallel``/``--policy`` of their own, so this
-    relaunch's ``_coordinate`` argv omits both and falls back to config, same as it
-    always has - only ``run start``'s OWN first background launch (:func:`cli_run_start`)
-    forwards them, since only it was actually given any to forward.
+    The ``_coordinate`` argv carries only the run id, the runs dir and the reason: the child
+    reads the run's persisted settings, so nothing about the wiring travels on the argv.
     """
     run_id = run_dir.root.name
     if foreground:
         _print_outcome(run_id, _run_foreground(ctx, run_id=run_id, runs_dir=runs_dir, resume_reason=reason))
         return
-    wiring, _credential_desc = _build_wiring(ctx, policy_override=None, parallel_override=None)
+    wiring, _credential_desc = _build_wiring(ctx, _settings_of(ctx, run_id=run_id, state=run_dir.read_state()))
     # A background relaunch REUSES this run's unit name (scope_unit is deterministic per
     # run_id, not per launch), so a scope a dead coordinator left draining under that SAME
     # name must be stopped BEFORE scope.start() below - systemd refuses a transient unit

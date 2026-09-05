@@ -199,12 +199,20 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
-- Known limit, stated rather than fixed here: a background launch (the default) starts the
-  coordinator as a separate process with an allowlisted environment and re-reads `[kernel]` from
-  the config files alone. A value supplied only by environment variable, `--set` or `--profile`
-  binds the launching command and not the run - `operator`, `deny_tools`, `deny_bash`, `max_turns`,
-  `default_node_tokens` and `notify` alike. Found by review on 2026-09-05; it predates the keys
-  added here. `--foreground` runs, and every test, run both in one process and do not show it.
+- A run carries the settings it was started with. `run start` resolves `[kernel] parallel`,
+  `max_turns`, `default_node_tokens`, `deny_bash`, `deny_tools` and `notify`, the `--policy` path
+  and the `[credentials]` keyfile choice once, from its own config and options, and writes them to
+  `state.json` as a `settings` block; the background `_coordinate` child, `resume`, `approve` and
+  `retry` build their wiring from that block, and the run's own journal lines name its `owner`.
+  Before this, a background launch (the default) re-read `[kernel]` from the config files alone,
+  so a value supplied only by environment variable, `--set` or `--profile` bound the launching
+  command and not the run, and a resume under a changed config silently changed it. The
+  `_coordinate` argv no longer carries `--parallel`/`--policy`. A `state.json` written before the
+  block existed is relaunched from the current config, and the relaunch says so. A run started on
+  a credential keyfile that has since gone is refused by name at its next launch rather than
+  switched to the credential copy. The mail sink's `[email]` settings are the one thing a run
+  does not carry, because they hold a password: a background child whose files lack them fails
+  by name rather than sending nothing.
 - Both denylists fail closed on a blank value. `[kernel] deny_bash` set to nothing through an env
   var used to reach every node as an empty list, which is no denylist at all; a blank value, and
   a blank entry (which as a substring would match every command), are now refused by name before

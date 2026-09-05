@@ -54,6 +54,7 @@ __all__ = [
     "Requirement",
     "ResultRecord",
     "RetryGrant",
+    "RunSettings",
     "RunState",
     "RunStatus",
     "SandboxGuarantees",
@@ -432,6 +433,34 @@ class LockHolder(BaseModel):
     pid_start_time: str
 
 
+class RunSettings(BaseModel):
+    """The kernel settings a run was started with, carried on its ``state.json``.
+
+    Resolved ONCE by ``run start`` from the launching command's config and CLI overrides, and
+    read back by every later launch of the same run - the background child, a resume, an
+    approve, a retry - instead of each of those re-reading whatever config its own process
+    happens to see. A background child is a fresh process that loads config from files alone,
+    so without this a value given by env, ``--set`` or ``--profile`` bound only the command
+    that typed it; and a resume under a changed config would silently change the run.
+
+    Paths are strings because the block is the on-disk record: ``policy_path`` names the tier
+    policy YAML the run's ceilings were read from, and ``credential_file`` names the OAuth
+    keyfile the run's nodes authenticate with, or is ``""`` for the credential copy - never a
+    token, only where one is read from.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    policy_path: str = Field(min_length=1)
+    parallel: int = Field(ge=1)
+    max_turns: int = Field(ge=1)
+    default_node_tokens: int = Field(ge=1)
+    deny_bash: tuple[str, ...]
+    deny_tools: tuple[str, ...]
+    notify: str = Field(min_length=1)
+    credential_file: str
+
+
 class RunState(BaseModel):
     """The run's own state.json (design 3.4): mutable, unlike the frozen kernel records above."""
 
@@ -457,6 +486,12 @@ class RunState(BaseModel):
     for one and an operator cannot tell the two apart from the cursor alone.
     """
     policy_version: str
+    settings: RunSettings | None = None
+    """What the run was started with (:class:`RunSettings`), read by every later launch.
+
+    ``None`` only on a state file written before this field existed; such a run's next launch
+    resolves its settings from the current config, as every launch did then, and says so.
+    """
     tokens_by_row: dict[str, int] = Field(default_factory=dict)
     holder: LockHolder | None = None
 

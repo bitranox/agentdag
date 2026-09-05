@@ -300,18 +300,20 @@ agentdag run approve <run-id> a_push_list --decision approve
 
 A run directory (`<runs>/<run-id>/`) holds `journal.jsonl` (the append-only, replayable
 log - one JSON line per event), `audit.jsonl` (a copy, written first), `state.json`
-(status, cursor, token totals), `lock` (the exclusive run lock), `launch.log` (a
+(status, cursor, token totals, and the `settings` the run was started with), `lock` (the
+exclusive run lock), `launch.log` (a
 background launch's redirected stdout/stderr), and per-node subdirectories:
 `decisions/` (recorded approvals), `retries/` (recorded retry grants), `intents/`,
 `artefacts/`, `wt/` (worktrees), `nodes/` (each dispatch's brief, input and record),
 `manifest/` (map/reduce manifests), and `attempted/` and `done/` (the two apply markers).
 
-The Claude executor authenticates each node from one of two sources, chosen once per CLI
-invocation and printed at `run start`: the config's `[credentials] claude_oauth_token_file`
-keyfile if that path exists, else a private owner-only copy of the operator's own
-`~/.claude/.credentials.json`. Either way, the CLI itself never reads the credential's
-content - only the executor does, inside the coordinator process, at the point it actually
-dispatches a node.
+The Claude executor authenticates each node from one of two sources, chosen once at `run
+start`, printed there and carried on the run: the config's `[credentials]
+claude_oauth_token_file` keyfile if that path exists, else a private owner-only copy of the
+operator's own `~/.claude/.credentials.json`. A run started on a keyfile that has since gone is
+refused by name at its next launch rather than quietly switched to the copy. Either way, the
+CLI itself never reads the credential's content - only the executor does, inside the
+coordinator process, at the point it actually dispatches a node.
 
 ### What the kernel enforces, and what it does not
 
@@ -331,10 +333,11 @@ than read as an empty list. The tools that reach the network or spawn a sub-agen
 outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. An operator
 widens either list deliberately by writing an explicit `[]`. Bash is the hole in that boundary:
 a shell command can read and write anywhere the operating-system user can, and nothing catches
-a write it makes outside the run directory. Set these lists in a config file: on a background
-launch, the default, the coordinator is a separate process that re-reads its configuration from
-the config files alone, so a `[kernel]` value supplied only by an environment variable, `--set`
-or `--profile` binds the launching command and not the run.
+a write it makes outside the run directory. Both lists, like every other `[kernel]` setting, are
+resolved once at `run start` and written to the run's `state.json` as its `settings` block; the
+background coordinator and every later `resume`, `approve` or `retry` read them back from there,
+so a value supplied by an environment variable, `--set` or `--profile` reaches the run, and a
+relaunch under a changed configuration does not change it.
 
 - **The Bash denylist blocks the exact command shapes the policy lists, and nothing
   else.** Measured against the shipped policy: `curl -XPOST ...`, `curl -d ...`, a plain

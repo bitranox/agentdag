@@ -602,12 +602,18 @@ def test_run_start_background_confirms_the_launch_and_omits_unset_flags(cli_runn
 
 
 @pytest.mark.os_agnostic
-def test_run_start_background_forwards_parallel_and_policy_when_given(cli_runner: CliRunner, tmp_path: Path) -> None:
-    """``--parallel``/``--policy`` on ``run start`` reach the ``_coordinate`` argv it launches."""
+def test_run_start_background_keeps_parallel_and_policy_on_the_run_not_on_the_argv(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """``--parallel``/``--policy`` on ``run start`` are persisted on the run; the child argv carries neither.
+
+    One mechanism, not two: a value that travelled on the argv AND on the run could disagree,
+    and the child would have to decide which to believe.
+    """
     (tmp_path / "runs").mkdir()
     scope = RecordingScope(confirm_alive=True)
     obj = services_with(CommittingExecutor(), tmp_path, scope=scope)
-    alt_policy = policy_path()  # a real, existing file - this proves FORWARDING, not content
+    alt_policy = policy_path()  # a real, existing file - this proves what is CARRIED, not content
 
     argv = start_args(tmp_path, foreground=False, extra=["--parallel", "3", "--policy", str(alt_policy)])
     result = cli_runner.invoke(cli_mod.cli, argv, obj=obj)
@@ -615,8 +621,10 @@ def test_run_start_background_forwards_parallel_and_policy_when_given(cli_runner
     assert result.exit_code == 0, result.output
     assert len(scope.calls) == 1
     launched = scope.calls[0].argv
-    assert launched[launched.index("--parallel") + 1] == "3"
-    assert launched[launched.index("--policy") + 1] == str(alt_policy)
+    assert "--parallel" not in launched and "--policy" not in launched, launched
+    run_id = launched[launched.index("_coordinate") + 1]
+    settings = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))["settings"]
+    assert (settings["parallel"], settings["policy_path"]) == (3, str(alt_policy))
 
 
 @pytest.mark.os_agnostic
