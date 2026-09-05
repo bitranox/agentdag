@@ -1097,18 +1097,22 @@ class ClaudeExecutor:
         tools: The tool set a node's calls are AUTO-APPROVED from, passed as
             ``ClaudeAgentOptions.allowed_tools``. It is not a bound: measured, nodes ran tools
             outside it, and only a ``PreToolUse`` deny hook closes anything. Widening it removes
-            no PROMPT, since neither offered mode prompts - it turns what ``DONT_ASK`` would
-            refuse into an auto-approval, and under ``BYPASS_PERMISSIONS`` it changes nothing.
+            no PROMPT either, since neither offered mode prompts: naming a tool here
+            auto-approves it, and omitting one closes nothing, under either mode.
             The run-wide value lives in config (``[kernel] tools``) and reaches this field
             through the composition; defaults to :data:`DEFAULT_TOOLS` so an executor built
             directly still has one.
         permission_mode: What the CLI does with a call NO hook denied and no allow rule
             covers - :attr:`~agentdag.domain.models.PermissionMode.DONT_ASK` refuses it,
-            :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS` runs it. It
-            does not reach the deny hooks: the CLI consults a ``PreToolUse`` decision before
-            it evaluates permission rules, and a hook deny short-circuits the rest, so every
-            hook this class registers refuses the same calls under either mode. The run-wide
-            value lives in config (``[kernel] permission_mode``); defaults to ``DONT_ASK``.
+            :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS` runs it PROVIDED
+            the provider CLI honours the mode; whether it does in this headless configuration,
+            rather than silently downgrading to ``default``, was not established (see
+            ``[kernel] permission_mode``'s config comment) - so this field records what was
+            REQUESTED, not proven to be what ran. It does not reach the deny hooks: the CLI
+            consults a ``PreToolUse`` decision before it evaluates permission rules, and a hook
+            deny short-circuits the rest, so every hook this class registers refuses the same
+            calls under either mode. The run-wide value lives in config
+            (``[kernel] permission_mode``); defaults to ``DONT_ASK``.
         clock: The seam :meth:`_run` reads wall-clock time through to enforce a node's
             own deadline (design 7, M3) - the SAME kind of injected seam every other
             duration in this kernel is measured on (``application.kernel.ports.Clock``),

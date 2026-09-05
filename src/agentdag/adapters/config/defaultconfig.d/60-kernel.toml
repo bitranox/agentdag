@@ -168,10 +168,10 @@ deny_tools = ["WebFetch", "WebSearch", "Task"]
 # Note: this does NOT bound the tool surface. `allowed_tools` is an auto-approval list, and
 #   measured, nodes ran tools outside it - so leaving a tool out closes nothing. `deny_tools`
 #   above and the write-set, read-confinement and Bash hooks are the only things that refuse a
-#   call. Naming a tool here removes no PROMPT either, since neither offered permission_mode
-#   prompts: it turns what dontAsk would refuse into an auto-approval, and under
-#   bypassPermissions it changes nothing. Widen this to hand nodes the full CLI tool set; close
-#   a tool by naming it in deny_tools, never by omitting it here.
+#   call. Naming a tool here removes no PROMPT either, since neither offered mode prompts:
+#   naming a tool here auto-approves it, and omitting one closes nothing - true under either
+#   mode. Widen this to hand nodes the full CLI tool set; close a tool by naming it in
+#   deny_tools, never by omitting it here.
 # Note: the empty rule is the OPPOSITE of deny_tools', on purpose. An explicit empty list
 #   (`tools = []`) is REFUSED by name before any run directory exists, and NOT because it would
 #   leave a node toolless - it would not. The SDK transport writes the flag only when the list
@@ -198,14 +198,16 @@ tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 #   own docs, which name a PreToolUse hook as the way to gate every call under bypass).
 # Note: "bypassPermissions" auto-approves whatever no hook denied, so a node may call a tool
 #   `tools` never named. The provider's CLI can also DOWNGRADE it to "default" when the bypass
-#   disclaimer was never accepted, and a run that lands in "default" stalls every call on a
-#   prompt nobody is there to answer - so read a node's transcript after changing this, rather
-#   than assuming the mode took.
+#   disclaimer was never accepted, and a call that then lands in "default" with no approval
+#   surface is auto-denied rather than stalling (read at source: the CLI's own reason string
+#   is "no approval surface in this session; permission request denied automatically") - so
+#   read a node's transcript after changing this, rather than assuming the mode took.
 # Note: the CLI's other four modes are refused by name before any run directory exists. `plan`
-#   executes no tool at all; `default` and `acceptEdits` fall back to a prompt an unattended run
-#   has nobody to answer; `auto` hands the decision to a model classifier, which is the one
-#   thing this coordinator exists not to branch on. A blank is refused too - which mode a run
-#   dispatched under is recorded on the run, so it must be a value someone chose.
+#   executes no tool at all; `default` and `acceptEdits` fall back to asking, and a headless
+#   run auto-denies that ask rather than stalling on it, since no approval surface exists to
+#   answer it; `auto` hands the decision to a model classifier, which is the one thing this
+#   coordinator exists not to branch on. A blank is refused too - which mode a run dispatched
+#   under is recorded on the run, so it must be a value someone chose.
 permission_mode = "dontAsk"
 
 # Purpose: the argv every gate node of a run executes - the mechanical check an agent

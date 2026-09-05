@@ -353,10 +353,12 @@ outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. 
 widens either list deliberately by writing an explicit `[]`. What a node may reach for WITHOUT
 being asked is a separate, weaker setting - `[kernel] tools`, the SDK's auto-approval list, and
 `[kernel] permission_mode`, what the CLI does with a call no hook denied. Neither is part of the
-boundary: neither offered mode prompts, so widening `tools` turns what `dontAsk` would refuse
-into an auto-approval rather than removing a prompt, and a node runs a tool it was never handed
-whenever no deny hook refuses it - the CLI consults a `PreToolUse` decision before it evaluates
-any permission rule, read at source rather than measured live. Bash is the hole in that boundary:
+boundary: neither offered mode prompts, so naming a tool in `tools` auto-approves it and
+omitting one closes nothing under either mode, and a node runs a tool it was never handed
+whenever no deny hook refuses it - under `bypassPermissions` provided the provider CLI honours
+that mode rather than silently downgrading it in this headless setup, which is unconfirmed. The
+CLI consults a `PreToolUse` decision before it evaluates any permission rule, read at source
+rather than measured live. Bash is the hole in that boundary:
 a shell command can read and write anywhere the operating-system user can, and nothing catches
 a write it makes outside the run directory. Both lists, like every other `[kernel]` setting, are
 resolved once at `run start` and written to the run's `state.json` as its `settings` block; the

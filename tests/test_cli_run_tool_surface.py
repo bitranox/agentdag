@@ -4,8 +4,8 @@
 is the mode it dispatches under. Neither CLOSES anything: ``allowed_tools`` is an auto-approval
 list, and the PreToolUse deny hooks (``deny_bash``, ``deny_tools``, the write-set and
 read-confinement hooks) are what actually bound a node in every mode. Widening ``tools`` removes
-no prompt either - neither offered mode prompts - it turns what ``dontAsk`` would refuse into an
-auto-approval.
+no prompt either - neither offered mode prompts: naming a tool here auto-approves it, and
+omitting one closes nothing, under either mode.
 
 Both values are read once by ``run start`` and carried on the run, so the arms here drive the real
 CLI over the real config path and read what ``_build_wiring`` handed to ``wire_kernel``, the same
@@ -87,7 +87,11 @@ def test_the_shipped_tool_surface_is_the_six_tools_under_dont_ask(cli_runner: Cl
     rc, output, calls = _start(cli_runner, tmp_path, set_args=[])
 
     assert rc == 0, output
-    assert calls and calls[0]["tools"] == SHIPPED_TOOLS
+    # Both builds, pinned by count like the neighbouring arms: without this a regression
+    # collapsing the state pre-write's and _run_foreground's wiring calls into one leaves this
+    # arm green.
+    assert len(calls) == 2, calls
+    assert calls[0]["tools"] == SHIPPED_TOOLS
     assert calls[0]["permission_mode"] == SHIPPED_PERMISSION_MODE
 
 
@@ -200,9 +204,10 @@ def test_a_permission_mode_an_unattended_run_cannot_use_is_refused_by_name(
 ) -> None:
     """Only the two modes that decide every call without a person or a classifier are offered.
 
-    ``plan`` executes no tool at all; ``default`` and ``acceptEdits`` fall back to a prompt an
-    unattended session has nobody to answer; ``auto`` routes the decision to a model classifier,
-    which is the one thing this coordinator exists not to branch on.
+    ``plan`` executes no tool at all; ``default`` and ``acceptEdits`` fall back to asking, and a
+    headless call with no approval surface auto-denies rather than stalling; ``auto`` routes the
+    decision to a model classifier, which is the one thing this coordinator exists not to branch
+    on.
     """
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", f"kernel.permission_mode={mode}"])
 

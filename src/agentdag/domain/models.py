@@ -210,16 +210,23 @@ class PermissionMode(StrEnum):
     bundled CLI 2.1.259; the SDK's own docs name a ``PreToolUse`` hook as the way to gate every
     call under bypass). The modes are NOT equally permissive in every other respect: what each
     decides is the fate of a call no hook denied - :attr:`DONT_ASK` refuses one that no allow
-    rule covers, :attr:`BYPASS_PERMISSIONS` runs it - so choosing bypass does widen a run.
+    rule covers, :attr:`BYPASS_PERMISSIONS` runs it (provided the CLI honours the mode rather
+    than silently downgrading it, unconfirmed in this headless configuration) - so choosing
+    bypass does widen a run.
 
-    The four the CLI also accepts are refused by the config reader by name: ``plan`` executes
-    no tool at all, ``default`` and ``acceptEdits`` fall back to a prompt an unattended session
-    has nobody to answer, and ``auto`` routes the decision to a model classifier - branching on
-    a model's judgement, which is the thing this coordinator exists to avoid.
+    The four the CLI also accepts are refused by the config reader by name: ``plan`` executes no
+    tool at all. ``default`` and ``acceptEdits`` fall back to asking, and read at source, a
+    headless session with no approval surface auto-denies that ask rather than stalling on it -
+    the CLI's own reason string is "no approval surface in this session; permission request
+    denied automatically". That denial is an implementation fallback, not a mode this
+    coordinator chose, so both stay refused. ``auto`` routes the decision to a model classifier -
+    branching on a model's judgement, which is the thing this coordinator exists to avoid.
 
     Attributes:
         DONT_ASK: Deny a call no allow rule covers. The shipped default.
-        BYPASS_PERMISSIONS: Auto-approve a call no hook denied, whatever the allow rules say.
+        BYPASS_PERMISSIONS: Auto-approve a call no hook denied, whatever the allow rules say -
+            provided the provider CLI honours the mode in this headless configuration rather
+            than silently downgrading it to ``default``, which was not established.
     """
 
     DONT_ASK = "dontAsk"
@@ -571,7 +578,12 @@ class RunSettings(BaseModel):
     cannot change what an old one already ran."""
 
     permission_mode: PermissionMode = PermissionMode.DONT_ASK
-    """What the CLI did with a node's call that no hook denied (``[kernel] permission_mode``).
+    """The mode a node's calls were REQUESTED to dispatch under (``[kernel] permission_mode``).
+
+    Records the mode the run was started with, not a measurement of what the CLI actually did
+    with it: whether the provider CLI honours ``BYPASS_PERMISSIONS`` in this headless
+    configuration, rather than silently downgrading it to ``default``, was not established, so
+    under a silent downgrade this field and the effective mode differ.
 
     Defaulted to ``DONT_ASK`` for the same reason as ``tools``: every run written before this
     field existed dispatched under it, because the executor hard-coded it."""

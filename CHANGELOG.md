@@ -10,7 +10,9 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - `[kernel] tools` and `[kernel] permission_mode`: the tool surface a run hands its nodes. `tools`
   is the set passed as the SDK's `allowed_tools`, the six a node needs to read a repo, change it
   and run something by shipped default; `permission_mode` is what the provider's CLI does with a
-  call no hook denied, `dontAsk` by shipped default. Both are run settings like the denylists -
+  call no hook denied, `dontAsk` by shipped default or `bypassPermissions` - whether the provider
+  CLI actually honours `bypassPermissions` in this headless configuration, rather than silently
+  downgrading it to `default`, was not established. Both are run settings like the denylists -
   resolved once at `run start`, written into `state.json`, and read back by the background child,
   a `resume`, an `approve` and a `retry` - so a value given by `--set`, an environment variable or
   a profile binds the whole run. Neither closes anything: `allowed_tools` auto-approves rather than
@@ -18,13 +20,14 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   at all, so `deny_bash`, `deny_tools` and the write-set and read-confinement hooks refuse exactly
   the same calls under either mode, which is read at source in the bundled CLI and stated by the
   SDK's own docs rather than measured live. Widening `tools` removes no prompt either, since
-  neither offered mode prompts: it turns what `dontAsk` would refuse into an auto-approval. Only
-  the two modes an unattended run can dispatch under are offered: `plan` executes no tool,
-  `default` and `acceptEdits` fall back to a prompt nobody is there to answer, and `auto` hands
-  the decision to a model classifier. `tools = []` is refused by name, unlike an empty denylist,
-  and not because it would leave a node toolless - the SDK writes the flag only for a non-empty
-  list, so `[]` passes no `--allowedTools` at all and is at least as permissive as naming one.
-  A blank value is refused for both keys.
+  neither offered mode prompts: naming a tool auto-approves it, and omitting one closes nothing,
+  under either mode. Only the two modes an unattended run can dispatch under are offered: `plan`
+  executes no tool, `default` and `acceptEdits` fall back to asking and a headless call with no
+  approval surface auto-denies rather than stalling, and `auto` hands the decision to a model
+  classifier. `tools = []` is refused by name, unlike an empty denylist, and not because it
+  would leave a node toolless - the SDK writes the flag only for a non-empty list, so `[]`
+  passes no `--allowedTools` at all and is at least as permissive as naming one. A blank value
+  is refused for both keys.
 - `plan-goal --arg workspace=DIR`: a second isolation root. The plan works in an operator-supplied
   directory instead of a worktree the run owns, so the tree it changes outlives the run and sits
   where the operator can see it, while the run directory still holds every node's bookkeeping. A

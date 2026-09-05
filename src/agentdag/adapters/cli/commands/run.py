@@ -989,9 +989,9 @@ def _config_tools(config: Config) -> tuple[str, ...]:
 
     This does not CLOSE anything: ``allowed_tools`` on the SDK is an auto-approval list, and
     measured, nodes ran tools outside it. Only ``deny_tools`` and the other ``PreToolUse`` hooks
-    refuse a call. Widening this therefore does not remove a PROMPT - neither offered mode
-    prompts - it turns what ``dontAsk`` would refuse into an auto-approval, and under
-    ``bypassPermissions`` it changes nothing at all.
+    refuse a call. Widening this therefore does not remove a PROMPT either - neither offered
+    mode prompts: naming a tool here auto-approves it, and omitting one closes nothing, under
+    either mode.
 
     Its empty rule is the OPPOSITE of the denylists', decided on what an empty value DOES here
     rather than on what it looks like. An empty denylist denies nothing, which is a boundary an
@@ -1012,22 +1012,20 @@ def _config_tools(config: Config) -> tuple[str, ...]:
         SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, an explicitly
             empty set, an entry that is not a tool name, or a value that is not a list.
     """
-    tools = _config_name_list(
+    return _config_name_list(
         config,
         "kernel.tools",
         default_key="tools",
         entry_shape=_TOOL_NAME,
         empty_means=None,
         entry_problem="reaches --allowedTools as a name no tool has, so the run reads as widened while it is not",
-    )
-    if not tools:
-        _fail(
+        empty_refusal=(
             "[kernel] tools (config key kernel.tools) is empty: that is not a node with no tools, it is a "
             "dispatch with no --allowedTools flag at all, which is at least as permissive as naming one. "
             "Name the tools this run's nodes may use, close a tool in deny_tools, or remove the override "
             "to use the packaged set"
-        )
-    return tools
+        ),
+    )
 
 
 def _config_permission_mode(config: Config) -> PermissionMode:
@@ -1036,7 +1034,8 @@ def _config_permission_mode(config: Config) -> PermissionMode:
     Only the two modes an UNATTENDED run can dispatch under are offered
     (:class:`~agentdag.domain.models.PermissionMode`); every other value the provider's CLI
     accepts is refused here by name, before any run directory exists, rather than reaching a
-    node that then stalls on a prompt nobody answers or asks a model classifier to decide.
+    node whose uncovered calls then get auto-denied for want of an approval surface, or whose
+    calls get handed to a model classifier to decide.
     A blank is refused too: which mode a run dispatched under is recorded on the run, so it
     must be a value someone chose.
 
@@ -1134,6 +1133,7 @@ def _config_name_list(
     entry_shape: re.Pattern[str] | None,
     empty_means: str | None,
     entry_problem: str,
+    empty_refusal: str | None = None,
 ) -> tuple[str, ...]:
     """Read one ``[kernel]`` list of names, failing CLOSED on a blank value and on a blank entry.
 
@@ -1147,7 +1147,11 @@ def _config_name_list(
     reading it as "the empty list" is how a boundary disappears without anyone choosing that.
     An explicit EMPTY LIST is the case that differs per key, which is what ``empty_means``
     says: a phrase means ``[]`` is a choice this reader honours and names in its refusals, and
-    ``None`` means the caller refuses ``[]`` itself and this reader must never advertise it.
+    ``None`` means the caller refuses ``[]`` itself - and this function refuses it directly,
+    rather than handing back an empty tuple for the caller to remember to check. A caller that
+    passes ``empty_means=None`` and forgets ``empty_refusal`` gets a loud ``ValueError`` instead
+    of a silently accepted ``[]``, because a documented obligation on the caller is exactly the
+    shape that goes missing the next time a key is added this way.
 
     Args:
         config: The merged layered configuration.
@@ -1155,20 +1159,33 @@ def _config_name_list(
         default_key: The key's name inside the packaged ``[kernel]`` table.
         entry_shape: A pattern every entry must match, or ``None`` for none beyond non-blank.
         empty_means: What an explicit ``[]`` means for this key, phrased for a refusal message
-            ("close nothing on purpose"), or ``None`` when the CALLER refuses an empty list.
+            ("close nothing on purpose"), or ``None`` when this function itself refuses ``[]``.
         entry_problem: What a blank or malformed ENTRY does to this key, phrased to follow
             "which" ("would match every command"). Per key, because the consequence is: a blank
             substring matches every Bash command, while a blank tool name matches none, and a
             refusal that states the wrong one sends an operator looking in the wrong place.
+        empty_refusal: The message to fail with when the result comes back empty and
+            ``empty_means`` is ``None``. Mandatory in that combination - checked immediately
+            below rather than only when a run happens to supply an empty list - and ignored
+            when ``empty_means`` names what ``[]`` means, since that key honours an empty list.
 
     Returns:
-        The entries, stripped; empty only when ``empty_means`` is set, since the caller that
-        passes ``None`` refuses that case itself.
+        The entries, stripped; empty only when ``empty_means`` is set, since ``empty_means=None``
+        makes this function refuse that case itself before returning.
 
     Raises:
-        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, a blank entry, or an
-            entry outside ``entry_shape``.
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, a blank entry, an
+            entry outside ``entry_shape``, or - when ``empty_means`` is ``None`` - the entries
+            coming back empty.
+        ValueError: ``empty_means`` is ``None`` and no ``empty_refusal`` was given - a call-site
+            bug, caught the first time this function runs rather than only when an operator
+            happens to pass an empty list.
     """
+    if empty_means is None and empty_refusal is None:
+        raise ValueError(
+            f"_config_name_list({default_key!r}): empty_means=None refuses an empty list, so "
+            "empty_refusal must name the message to fail with"
+        )
     write_empty = f"write [] to {empty_means}, " if empty_means is not None else ""
     not_a_list_hint = f", or [] to {empty_means}" if empty_means is not None else ""
     raw = config.get(key, default=_packaged_kernel_defaults()[default_key])
@@ -1185,7 +1202,15 @@ def _config_name_list(
             _fail(
                 f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name, which {entry_problem}"
             )
-    return tuple(entries)
+    result = tuple(entries)
+    if not result and empty_means is None:
+        if empty_refusal is None:
+            # Unreachable: the same condition raised ValueError above before any config was
+            # read. Kept so pyright narrows empty_refusal to str for the _fail call below,
+            # rather than a suppression on an argument that can never actually be None here.
+            raise ValueError(f"_config_name_list({default_key!r}) has no empty_refusal to fail with")
+        _fail(empty_refusal)
+    return result
 
 
 def _packaged_gate_command() -> tuple[str, ...]:
