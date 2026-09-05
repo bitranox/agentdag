@@ -203,12 +203,14 @@ class PermissionMode(StrEnum):
     only these two decide every call without a person or a model. Each member's value is the
     string the CLI itself takes.
 
-    Neither member weakens the node's confinement. The CLI consults a ``PreToolUse`` hook's
-    decision before it evaluates permission rules at all, and a hook ``deny`` short-circuits
-    the rest of the pipeline, so the write-set, Bash-command, closed-tool and read-confinement
-    hooks refuse exactly the same calls under either one. What the mode decides is what happens
-    to a call NO hook denied: :attr:`DONT_ASK` refuses one that no allow rule covers,
-    :attr:`BYPASS_PERMISSIONS` runs it.
+    Neither member changes which calls the ``PreToolUse`` deny hooks refuse. The CLI consults a
+    hook's decision before it evaluates permission rules at all, and a hook ``deny``
+    short-circuits the rest of the pipeline, so the write-set, Bash-command, closed-tool and
+    read-confinement hooks refuse exactly the same calls under either one (read at source in the
+    bundled CLI 2.1.259; the SDK's own docs name a ``PreToolUse`` hook as the way to gate every
+    call under bypass). The modes are NOT equally permissive in every other respect: what each
+    decides is the fate of a call no hook denied - :attr:`DONT_ASK` refuses one that no allow
+    rule covers, :attr:`BYPASS_PERMISSIONS` runs it - so choosing bypass does widen a run.
 
     The four the CLI also accepts are refused by the config reader by name: ``plan`` executes
     no tool at all, ``default`` and ``acceptEdits`` fall back to a prompt an unattended session

@@ -8,7 +8,10 @@ Each node gets its own :class:`~claude_agent_sdk.ClaudeSDKClient`, run under the
 nothing outside the isolation root or on the bash denylist is silently allowed. The mode
 decides only what happens to a call NO hook denied: the CLI consults a ``PreToolUse`` hook's
 decision before it evaluates permission rules at all, so the hooks below refuse the same calls
-whichever mode a run chose. ``setting_sources=[]`` keeps the coordinator's own project settings out of
+whichever mode a run chose. That ordering is READ AT SOURCE in the bundled CLI 2.1.259 and
+stated by the SDK's own docs; the M2 probe measured the hooks themselves only under ``dontAsk``,
+so no live run has yet exercised them under ``bypassPermissions``.
+``setting_sources=[]`` keeps the coordinator's own project settings out of
 the node's context, same as :mod:`agentdag.adapters.graph_a.work_claude_sdk` (M1); this
 is new code sharing only the idea, not the module.
 
@@ -1092,11 +1095,13 @@ class ClaudeExecutor:
             field through the composition, never as a second literal that could drift;
             an executor built directly with neither closes no tool.
         tools: The tool set a node's calls are AUTO-APPROVED from, passed as
-            ``ClaudeAgentOptions.allowed_tools``. It is not a bound: measured, nodes ran
-            tools outside it, so widening this removes prompts rather than granting reach,
-            and only a ``PreToolUse`` deny hook closes anything. The run-wide value lives in
-            config (``[kernel] tools``) and reaches this field through the composition;
-            defaults to :data:`DEFAULT_TOOLS` so an executor built directly still has one.
+            ``ClaudeAgentOptions.allowed_tools``. It is not a bound: measured, nodes ran tools
+            outside it, and only a ``PreToolUse`` deny hook closes anything. Widening it removes
+            no PROMPT, since neither offered mode prompts - it turns what ``DONT_ASK`` would
+            refuse into an auto-approval, and under ``BYPASS_PERMISSIONS`` it changes nothing.
+            The run-wide value lives in config (``[kernel] tools``) and reaches this field
+            through the composition; defaults to :data:`DEFAULT_TOOLS` so an executor built
+            directly still has one.
         permission_mode: What the CLI does with a call NO hook denied and no allow rule
             covers - :attr:`~agentdag.domain.models.PermissionMode.DONT_ASK` refuses it,
             :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS` runs it. It

@@ -2155,12 +2155,17 @@ def test_an_executor_built_without_a_tool_surface_dispatches_the_shipped_one(tmp
 
 @pytest.mark.os_agnostic
 def test_the_deny_hooks_are_registered_unchanged_under_the_widening_permission_mode(tmp_path: Path) -> None:
-    """The premise the mode knob rests on: widening the mode does not remove a single deny hook.
+    """This module still registers and fires every deny hook when the mode is the widening one.
 
-    ``bypassPermissions`` auto-approves what the permission rules would have asked about, and
-    the CLI consults a PreToolUse hook's decision BEFORE that evaluation, so the write-set,
-    Bash and closed-tool hooks still refuse. Asserted on what each hook DOES, not on its
-    presence: a matcher that fired on nothing would look identical to one that is installed.
+    SCOPE, because the obvious reading overclaims: this builds options in-process and calls our
+    own hook callables, so it proves what THIS code does, never what the CLI does with the
+    result. It would be exactly this green even if ``bypassPermissions`` made the CLI skip the
+    PreToolUse chain outright. That ordering is read at source in the bundled CLI, not measured
+    here and not measured live under this mode by any probe.
+
+    Asserted on what each hook DOES, not on its presence, and each deny is paired with a call
+    the same hook must ALLOW - a hook refusing everything would satisfy the denies alone and
+    could not tell a live boundary from a broken one.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")

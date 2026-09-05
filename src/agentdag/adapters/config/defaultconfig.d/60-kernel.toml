@@ -166,14 +166,18 @@ deny_tools = ["WebFetch", "WebSearch", "Task"]
 # Environment Variable: AGENTDAG___KERNEL__TOOLS=Read,Edit,Write,Bash,Grep,Glob
 # .env: KERNEL__TOOLS=Read,Edit,Write,Bash,Grep,Glob
 # Note: this does NOT bound the tool surface. `allowed_tools` is an auto-approval list, and
-#   measured, nodes ran tools outside it - so naming a tool here removes a prompt, and leaving
-#   one out closes nothing. `deny_tools` above and the write-set, read-confinement and Bash
-#   hooks are the only things that refuse a call. Widen this to hand nodes the full CLI tool
-#   set; close a tool by naming it in deny_tools, never by omitting it here.
+#   measured, nodes ran tools outside it - so leaving a tool out closes nothing. `deny_tools`
+#   above and the write-set, read-confinement and Bash hooks are the only things that refuse a
+#   call. Naming a tool here removes no PROMPT either, since neither offered permission_mode
+#   prompts: it turns what dontAsk would refuse into an auto-approval, and under
+#   bypassPermissions it changes nothing. Widen this to hand nodes the full CLI tool set; close
+#   a tool by naming it in deny_tools, never by omitting it here.
 # Note: the empty rule is the OPPOSITE of deny_tools', on purpose. An explicit empty list
-#   (`tools = []`) is REFUSED by name before any run directory exists: a node whose calls are
-#   auto-approved from nothing can only emit text under the shipped permission_mode, and it
-#   costs a full dispatch to discover. A BLANK value is refused too.
+#   (`tools = []`) is REFUSED by name before any run directory exists, and NOT because it would
+#   leave a node toolless - it would not. The SDK transport writes the flag only when the list
+#   is non-empty, so `[]` passes no --allowedTools at all, which is at least as permissive as
+#   naming one tool and never less. It reads as a boundary and is the opposite of one. A BLANK
+#   value is refused too.
 # Note: bare names only. They are joined with commas into ONE --allowedTools value, so a comma
 #   or a space inside an entry splits it into names that match no tool, and the run reads as
 #   widened while it is not. A per-tool specifier (`Bash(git diff:*)`) is refused for the same

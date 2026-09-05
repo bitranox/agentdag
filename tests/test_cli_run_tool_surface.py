@@ -2,9 +2,10 @@
 
 ``tools`` is the list the executor passes as the SDK's ``allowed_tools``, and ``permission_mode``
 is the mode it dispatches under. Neither CLOSES anything: ``allowed_tools`` is an auto-approval
-list, so widening it removes prompts rather than adding reach, and the PreToolUse deny hooks
-(``deny_bash``, ``deny_tools``, the write-set and read-confinement hooks) are what actually bound
-a node in every mode.
+list, and the PreToolUse deny hooks (``deny_bash``, ``deny_tools``, the write-set and
+read-confinement hooks) are what actually bound a node in every mode. Widening ``tools`` removes
+no prompt either - neither offered mode prompts - it turns what ``dontAsk`` would refuse into an
+auto-approval.
 
 Both values are read once by ``run start`` and carried on the run, so the arms here drive the real
 CLI over the real config path and read what ``_build_wiring`` handed to ``wire_kernel``, the same
@@ -12,8 +13,9 @@ way ``test_cli_run_denylists.py`` does.
 
 The empty and absent cases are decided differently from the denylists, and deliberately: an
 absent value is the packaged one, a BLANK is refused by name, and ``tools = []`` is refused by
-name too - a run whose every node may auto-approve no tool at all pays for a dispatch that can
-only emit text.
+name too - not because it would leave a node toolless, but because the SDK writes the flag only
+for a non-empty list, so it passes no ``--allowedTools`` at all and is at least as permissive as
+naming one.
 """
 
 from __future__ import annotations
@@ -22,8 +24,8 @@ import json
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from test_cli_run import CommittingExecutor, services_with, start_args
-from test_cli_run_settings import suspended_run_id
+from test_cli_run import CommittingExecutor, RecordingScope, services_with, start_args
+from test_cli_run_settings import child_argv, suspended_run_id
 
 from agentdag.adapters import cli as cli_mod
 from agentdag.adapters.cli.exit_codes import ExitCode
@@ -98,7 +100,10 @@ def test_a_configured_tool_set_is_what_the_wiring_is_built_from(cli_runner: CliR
     rc, output, calls = _start(cli_runner, tmp_path, set_args=set_args)
 
     assert rc == 0, output
-    assert calls and _tools_of(calls) == [tuple(wanted)] * len(calls)
+    # Both builds, pinned by count: the state pre-write's and _run_foreground's. Without this a
+    # regression collapsing them to one leaves the arm green while the read-back leg is gone.
+    assert len(calls) == 2, calls
+    assert _tools_of(calls) == [tuple(wanted)] * len(calls)
 
 
 @pytest.mark.os_agnostic
@@ -109,12 +114,17 @@ def test_bypass_permissions_is_a_mode_an_operator_may_choose(cli_runner: CliRunn
     rc, output, calls = _start(cli_runner, tmp_path, set_args=set_args)
 
     assert rc == 0, output
-    assert calls and [call["permission_mode"] for call in calls] == ["bypassPermissions"] * len(calls)
+    assert len(calls) == 2, calls
+    assert [call["permission_mode"] for call in calls] == ["bypassPermissions"] * len(calls)
 
 
 @pytest.mark.os_agnostic
 def test_an_explicitly_empty_tool_set_is_refused_by_name(cli_runner: CliRunner, tmp_path: Path) -> None:
-    """A run whose nodes auto-approve no tool can only emit text, and pays a full dispatch to find out."""
+    """``[]`` is not "no tools": the SDK omits the flag entirely, so it is at least as permissive as one.
+
+    Refused because it reads as a boundary and is the opposite of one - the inverse of an empty
+    denylist, which really does mean "deny nothing" and is honoured.
+    """
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", "kernel.tools=[]"])
 
     _assert_refused_by_name(rc, output, "kernel.tools", tmp_path / "runs")
@@ -151,7 +161,7 @@ def test_a_tools_entry_that_cannot_be_a_tool_name_is_refused(cli_runner: CliRunn
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=set_args)
 
     _assert_refused_by_name(rc, output, "kernel.tools", tmp_path / "runs")
-    assert "names no tool" in output, output
+    assert "a name no tool has" in output, output
     assert "match every" not in output, output
 
 
@@ -236,3 +246,67 @@ def test_a_resume_dispatches_under_the_tool_surface_the_run_was_started_with(
     assert calls, "the resume built no wiring at all"
     assert _tools_of(calls) == [("Read", "Task")] * len(calls), calls
     assert [call["permission_mode"] for call in calls] == ["bypassPermissions"] * len(calls), calls
+
+
+@pytest.mark.os_agnostic
+def test_a_background_child_dispatches_under_the_tool_surface_the_run_carries(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The relaunch path a real run actually takes: ``run start`` without ``--foreground``.
+
+    The child is a fresh process that loads config from files alone - it never sees the parent's
+    ``--set`` - so this replays the exact argv the CLI handed it and requires the wiring the
+    CHILD built to carry both values. The resume arm above does not cover this: a resume is
+    driven by an operator who could re-supply them, and a background child cannot be.
+    """
+    (tmp_path / "runs").mkdir()
+    scope = RecordingScope(confirm_alive=True)
+    set_args = ["--set", 'kernel.tools=["Read", "Task"]', "--set", "kernel.permission_mode=bypassPermissions"]
+    started = cli_runner.invoke(
+        cli_mod.cli,
+        [*set_args, *start_args(tmp_path, foreground=False)],
+        obj=services_with(CommittingExecutor(), tmp_path, scope=scope),
+    )
+    assert started.exit_code == 0, started.output
+
+    calls: list[Mapping[str, object]] = []
+    child = cli_runner.invoke(
+        cli_mod.cli, child_argv(scope), obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls)
+    )
+
+    assert child.exit_code == 0, child.output
+    assert calls, "the child built no wiring at all"
+    assert _tools_of(calls) == [("Read", "Task")] * len(calls), calls
+    assert [call["permission_mode"] for call in calls] == ["bypassPermissions"] * len(calls), calls
+
+
+@pytest.mark.os_agnostic
+def test_a_run_whose_settings_predate_the_tool_surface_wires_what_that_run_actually_ran_under(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A ``settings`` block written before these fields existed belonged to a run that dispatched
+    with the six tools under ``dontAsk``, because the executor hard-coded both. That is what its
+    relaunch must wire - not a refusal, not the packaged value of the day, and not nothing.
+    """
+    (tmp_path / "runs").mkdir()
+    started = cli_runner.invoke(cli_mod.cli, start_args(tmp_path), obj=services_with(CommittingExecutor(), tmp_path))
+    assert started.exit_code == 0, started.output
+    run_id = suspended_run_id(started.output)
+    state_path = tmp_path / "runs" / run_id / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # The preconditions: both fields WERE there, so their absence below is this test's doing.
+    assert state["settings"].pop("tools") == list(SHIPPED_TOOLS), state
+    assert state["settings"].pop("permission_mode") == SHIPPED_PERMISSION_MODE, state
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    calls: list[Mapping[str, object]] = []
+    resume_argv = ["run", "resume", run_id, "--runs", str(tmp_path / "runs"), "--foreground"]
+    resumed = cli_runner.invoke(
+        cli_mod.cli, resume_argv, obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls)
+    )
+
+    assert resumed.exit_code == 0, resumed.output
+    assert "no settings block" not in resumed.output, resumed.output  # the BLOCK is there; only the fields are not
+    assert calls, "the resume built no wiring at all"
+    assert _tools_of(calls) == [SHIPPED_TOOLS] * len(calls), calls
+    assert [call["permission_mode"] for call in calls] == [SHIPPED_PERMISSION_MODE] * len(calls), calls

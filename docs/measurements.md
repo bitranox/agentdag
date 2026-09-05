@@ -112,6 +112,12 @@ Neither hook sees an out-of-root write made by shell redirection through Bash, b
 tool call either hook matches. This was predicted by the design before it was measured, and it is
 why a post-node scan exists.
 
+**Scope: `dontAsk` only.** No probe has run these hooks under `bypassPermissions`, which
+`[kernel] permission_mode` now makes selectable. That the CLI consults a `PreToolUse` decision
+before it evaluates permission rules at all, so a hook `deny` wins under either mode, is READ AT
+SOURCE in the bundled CLI 2.1.259 and stated by the SDK's own docs - not measured here. Do not
+quote it as a measurement.
+
 ### A planner's emissions validated against the schema
 
 **Probe corpus 2026-08-17**, 20 sequential emissions: 20 of 20 parsed as JSON and passed both the node

@@ -1165,7 +1165,7 @@ later as a measurement.
 | link                                                                                    | evidence                                                                                              | size  |
 |-----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|-------|
 | VERIFIED-HERE. `CredentialCopy` is the SHIPPED default, not the "non-default" it claims | `60-kernel.toml:47` is empty, so `run.py:785`'s guard is False; docstring at `executor_claude.py:345` | small |
-| RELAYED. Bash is always granted and `allowed_tools` does not bound it                   | `DEFAULT_TOOLS` at `executor_claude.py:102`; measured under `dontAsk`, 8 of 24 dispatches             | -     |
+| RELAYED. Bash is always granted and `allowed_tools` does not bound it                   | `DEFAULT_TOOLS` in `domain/models.py`; measured under `dontAsk`, 8 of 24 dispatches                   | -     |
 | VERIFIED-HERE. The Bash guard fails OPEN on an empty env var                            | `run.py:839-852` splits a str and filters empties; measured `()` against a control's six patterns     | small |
 | VERIFIED-HERE. The documented backstop cannot fire                                      | `context.py:437` passes `isolation_root=self.run_dir.root`, and the scan walks `run_dir.root`         | med   |
 | VERIFIED-HERE. Nothing denies `WebFetch`, `WebSearch` or `Task`                         | the only PreToolUse denials match file-edit tools and Bash                                            | med   |

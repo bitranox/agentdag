@@ -988,14 +988,19 @@ def _config_tools(config: Config) -> tuple[str, ...]:
     """Read ``[kernel] tools``, the tool set every node's calls are AUTO-APPROVED from.
 
     This does not CLOSE anything: ``allowed_tools`` on the SDK is an auto-approval list, and
-    measured, nodes ran tools outside it. Widening it removes prompts; only ``deny_tools`` and
-    the other ``PreToolUse`` hooks refuse a call.
+    measured, nodes ran tools outside it. Only ``deny_tools`` and the other ``PreToolUse`` hooks
+    refuse a call. Widening this therefore does not remove a PROMPT - neither offered mode
+    prompts - it turns what ``dontAsk`` would refuse into an auto-approval, and under
+    ``bypassPermissions`` it changes nothing at all.
 
-    Its empty rule is the OPPOSITE of the denylists', decided on what an empty value MEANS
-    here: an empty denylist denies nothing, which is a boundary an operator can reasonably
-    widen, while an empty tool set auto-approves nothing - under the shipped ``dontAsk`` that
-    is a node which can only emit text, and it costs a full dispatch to discover. So ``[]`` is
-    refused by name before any run directory exists, as is a blank; absent is the packaged set.
+    Its empty rule is the OPPOSITE of the denylists', decided on what an empty value DOES here
+    rather than on what it looks like. An empty denylist denies nothing, which is a boundary an
+    operator can reasonably widen. An empty tool set is not "auto-approve nothing": the SDK
+    transport writes the flag only when the list is non-empty
+    (``_internal/transport/subprocess_cli.py``, ``if effective_allowed_tools:``), so ``[]``
+    passes NO ``--allowedTools`` at all and is at least as permissive as naming one tool, never
+    less. It reads as a boundary and is the opposite of one, so ``[]`` is refused by name before
+    any run directory exists, as is a blank; absent is the packaged set.
 
     Args:
         config: The merged layered configuration.
@@ -1013,13 +1018,14 @@ def _config_tools(config: Config) -> tuple[str, ...]:
         default_key="tools",
         entry_shape=_TOOL_NAME,
         empty_means=None,
-        entry_problem="names no tool, so the run reads as widened while it is not",
+        entry_problem="reaches --allowedTools as a name no tool has, so the run reads as widened while it is not",
     )
     if not tools:
         _fail(
-            "[kernel] tools (config key kernel.tools) is empty: a node whose calls are auto-approved from "
-            "no tool at all can only emit text, and pays a full dispatch to find out. Name the tools this "
-            "run's nodes may use, or remove the override to use the packaged set"
+            "[kernel] tools (config key kernel.tools) is empty: that is not a node with no tools, it is a "
+            "dispatch with no --allowedTools flag at all, which is at least as permissive as naming one. "
+            "Name the tools this run's nodes may use, close a tool in deny_tools, or remove the override "
+            "to use the packaged set"
         )
     return tools
 
@@ -1176,7 +1182,9 @@ def _config_name_list(
         if not entry:
             _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which {entry_problem}")
         if entry_shape is not None and not entry_shape.match(entry):
-            _fail(f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name: it {entry_problem}")
+            _fail(
+                f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name, which {entry_problem}"
+            )
     return tuple(entries)
 
 

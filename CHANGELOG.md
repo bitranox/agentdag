@@ -16,11 +16,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   a profile binds the whole run. Neither closes anything: `allowed_tools` auto-approves rather than
   bounds, and the CLI consults a `PreToolUse` hook's decision before it evaluates permission rules
   at all, so `deny_bash`, `deny_tools` and the write-set and read-confinement hooks refuse exactly
-  the same calls under either mode. Only the two modes an unattended run can dispatch under are
-  offered: `plan` executes no tool, `default` and `acceptEdits` fall back to a prompt nobody is
-  there to answer, and `auto` hands the decision to a model classifier. `tools = []` is refused by
-  name, unlike an empty denylist, because a node whose calls are auto-approved from nothing can
-  only emit text and costs a full dispatch to find out; a blank value is refused for both keys.
+  the same calls under either mode, which is read at source in the bundled CLI and stated by the
+  SDK's own docs rather than measured live. Widening `tools` removes no prompt either, since
+  neither offered mode prompts: it turns what `dontAsk` would refuse into an auto-approval. Only
+  the two modes an unattended run can dispatch under are offered: `plan` executes no tool,
+  `default` and `acceptEdits` fall back to a prompt nobody is there to answer, and `auto` hands
+  the decision to a model classifier. `tools = []` is refused by name, unlike an empty denylist,
+  and not because it would leave a node toolless - the SDK writes the flag only for a non-empty
+  list, so `[]` passes no `--allowedTools` at all and is at least as permissive as naming one.
+  A blank value is refused for both keys.
 - `plan-goal --arg workspace=DIR`: a second isolation root. The plan works in an operator-supplied
   directory instead of a worktree the run owns, so the tree it changes outlives the run and sits
   where the operator can see it, while the run directory still holds every node's bookkeeping. A
