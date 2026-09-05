@@ -1044,10 +1044,11 @@ def _config_gate_command(config: Config) -> tuple[str, ...]:
             blank word, or a value that is not a list of words at all.
     """
     key = "kernel.gate_command"
-    raw = config.get(key, default=_packaged_gate_command())
+    packaged = _packaged_gate_command()
+    raw = config.get(key, default=packaged)
     if isinstance(raw, str):
         if not raw.strip():
-            return _packaged_gate_command()
+            return packaged
         words = [item.strip() for item in raw.split(",")]
     elif isinstance(raw, (list, tuple)):
         words = [str(item).strip() for item in cast("Sequence[object]", raw)]
