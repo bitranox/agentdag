@@ -428,7 +428,8 @@ class Coordinator:
             the body to run when the journal has no record for the key.
 
         Raises:
-            KernelError: ``cwd`` sits outside the run root.
+            KernelError: ``cwd`` sits outside every root this dispatch was given, or
+                ``workspace`` lies inside the run root (:meth:`_recorded_cwd`).
         """
         row = self.policy.resolve(spec)
         input_obj = {
@@ -624,9 +625,9 @@ class Coordinator:
 
         The run root's own paths are named RELATIVE to it, so a run directory that moves is
         still the same call. A ``workspace`` is the one other root a dispatch may be given
-        (design 2.1, C8, widened by Task 9), and a path under it is named ABSOLUTELY: it has
-        no relative form, and a workspace that moved is a different directory rather than the
-        same one under a new name.
+        (design 2.1, C8), and a path under it is named ABSOLUTELY: it has no relative form,
+        and a workspace that moved is a different directory rather than the same one under a
+        new name.
 
         Args:
             cwd: The working directory the node will run in.

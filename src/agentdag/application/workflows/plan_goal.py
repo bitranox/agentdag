@@ -13,7 +13,6 @@ allocators. Everything else it reads off the coordinator it is handed.
 Contents:
     * :class:`PlanGoalArgs` - the goal, and where its work runs.
     * :func:`program` - mint the specs, then run the root ladder.
-    * :func:`working_directory` - the run's own worktree, or the workspace it was given.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from ..kernel.root import run_root, with_budget_grants
 if TYPE_CHECKING:
     from ..kernel.context import Coordinator
 
-__all__ = ["PLANNER_ID", "PlanGoalArgs", "program", "working_directory"]
+__all__ = ["PLANNER_ID", "PlanGoalArgs", "program"]
 
 PLANNER_ID = "p_root"
 """The root planner's node id, and the prefix of every journal line about a planning attempt."""
@@ -136,7 +135,7 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
             flow, not an error. The coordinator process exits and a later launch with a
             decision recorded resumes exactly here.
     """
-    cwd = working_directory(co, args.workspace)
+    cwd = _working_directory(co, args.workspace)
     await run_root(
         goal=args.goal,
         planner=_planner_spec(),
@@ -151,7 +150,7 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
     )
 
 
-def working_directory(co: Coordinator, workspace: Path | None) -> Path:
+def _working_directory(co: Coordinator, workspace: Path | None) -> Path:
     """Return where this plan works, refusing a workspace nothing could work in.
 
     With no workspace, a worktree the run owns, created here because nothing else does. With

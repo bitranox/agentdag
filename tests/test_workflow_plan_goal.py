@@ -36,6 +36,7 @@ from agentdag.application.workflows.plan_goal import WORKTREE, PlanGoalArgs
 from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import KernelError
+from agentdag.domain.keys import hash8
 from agentdag.domain.models import NodeOutcome, ResultRecord, RunStatus
 
 if TYPE_CHECKING:
@@ -59,6 +60,48 @@ def one_work_plan(goal: str, node_id: str = "repair") -> str:
                     "output_contract": ["status"],
                     "acceptance": None,
                 }
+            ],
+            "done_when": {"ref": {"entry": node_id, "field": "status"}, "op": "==", "value": "done"},
+        }
+    )
+
+
+def gated_and_scanned_plan(goal: str, node_id: str = "repair") -> str:
+    """A plan carrying every op that RUNS somewhere: the work, a gate over it, and a scan.
+
+    ``work`` alone leaves the gate and scan op bodies undispatched, and those are two of the
+    four places the workspace has to be forwarded - both were provably uncovered by a plan
+    with one work entry (dropping either forwarding left the whole suite green).
+    """
+    gate_id, scan_id = f"{node_id}-gate", f"{node_id}-scan"
+    return json.dumps(
+        {
+            "goal": goal,
+            "entries": [
+                {
+                    "spec": {"node_id": node_id, "kind": "work", "deadline_s": 60.0},
+                    "op": "work",
+                    "args": {},
+                    "brief": f"do {node_id}",
+                    "output_contract": ["status"],
+                    "acceptance": None,
+                },
+                {
+                    "spec": {"node_id": gate_id, "kind": "gate", "deadline_s": 60.0},
+                    "op": "gate:make-test",
+                    "args": {},
+                    "brief": "run the gate",
+                    "output_contract": ["status", "rc"],
+                    "acceptance": {"ref": {"entry": gate_id, "field": "rc"}, "op": "==", "value": 0},
+                },
+                {
+                    "spec": {"node_id": scan_id, "kind": "gate", "deadline_s": 60.0},
+                    "op": "scan",
+                    "args": {"watched": node_id},
+                    "brief": "scan the run tree",
+                    "output_contract": ["status", "stray"],
+                    "acceptance": None,
+                },
             ],
             "done_when": {"ref": {"entry": node_id, "field": "status"}, "op": "==", "value": "done"},
         }
@@ -186,6 +229,31 @@ def test_a_run_naming_a_workspace_works_there_and_the_write_hook_permits_it(tmp_
 
 
 @pytest.mark.os_agnostic
+def test_a_gate_and_a_scan_in_the_plan_are_given_the_workspace_too(tmp_path: Path) -> None:
+    """Every op body that RUNS somewhere has to forward the workspace, not just ``work``.
+
+    The gate would otherwise be refused outright - its cwd is the workspace and nothing
+    authorised it - and the scan would record a clean verdict without saying which root it
+    did not cover, which is the reading this whole mechanism exists to prevent. Dropping
+    either forwarding left the entire suite green until this arm existed.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    run_dir = fresh(tmp_path)
+    executor = RecordingPlanExecutor(gated_and_scanned_plan("g"))
+
+    assert drive(run_dir, PlanGoalArgs(goal="g", workspace=workspace), executor) is RunStatus.DONE
+
+    records = _result_records(run_dir).values()
+    gate = next(r for r in records if any(ref.endswith("gate.log") for ref in r.artefact_refs))
+    assert _recorded_input(run_dir, gate)["cwd"] == workspace.as_posix()
+
+    scan = next(r for r in records if "stray" in r.key_facts)
+    assert scan.key_facts["stray"] == []
+    assert _recorded_input(run_dir, scan)["unwatched_roots"] == [workspace.as_posix()]
+
+
+@pytest.mark.os_agnostic
 def test_the_planner_plans_inside_the_workspace_too(tmp_path: Path) -> None:
     """A planner reads its cwd, so a plan-goal run's planner has to be given the same root.
 
@@ -247,6 +315,13 @@ def test_the_resolved_workspace_is_what_the_run_persists_and_a_relaunch_re_valid
     stored = run_dir.read_state().args
     assert stored["workspace"] == str(workspace)
     assert PlanGoalArgs.model_validate(stored).workspace == workspace
+
+
+def _recorded_input(run_dir: FsRunDir, record: ResultRecord) -> dict[str, Any]:
+    """The ``input.json`` a dispatch wrote, read off the node directory its own key names."""
+    node_dir = run_dir.node_dir(record.node_id, hash8(record.input_hash))
+    parsed: dict[str, Any] = json.loads((node_dir / "input.json").read_text(encoding="utf-8"))
+    return parsed
 
 
 def _result_records(run_dir: FsRunDir) -> dict[str, ResultRecord]:
