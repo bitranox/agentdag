@@ -241,6 +241,26 @@ per checkpoint under `setsid` with `--arg workspace=/workspace`; SUSPENDED is a 
 usage from `run records --json` and transcripts; `save_artifacts` copies the run dir minus node
 homes.
 
+### Arm fairness, found 2026-09-05 while building Task 10
+
+Three settings differ between the arms as they stand, and each would confound the pair. The
+coordinator arm's config is written HERE, so this is where they get matched.
+
+- **Permission mode.** The control arm's config runs `permission_mode: bypassPermissions`. Before
+  Task 10 a coordinator node could only run the hard-coded `dontAsk`, so the pair could not have
+  been matched on this axis at all. `[kernel] permission_mode` now makes it selectable: set it to
+  whatever the control uses, and record which value both arms ran.
+- **CLI version.** The control's agent config pins CLI 2.1.260, while `claude-agent-sdk` spawns
+  its BUNDLED binary (2.1.259) before anything on PATH. Prove the version each arm actually ran
+  from its transcript's own init record (`data.claude_code_version`), never from the config or the
+  image tag, and make them equal.
+- **`kernel.deny_tools`.** The shipped default closes `WebFetch`, `WebSearch` and `Task`. The
+  pre-registered decision that coordinator nodes get the full CLI tool set therefore needs
+  `kernel.deny_tools = []` stated explicitly in the coordinator arm's config; an explicit empty
+  list is honoured, a blank is refused. Task 10 could not record this line because no coordinator
+  arm config exists yet - nothing under `~/agentdag-eval/` holds a `kernel.*` key, all three
+  configs there drive the single-agent control (`type: claude_code`). It lands with this task.
+
 ## Task 12: Plumbing dry run and one-checkpoint parity (controller)
 
 ## Task 13: Coordinator arm on the 17 checkpoints (controller)
