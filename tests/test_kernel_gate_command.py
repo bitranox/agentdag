@@ -192,6 +192,27 @@ def test_a_run_carrying_an_empty_gate_command_is_refused_when_its_state_is_read(
 
 
 @pytest.mark.os_agnostic
+def test_a_run_carrying_a_blank_gate_command_word_is_refused_when_its_state_is_read() -> None:
+    """``min_length=1`` on the tuple alone lets a blank WORD through: ``("make", "")`` is a
+    non-empty tuple, so without the same constraint on each member it would pass validation
+    here and reach ``subprocess.run`` as part of the gate's argv, one guard short of the CLI
+    path (``_config_gate_command``) it mirrors.
+    """
+    with pytest.raises(ValidationError):
+        RunSettings(
+            policy_path="p",
+            parallel=1,
+            max_turns=1,
+            default_node_tokens=1,
+            deny_bash=(),
+            deny_tools=(),
+            notify="none",
+            credential_file="",
+            gate_command=("make", ""),
+        )
+
+
+@pytest.mark.os_agnostic
 def test_the_registry_describes_the_gate_by_the_command_it_will_run() -> None:
     """The planner is told what the gate runs, and the default is not smuggled in beside it."""
     described = build_op_registry(gate_command=("pytest", "-q")).get("gate:make-test").description
@@ -203,12 +224,20 @@ def test_the_registry_describes_the_gate_by_the_command_it_will_run() -> None:
 @pytest.mark.os_agnostic
 def test_every_registered_op_says_something_about_itself() -> None:
     """A new op cannot reach the planner prompt nameless: the field is required, and this pins
-    that none was left as a placeholder short enough to say nothing."""
+    that none was left as a placeholder short enough to say nothing.
+
+    A CHARACTER count is easy to game - a 20-character placeholder such as ``"does something
+    ok!!"`` would pass one - so this counts WORDS instead: a description that says nothing has
+    few of those, however it is padded. It also refuses two ops sharing the identical text,
+    which is what a copy-pasted placeholder looks like, and is the literal sense in which such
+    a description fails to say something about ITSELF.
+    """
     registry = build_op_registry()
     said = {name: registry.get(name).description for name in registry.names()}
-    thin = {name: text for name, text in said.items() if len(text) < 20}
+    thin = {name: text for name, text in said.items() if len(text.split()) < 6}
 
     assert not thin, f"these ops say nothing about themselves in the planner prompt: {thin}"
+    assert len(set(said.values())) == len(said), f"two or more ops share the identical description: {said}"
 
 
 @pytest.mark.os_agnostic

@@ -27,7 +27,7 @@ Contents:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
@@ -514,13 +514,16 @@ class RunSettings(BaseModel):
     deny_tools: tuple[str, ...]
     notify: str = Field(min_length=1)
     credential_file: str
-    gate_command: tuple[str, ...] = Field(default=("make", "test"), min_length=1)
+    gate_command: tuple[Annotated[str, Field(min_length=1)], ...] = Field(default=("make", "test"), min_length=1)
     """The argv every ``gate`` node of this run executes (``[kernel] gate_command``).
 
-    ``min_length=1`` because this record is what a RELAUNCH reads: the CLI refuses an empty
-    command when it resolves one, but a hand-edited ``state.json`` skips that and would reach
-    the gate adapter as a bare ``ValueError`` traceback. Refusing it where the run is loaded
-    keeps every bad value in this block failing the same way.
+    This record is what a RELAUNCH reads, and the CLI's own resolver
+    (``_config_gate_command``) refuses two shapes when it builds one: an empty command, and
+    one carrying a blank word. Both are pinned here too, because a hand-edited ``state.json``
+    skips the CLI entirely - ``min_length=1`` on the tuple refuses an empty argv, and the same
+    constraint on each member refuses a blank word inside it (``("make", "")``). Without the
+    member constraint a blank survives read-back and reaches ``subprocess.run`` as part of the
+    gate's argv instead of failing here, by name, the same way the CLI already does.
 
     Defaulted, unlike its neighbours, for the ``settings`` blocks written before this field
     existed: those runs gated on ``make test``, because that was the only thing a gate could
