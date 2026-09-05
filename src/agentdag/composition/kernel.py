@@ -608,13 +608,17 @@ def build_op_registry(*, gate_command: Sequence[str] = DEFAULT_GATE_COMMAND) -> 
             name="scan",
             description="diff the run dir against a snapshot; counts writes outside the watched entry's write set",
             args_model=_ScanArgs,
-            output_contract=frozenset({"stray"}),  # application/kernel/context.py:584
+            output_contract=frozenset({"stray", "unwatched_roots"}),  # application/kernel/context.py:842
             # Set from what the body does, not from the brief's `gate:` NAME PREFIX rule, which
             # this op's name does not match: `scan.stray == 0` alone would otherwise be the same
             # never-started-reads-as-finished loophole decision 4 closes for gates.
             # state: stray 0 - a manifest diff only OBSERVES, and a clean scan reads alike
-            # whether anything ran (context.py:580)
-            facts_if_no_work={"stray": 0},
+            # whether anything ran (context.py:842). unwatched_roots [] - the roots this scan
+            # did not cover are fixed by how the RUN was configured, so the reading is the same
+            # whether anything ran; [] is the reading of the default shape, a run with no
+            # workspace. It is in the contract because a fold must be able to name it, not
+            # because it is a lever: nothing a node does can move it (context.py:842).
+            facts_if_no_work={"stray": 0, "unwatched_roots": []},
             build=_build_scan,
         )
     )

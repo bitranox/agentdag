@@ -342,9 +342,11 @@ calls are refused outside its declared write set inside the run directory, by a 
 the run owns; a node is then bounded by both roots and by nothing else, and the workspace is
 granted whole rather than by glob. What that costs is stated where it is recorded: the
 after-the-fact scan compares the run directory alone, so writes made in a workspace are writes
-no scan judged, and each scan records the root it did not cover. A workspace inside the run
+no scan judged, and every scan names the roots it did not cover in its own `unwatched_roots` key
+fact, empty when there is nothing to name. A workspace inside the run
 directory is refused, which is what keeps the two statements from overlapping. A planner node's
-reads are confined to its own directory and working directory, and it gets no Bash at all. Every other node's Bash is filtered by the
+reads are confined to its own directory and working directory, and it gets no Bash at all. Every
+other node's Bash is filtered by the
 `[kernel] deny_bash` substring list, which is refused by name when set to a blank value rather
 than read as an empty list. The tools that reach the network or spawn a sub-agent are refused
 outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. An operator

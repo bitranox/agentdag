@@ -92,7 +92,7 @@ REGISTERED_CONTRACTS: dict[str, frozenset[str]] = {
         }
     ),
     "gate:make-test": frozenset({"rc"}),  # application/kernel/context.py:499
-    "scan": frozenset({"stray"}),  # application/kernel/context.py:584
+    "scan": frozenset({"stray", "unwatched_roots"}),  # application/kernel/context.py:842
     "reduce:count": frozenset({"count"}),  # composition/kernel.py:356, _build_reduce_count's fold
     "approve": frozenset({"decision"}),  # application/kernel/context.py:798
     "plan": frozenset(),  # the not-yet-wired body raises; it emits nothing

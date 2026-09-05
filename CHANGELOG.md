@@ -20,9 +20,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   working directory. A blank value is refused rather than read as "no workspace", and a path that
   is missing or is not a directory is refused before the first node spends anything, never created.
   What it costs is recorded rather than implied: the isolation scan compares the run directory
-  alone, so a workspace is a region no scan judges, and every scan of such a run records the root
-  it did not cover. A workspace inside the run directory is refused, since the scan would watch it
-  and every write the plan made there would read as a stray write.
+  alone, so a workspace is a region no scan judges, and every scan states the roots it did not
+  cover in its own `unwatched_roots` key fact - on the journal's result line, where a verdict is
+  read, and empty on a run with no workspace so a fold never has to read an absent key as "covered
+  everything". The dispatch key carries it too, so a scan of a workspace run can never be
+  replay-served from one without. A workspace inside the run directory is refused, since the scan
+  would watch it and every write the plan made there would read as a stray write.
 - `[kernel] gate_command`: the argv every gate node runs, `["make", "test"]` by shipped default.
   It is a run setting like the denylists - resolved once at `run start`, written into
   `state.json`, and read back by the background child, a `resume`, an `approve` and a `retry`, so

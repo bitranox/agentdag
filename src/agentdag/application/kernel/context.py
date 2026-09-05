@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -294,9 +295,12 @@ class Coordinator:
                 ``cwd`` may lie under by exactly one AND reaches the executor as
                 ``ExecutorRequest.extra_roots``, which is what makes the node's writes there
                 permitted rather than denied by the write hook. Passed per call rather than
-                held on the coordinator so a call site that forgets it FAILS - a workspace
-                cwd it did not authorise is refused below, loudly, instead of being dispatched
-                with a boundary nobody widened.
+                held on the coordinator so a call site that forgets it FAILS here - the
+                workspace ``cwd`` it did pass is then authorised by nothing and refused,
+                loudly, instead of being dispatched with a boundary nobody widened. That
+                pairing is what makes the omission loud, so it holds only for the primitives
+                that take a ``cwd``; :meth:`scan` takes none, and forgetting it there is
+                silent.
 
         Returns:
             The node's result record, with this node's charged tokens already added to
@@ -652,15 +656,15 @@ class Coordinator:
                 f"the plan made there would read as a stray write"
             )
         if self._within_run_root(cwd):
-            return cwd.relative_to(self.run_dir.root).as_posix()
-        if workspace is not None and (cwd == workspace or workspace in cwd.parents):
+            return _real(cwd).relative_to(_real(self.run_dir.root)).as_posix()
+        if workspace is not None and _is_within(cwd, workspace):
             return cwd.as_posix()
         named = f" and outside the workspace {workspace}" if workspace is not None else ""
         raise KernelError(f"cwd {cwd} of node {node_id!r} is outside the run root {self.run_dir.root}{named}")
 
     def _within_run_root(self, path: Path) -> bool:
-        """Return whether ``path`` is the run root or sits under it."""
-        return path == self.run_dir.root or self.run_dir.root in path.parents
+        """Return whether ``path`` is the run root or sits under it, judged after ``realpath``."""
+        return _is_within(path, self.run_dir.root)
 
     def snapshot(self) -> Mapping[str, str]:
         """Take the isolation-root manifest a later :meth:`scan` compares against.
@@ -765,9 +769,12 @@ class Coordinator:
         is a second root outside it (refused inside it by :meth:`_recorded_cwd`), so every
         write the plan made there is a write no scan judged. That is the cost of working
         outside the run's own directory, and a clean verdict from a run that named one says
-        strictly less than a clean verdict from one that did not - so the workspace is
-        recorded as an input of this dispatch rather than left for a reader to infer from
-        the workflow's arguments.
+        strictly less than a clean verdict from one that did not - so every scan states what
+        it did not cover, in BOTH places a reader looks. As ``key_facts["unwatched_roots"]``
+        it is on the journal's own result line, which is how a verdict in this system is
+        read; it is empty on a run with no workspace, so a fold never has to tell a missing
+        key from an empty one. As an ``input_obj`` entry it is in the dispatch KEY, so a scan
+        of a workspace run can never be replay-served from a run without one.
 
         ``wt/.partial-*/**`` is allowed for the same reason as ``nodes/**``: it is the
         coordinator's OWN bookkeeping (graph A's staging clone, cleaned up and renamed
@@ -787,7 +794,8 @@ class Coordinator:
 
         Returns:
             ``done`` when nothing strayed (``key_facts["stray"] == []``), else ``failed``
-            with the stray paths in ``key_facts["stray"]``.
+            with the stray paths in ``key_facts["stray"]``. Either way
+            ``key_facts["unwatched_roots"]`` names the roots this scan did not cover.
         """
         other_declared = [
             pattern
@@ -814,22 +822,25 @@ class Coordinator:
             "retries/**",
             "wt/.partial-*/**",  # a staging clone mid-rename: coordinator bookkeeping, not a node write
         ]
+        unwatched = [workspace.as_posix()] if workspace is not None else []
         input_obj: dict[str, Any] = {"watched": watched, "write_set": list(write_set)}
-        if workspace is not None:
-            # An INPUT of the scan, not a finding: it is what this scan was told it does not
-            # cover. Recording it here puts it in `input.json` AND in the dispatch key, so a
-            # scan of a workspace run can never be replay-served from a run without one -
-            # which a `key_facts` entry could not do, and which is the half that matters when
-            # the two runs otherwise look identical.
-            input_obj["unwatched_roots"] = [workspace.as_posix()]
+        if unwatched:
+            # Also an INPUT, and the key is omitted when there is nothing to say so a run with
+            # no workspace keys exactly as it did before this field existed. In the key it does
+            # what the fact below cannot: a scan of a workspace run can never be replay-served
+            # from a run without one, however alike the two otherwise look.
+            input_obj["unwatched_roots"] = list(unwatched)
 
         async def body(node_dir: Path) -> NodeOutcome:
             after = dict(self.scanner.snapshot(self.run_dir.root))
             stray = stray_paths(diff_manifests(dict(before), after), allowed=allowed)
             return NodeOutcome(
                 status=NodeStatus.DONE if not stray else NodeStatus.FAILED,
-                key_facts={"stray": stray},
-                typed_fields=["stray"],
+                # Emitted on EVERY scan, empty included: a fold reading the journal decides
+                # what a clean verdict is worth from this key, and an absent key would make
+                # "covered everything" indistinguishable from a scan predating the field.
+                key_facts={"stray": stray, "unwatched_roots": list(unwatched)},
+                typed_fields=["stray", "unwatched_roots"],
                 executor_used="code",
                 model_used="-",
                 effort_used="-",
@@ -1501,6 +1512,39 @@ class Coordinator:
         """
         for row_name, charged in record.charged_tokens.items():
             self.tokens_by_row[row_name] = self.tokens_by_row.get(row_name, 0) + charged
+
+
+def _real(path: Path) -> Path:
+    """Return ``path`` with every symlink and relative segment resolved.
+
+    Args:
+        path: Any path a containment test is about to judge.
+
+    Returns:
+        Its ``realpath`` form.
+    """
+    return Path(os.path.realpath(path))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Return whether ``path`` is ``root`` or sits under it, judged after ``realpath``.
+
+    Both sides are resolved because neither arrives comparable by construction: a workspace is
+    resolved where the argument is accepted, while the run root is whatever ``--runs`` named,
+    carried verbatim through the run store. A textual prefix test between the two is therefore
+    decided by how each was SPELLED - so a symlinked or relative runs directory defeats it,
+    and with it the refusal of a workspace inside the run root. The write hook already judges
+    every target by ``realpath``; this makes the coordinator's own boundary agree with it.
+
+    Args:
+        path: The path to judge.
+        root: The root it must lie under.
+
+    Returns:
+        Whether the resolved ``path`` is the resolved ``root`` or sits beneath it.
+    """
+    real, real_root = _real(path), _real(root)
+    return real == real_root or real_root in real.parents
 
 
 def _chain_limit_body(error: NodeError, spec: NodeSpec) -> Body:

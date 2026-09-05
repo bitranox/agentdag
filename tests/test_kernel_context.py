@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,6 +18,7 @@ from schema_helpers import validator
 
 from agentdag.adapters.kernel.clock_utc import UtcClock
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
+from agentdag.adapters.kernel.run_store_fs import FsRunDir
 from agentdag.application.kernel.context import Coordinator
 from agentdag.application.kernel.ports import stamp
 from agentdag.domain.handover import HANDOVER_AS_WRITTEN_FILENAME, HANDOVER_FILENAME, IDENTITY_KEYS
@@ -40,7 +42,6 @@ from agentdag.domain.policy import FailureAction
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from agentdag.adapters.kernel.run_store_fs import FsRunDir
     from agentdag.application.kernel.ports import ExecutorRequest
 
 
@@ -1109,3 +1110,59 @@ def test_scan_records_the_workspace_it_did_not_watch(tmp_path: Path) -> None:
     plain_dir = run_dir.node_dir(plain.node_id, hash8(plain_record.input_hash))
     plain_input = json.loads((plain_dir / "input.json").read_text(encoding="utf-8"))
     assert "unwatched_roots" not in plain_input, "a run with no workspace records no exclusion"
+
+
+@pytest.mark.os_agnostic
+def test_every_scan_states_in_its_key_facts_which_roots_it_did_not_cover(tmp_path: Path) -> None:
+    """A fold over the JOURNAL is how a verdict is read here, so the exclusion has to reach one.
+
+    ``input.json`` and the dispatch key carry it too, but neither is a journal line: a
+    ``StartedLine`` holds key, node id and attempt, and a ``ResultLine`` holds the record. So a
+    reader folding the journal could not tell a scan that covered everything from one that
+    covered the run directory alone. Emitted on a run with NO workspace as well, empty, so a
+    fold never has to read a missing key as "covered everything".
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    before = coordinator.snapshot()
+    named = work_spec().model_copy(update={"node_id": "g_scan@1", "kind": Kind.GATE, "executor": "code"})
+    plain = work_spec().model_copy(update={"node_id": "g_scan@2", "kind": Kind.GATE, "executor": "code"})
+
+    with_ws = asyncio.run(coordinator.scan(named, watched="w@1", before=before, write_set=[], workspace=workspace))
+    without = asyncio.run(coordinator.scan(plain, watched="w@1", before=before, write_set=[]))
+
+    assert with_ws.key_facts["unwatched_roots"] == [workspace.as_posix()]
+    assert without.key_facts["unwatched_roots"] == []
+    folded = {
+        line.record.node_id: line.record.key_facts["unwatched_roots"]
+        for line in JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
+        if isinstance(line, ResultLine)
+    }
+    assert folded == {"g_scan@1": [workspace.as_posix()], "g_scan@2": []}
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink_to needs elevated privileges on Windows")
+def test_a_workspace_inside_a_symlinked_run_root_is_still_refused(tmp_path: Path) -> None:
+    """Containment is judged after ``realpath``, so spelling the run root differently defeats nothing.
+
+    The workspace argument is resolved where it is accepted; the run root is whatever
+    ``--runs`` named, carried verbatim. Reached through a symlink the two share no textual
+    prefix, so a prefix test would report a directory INSIDE the run root as outside it - and
+    the isolation scan would then report every write the plan made there as a stray write.
+    """
+    real_base = tmp_path / "real_runs"
+    real_base.mkdir()
+    linked_base = tmp_path / "runs_link"
+    linked_base.symlink_to(real_base)
+    run_dir = FsRunDir.create(linked_base, "r1")
+    run_dir.worktree("a").mkdir(parents=True)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    inside = (run_dir.root / "ws").resolve()  # the same directory, named without the link
+    inside.mkdir()
+    assert linked_base in run_dir.root.parents, "the run root must still be spelled through the link"
+
+    with pytest.raises(KernelError, match="inside the run root"):
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=inside, workspace=inside))
