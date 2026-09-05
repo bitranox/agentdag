@@ -1,29 +1,22 @@
-# Handover, written 2026-09-05 05:20 CEST
+# Handover, written 2026-09-05 06:20 CEST
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where the last session stopped and what it decided.
 
 ## The next action
 
-**`OPEN-WORK.md` rank 05, the top-ranked open item: the corrected control is RUNNING, detached;
-when it completes, read it.** The detached wrapper is
-`~/agentdag-eval/slopcodebench/relaunch_detached.sh` (outside git; its header holds the stop
-procedure). Judge it ONLY by the lines in
-`~/agentdag-eval/slopcodebench/runs/corrected-control-logs/arm.log`: one `END <problem> rc=N`
-per problem, then `ARM COMPLETE` and a `LAUNCHER_RC=0` line the wrapper appends. Never by a
-process being gone, never by a task notification. It survives a session end, so re-arm a
-watcher on that file in the new session (a Monitor tailing it for `END |ARM COMPLETE|LAUNCHER_RC`
-plus a liveness check that the wrapper pid from `pgrep` by exe, not argv, is alive).
+**`OPEN-WORK.md` rank 05, the top-ranked open item: the corrected control is COMPLETE; read
+it.** `~/agentdag-eval/slopcodebench/runs/corrected-control-logs/arm.log` ends with
+`END database_migration rc=0` (05:16:39), `END dynamic_config_service_api rc=0` (06:17:16),
+`ARM COMPLETE` and `LAUNCHER_RC=0`, so every problem of the arm has a zero exit code and
+nothing is void beyond the interrupted dir named below. Nothing is running; the detached
+wrapper `~/agentdag-eval/slopcodebench/relaunch_detached.sh` exited. Start straight at the
+readings.
 
-Start of the relaunch: 04:12:07 on `database_migration` (3 of its checkpoints evaluated by
-04:50, so expect roughly 1.5 h for it under load 26-59), then `dynamic_config_service_api`
-(expected 4501 s nominal). The credential expires 11:10; the launcher stops with `REFRESH
-NEEDED` and exit 3 before any problem the token cannot cover, and a relaunch then needs only
-the remaining `--problem` arguments.
-
-When `ARM COMPLETE`: `scripts/slopcodebench_readings.py` over the THREE run dirs
+Run `scripts/slopcodebench_readings.py` over the THREE run dirs
 (`opus-5_whole-spec_high_20260904T2353` for `circuit_eval`, `..._20260905T0412` for
-`database_migration`, and the third the launcher creates), NOT the
+`database_migration`, and `..._20260905T0516` for `dynamic_config_service_api` - confirm the
+third's stamp with `ls -dt` under the eval runs folder), NOT the
 `VOID-interrupted-opus-5_whole-spec_high_20260905T0352` dir, which is the run this session
 stopped at twenty minutes and is void under the pre-registration. Read the band verdict off
 `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, write the results BELOW its divider
@@ -33,24 +26,20 @@ build (Tasks 7-11 of `PLANS/2026-09-04-corrected-pair-plan.md`); Task 10 carries
 `kernel.deny_tools = []` for the coordinator arm. A non-zero `rc` means re-run that problem
 whole under the void rules.
 
-**`make test` stays OFF while a problem is being timed**: the bmk gate resyncs the venv the
-launcher runs from. This session ran every gate the bmk one composes directly from `.venv`
-instead (pyright, lint-imports, bandit, ruff, the full non-integration pytest through
-`gate.py`), all green; the two pushes went out on that plus CI.
+`make test` is allowed again: no problem is being timed. This session ran every gate the bmk
+one composes directly from `.venv` while the arm ran (pyright, lint-imports, bandit, ruff, the
+full non-integration pytest through `gate.py`), all green; the pushes went out on that plus CI.
 
 ## In flight
 
-- The detached arm above. No agent of mine is alive; the reviewer reported and its one finding
-  is fixed and pushed.
-- CI on `c566e7b` was still running when this was written. Check it before trusting the push:
-  `uv run <compuse-toolbox>/scripts/ci_wait.py --sha c566e7b34bb0063464fa902c48449c81f86d0b1d`.
-  The handover commit after it needs the same.
+- Nothing. The arm finished; no agent of mine is alive; the reviewer reported and its one
+  finding is fixed and pushed. CI and CodeQL were green on `c566e7b` and on `4b19ad2`, each
+  read from `ci_wait.py`'s own exit code.
 
 ## Committed, or not
 
-Everything in agentdag is committed; `origin/main` was at `c566e7b` plus this handover commit.
-Verify with `git status --porcelain` and `git status -sb`. CI was green on `d88b476` and
-`2210ebc` earlier in the session.
+Everything in agentdag is committed; `origin/main` is at this handover's commit, on top of
+`4b19ad2`. Verify with `git status --porcelain` and `git status -sb`.
 
 **Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72); keep an explicit pathspec
 on every commit.
