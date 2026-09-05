@@ -336,8 +336,9 @@ a shell command can read and write anywhere the operating-system user can, and n
 a write it makes outside the run directory. Both lists, like every other `[kernel]` setting, are
 resolved once at `run start` and written to the run's `state.json` as its `settings` block; the
 background coordinator and every later `resume`, `approve` or `retry` read them back from there,
-so a value supplied by an environment variable, `--set` or `--profile` reaches the run, and a
-relaunch under a changed configuration does not change it.
+and the deadline sweep announces a crashed run through the sink it was started with, so a value
+supplied by an environment variable, `--set` or `--profile` reaches the run, and a relaunch
+under a changed configuration does not change it.
 
 - **The Bash denylist blocks the exact command shapes the policy lists, and nothing
   else.** Measured against the shipped policy: `curl -XPOST ...`, `curl -d ...`, a plain

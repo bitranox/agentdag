@@ -627,7 +627,9 @@ def cli_run_apply_deadlines(
     crashed = 0
     failed_relaunches = 0
     for run_dir in _each_run_dir(runs_dir):
-        crashed += _record_crash_if_dead(run_dir, wiring=wiring)
+        crashed += _record_crash_if_dead(
+            run_dir, wiring=wiring, notifier=_crash_sink_for(ctx, run_dir=run_dir, sweep=wiring)
+        )
         outcome = apply_due_default(run_dir, lock=wiring.lock, clock=wiring.clock, holder=current_holder())
         _echo_deadline_outcome(outcome)
         if not outcome.applied:
@@ -641,12 +643,14 @@ def cli_run_apply_deadlines(
         raise SystemExit(ExitCode.GENERAL_ERROR)
 
 
-def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring) -> int:
+def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring, notifier: Notifier) -> int:
     """Record and announce ``run_dir`` if a dead coordinator left it claiming to run.
 
     Args:
         run_dir: The run to check.
-        wiring: This invocation's wiring, for the lock, the clock and the sink.
+        wiring: This invocation's wiring, for the lock and the clock.
+        notifier: The sink THIS run's crash goes to (:func:`_crash_sink_for`), never the
+            sweep's own: a run carries the ``notify`` it was started with.
 
     Returns:
         ``1`` when this run was recorded ``crashed``, ``0`` otherwise - so the caller can
@@ -657,11 +661,36 @@ def _record_crash_if_dead(run_dir: FsRunDir, *, wiring: KernelWiring) -> int:
         lock=wiring.lock,
         holder=current_holder(),
         clock=wiring.clock,
-        notifier=wiring.notifier,
+        notifier=notifier,
     )
     if outcome.recorded:
         safe_console.echo(f"{outcome.run_id}: recorded crashed - its coordinator is gone")
     return int(outcome.recorded)
+
+
+def _crash_sink_for(ctx: click.Context, *, run_dir: FsRunDir, sweep: KernelWiring) -> Notifier:
+    """The sink a crashed run's notification goes to: the run's own ``notify``, else this pass's.
+
+    The deadline owner runs under the timer's config, not the config each run was started
+    under, so the sink is resolved per run from its persisted settings - a run that asked for
+    mail is mailed, a run that asked for silence is not, whatever this host's ``kernel.notify``
+    reads. A run that persisted no settings (a state file from before the block existed) is
+    told the way it always was, through this pass's sink. A run whose sink cannot be built
+    HERE - it asked for mail and this host's config has no SMTP section - is announced through
+    this pass's sink instead, and the pass says so, rather than one run's config stopping the
+    sweep from serving the others.
+    """
+    state = run_dir.read_state()
+    if state.settings is None:
+        return sweep.notifier
+    try:
+        return _build_notifier(ctx, state.settings.notify)
+    except SystemExit:
+        safe_console.echo(
+            f"{run_dir.root.name}: its notify sink ({state.settings.notify!r}) cannot be built from this host's "
+            "config; announcing through this pass's sink instead"
+        )
+        return sweep.notifier
 
 
 @click.command("_coordinate", context_settings=CLICK_CONTEXT_SETTINGS, hidden=True)

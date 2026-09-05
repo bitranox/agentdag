@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
     from agentdag.application.kernel.notify import Notifier
     from agentdag.application.kernel.ports import Clock, Scope
+    from agentdag.application.ports import SendNotification
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +132,7 @@ def services_with(
     wire_calls: list[Mapping[str, object]] | None = None,
     clock: Clock | None = None,
     notifier: Notifier | None = None,
+    send_notification: SendNotification | None = None,
 ) -> Callable[[], AppServices]:
     """Return a services factory whose ``wire_kernel`` hands back a fixed wiring over real adapters.
 
@@ -145,6 +147,10 @@ def services_with(
     ``notifier`` defaults to the shipped no-op sink, which is also what an operator who
     configured none gets; pass a :class:`~kernel_fakes.RecordingNotifier` for a test
     about what the run TOLD somebody (Task 23).
+    ``send_notification`` defaults to the production mail sender; pass an
+    :class:`~agentdag.adapters.memory.EmailSpy`'s method for a test about a sink the CLI
+    builds ITSELF from a run's persisted ``notify`` - that sink never passes through
+    ``wire_kernel``, so ``notifier`` cannot stand in for it.
     """
     wiring = KernelWiring(
         journal_factory=JsonlJournal,
@@ -174,7 +180,7 @@ def services_with(
         deploy_configuration=prod.deploy_configuration,
         display_config=prod.display_config,
         send_email=prod.send_email,
-        send_notification=prod.send_notification,
+        send_notification=send_notification if send_notification is not None else prod.send_notification,
         load_email_config_from_dict=prod.load_email_config_from_dict,
         init_logging=prod.init_logging,
         wire_graph_a=prod.wire_graph_a,
@@ -712,8 +718,10 @@ def test_apply_deadlines_records_and_announces_a_run_whose_coordinator_died(
     """The crash path end to end, through the CLI that the systemd timer actually runs.
 
     The kernel-level behaviour is pinned in ``test_kernel_notify.py``; what THIS proves is
-    the wiring - that the periodic pass reaches ``record_crash`` at all, and hands it the
-    sink ``kernel.notify`` resolved rather than a fresh no-op nobody hears.
+    the wiring - that the periodic pass reaches ``record_crash`` at all and records the run.
+    The run was started under the packaged ``notify = "none"`` and carries that choice, so
+    the pass's OWN sink is not told: which sink a crashed run is announced through is the
+    run's, pinned in ``test_cli_run_settings.py``.
     """
     notifier = RecordingNotifier()
     obj = services_with(CommittingExecutor(crash_on="w_migrate@1"), tmp_path, notifier=notifier)
@@ -732,12 +740,11 @@ def test_apply_deadlines_records_and_announces_a_run_whose_coordinator_died(
     assert swept.exit_code == 0, swept.output
     assert "recorded 1 crashed run(s)" in swept.output
     assert _status_of(tmp_path, run_id) == "crashed"
-    assert [event.status.value for event in notifier.events] == ["crashed"]
+    assert notifier.events == []  # the run carries notify=none; the pass's sink is not its sink
 
     again = cli_runner.invoke(cli_mod.cli, ["run", "apply-deadlines", "--runs", runs_arg], obj=obj)
 
-    assert "recorded 0 crashed run(s)" in again.output
-    assert len(notifier.events) == 1  # the recorded state is the dedup
+    assert "recorded 0 crashed run(s)" in again.output  # the recorded state is the dedup
 
 
 def _only_run_id(tmp_path: Path) -> str:

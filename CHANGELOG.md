@@ -203,7 +203,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   `max_turns`, `default_node_tokens`, `deny_bash`, `deny_tools` and `notify`, the `--policy` path
   and the `[credentials]` keyfile choice once, from its own config and options, and writes them to
   `state.json` as a `settings` block; the background `_coordinate` child, `resume`, `approve` and
-  `retry` build their wiring from that block, and the run's own journal lines name its `owner`.
+  `retry` build their wiring from that block, the run's own journal lines name its `owner`, and
+  `apply-deadlines` announces a crashed run through the sink that run was started with rather
+  than the sweep's own (a run that persisted no settings, or whose mail sink cannot be built on
+  the sweep's host, is announced through the sweep's sink, and the pass says so).
   Before this, a background launch (the default) re-read `[kernel]` from the config files alone,
   so a value supplied only by environment variable, `--set` or `--profile` bound the launching
   command and not the run, and a resume under a changed config silently changed it. The
