@@ -113,6 +113,37 @@ def test_a_blank_deny_tools_is_refused_by_name(cli_runner: CliRunner, tmp_path: 
 
 
 @pytest.mark.os_agnostic
+def test_a_hyphenated_mcp_tool_name_is_accepted(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The CLI's exact-string matcher class includes ``-``, and MCP tools are commonly named with it."""
+    name = "mcp__context7__resolve-library-id"
+    rc, output, calls = _start(cli_runner, tmp_path, set_args=["--set", f"kernel.deny_tools={json.dumps([name])}"])
+
+    assert rc == 0, output
+    assert calls and calls[0]["deny_tools"] == (name,)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("kernel.deny_tools", "null"),
+        ("kernel.deny_tools", "0"),
+        ("kernel.deny_bash", "true"),
+        ("kernel.deny_tools", json.dumps({"WebFetch": 1})),
+    ],
+    ids=["null", "int", "bool", "mapping"],
+)
+def test_a_value_that_is_neither_a_list_nor_a_string_is_refused_by_name(
+    cli_runner: CliRunner, tmp_path: Path, key: str, value: str
+) -> None:
+    """A null, a number, a bool or a mapping is refused naming the key - never a traceback, never a mapping's keys."""
+    rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", f"{key}={value}"])
+
+    _assert_refused_by_name(rc, output, key, tmp_path / "runs")
+    assert "Traceback" not in output
+
+
+@pytest.mark.os_agnostic
 def test_a_deny_tools_entry_that_cannot_be_a_tool_name_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
     """A matcher never fires on a name with a space in it, so the typo would widen the boundary silently."""
     set_args = ["--set", f"kernel.deny_tools={json.dumps(['Web Fetch'])}"]

@@ -331,16 +331,20 @@ than read as an empty list. The tools that reach the network or spawn a sub-agen
 outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. An operator
 widens either list deliberately by writing an explicit `[]`. Bash is the hole in that boundary:
 a shell command can read and write anywhere the operating-system user can, and nothing catches
-a write it makes outside the run directory.
+a write it makes outside the run directory. Set these lists in a config file: on a background
+launch, the default, the coordinator is a separate process that re-reads its configuration from
+the config files alone, so a `[kernel]` value supplied only by an environment variable, `--set`
+or `--profile` binds the launching command and not the run.
 
 - **The Bash denylist blocks the exact command shapes the policy lists, and nothing
   else.** Measured against the shipped policy: `curl -XPOST ...`, `curl -d ...`, a plain
   GET with the data in the URL, `git -C some/path push` and `python3 -c ...` all pass. It
   raises the cost of an accident; it does not stop a determined process.
-- **Per-node write-set enforcement is a post-hoc scan, not a live block.** A node writes
-  first and the scan reports afterwards. Under `--parallel` greater than 1 a stray write
-  that lands inside a SIBLING's declared region cannot be attributed to either node, and
-  the scan says so rather than naming one.
+- **A Bash write is caught only by the post-hoc scan, and only inside the run directory.**
+  The live write-set deny above sees the Write and Edit tools; a shell command writes first
+  and the scan reports afterwards, and a write outside the run directory is not seen at all.
+  Under `--parallel` greater than 1 a stray write that lands inside a SIBLING's declared
+  region cannot be attributed to either node, and the scan says so rather than naming one.
 - **`by` and `token_id` on a decision are not an authentication mechanism.** They record
   who the recording process said it was. Any process running as the same operating-system
   user can write a decision file, so the run directory's own permissions are the actual

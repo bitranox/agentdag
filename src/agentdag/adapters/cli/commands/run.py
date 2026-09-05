@@ -866,7 +866,9 @@ def _operator_label(config: Config) -> str:
             or is the reserved system identity.
     """
     raw = config.get("kernel.operator", default=_packaged_kernel_defaults()["operator"])
-    label = str(raw).strip()
+    # `null`/`none` from an env var or --set coerces to None; str(None) is the word "None",
+    # which would be recorded as if an operator had chosen it.
+    label = "" if raw is None else str(raw).strip()
     if not label:
         _fail(
             "[kernel] operator (config key kernel.operator) is blank: set a non-empty label, "
@@ -880,10 +882,17 @@ def _operator_label(config: Config) -> str:
     return label
 
 
-_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-"""The shape of a tool name a ``PreToolUse`` matcher can fire on: a bare identifier
-(``WebFetch``, ``Task``, ``mcp__server__tool``). A name outside this shape never matches
-anything, so it would widen the boundary silently; it is refused instead."""
+_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+"""The shape an entry must have for the joined matcher to stay an EXACT-NAME match.
+
+The CLI reads a hook matcher made only of letters, digits, ``_``, ``-``, spaces, ``,`` and
+``|`` as an exact name or a ``|``/``,``-separated list of exact names, and a matcher with ANY
+other character as an unanchored JavaScript regex (code.claude.com hooks reference, "Matcher
+patterns", read 2026-09-05). The names are joined with ``|`` into ONE matcher, so a single
+entry carrying a ``.`` or ``*`` would flip every name in the list onto the regex path, where
+``Task`` also matches ``TaskOutput``. Hence: letters, digits, ``_`` and ``-`` only - the
+hyphen because MCP tools are commonly named with it (``mcp__server__resolve-library-id``) - and
+no space, comma or pipe, which the CLI would read as separators."""
 
 
 def _config_deny_bash(config: Config) -> tuple[str, ...]:
@@ -941,8 +950,16 @@ def _config_denylist(
                 f"write [] to close nothing on purpose, or remove the override to use the packaged list"
             )
         entries = [item.strip() for item in raw.split(",")]
-    else:
+    elif isinstance(raw, (list, tuple)):
         entries = [str(item).strip() for item in raw]
+    else:
+        # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`,
+        # digits and `true`/`false` from an env var or --set, and a mapping would otherwise be
+        # iterated as its KEYS and silently accepted. None of these is a denylist.
+        _fail(
+            f"[kernel] {default_key} (config key {key}) is {type(raw).__name__}, not a list of "
+            f"entries; write a TOML array, a comma-joined string, or [] to close nothing on purpose"
+        )
     for entry in entries:
         if not entry:
             _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which would match everything")

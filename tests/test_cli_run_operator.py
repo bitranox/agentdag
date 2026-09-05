@@ -113,6 +113,19 @@ def test_a_blank_operator_label_is_refused_before_any_run_directory_exists(
 
 
 @pytest.mark.os_agnostic
+def test_a_null_operator_label_is_refused_not_recorded_as_the_word_none(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """``--set kernel.operator=null`` coerces to None; the label must not silently become the string 'None'."""
+    (tmp_path / "runs").mkdir()
+    obj = services_with(CommittingExecutor(), tmp_path)
+
+    result = cli_runner.invoke(cli_mod.cli, ["--set", "kernel.operator=null", *start_args(tmp_path)], obj=obj)
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT, result.output
+    assert "kernel.operator" in result.output
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+@pytest.mark.os_agnostic
 def test_the_system_identity_is_refused_as_an_operator_label(cli_runner: CliRunner, tmp_path: Path) -> None:
     """The run summary answers "was a human involved" by ``by != "system"``, so that word is not a label."""
     (tmp_path / "runs").mkdir()
