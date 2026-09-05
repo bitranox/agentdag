@@ -1,137 +1,141 @@
-# STALE - read 2026-09-05 00:10 CEST, work continued
+# Handover, written 2026-09-05 03:20 CEST
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where the last session stopped and what it decided.
 
 ## The next action
 
-**`OPEN-WORK.md` rank 05, the top-ranked open item, is mid-run.** The corrected control arm is
-running unattended. First thing:
+**`OPEN-WORK.md` rank 05, the top-ranked open item: relaunch the corrected control's two
+remaining problems.** Nothing is running. The credential has already rolled (check
+`claudeAiOauth.expiresAt` in `~/.claude/.credentials.json`; it read 11:10 on 2026-09-05 when this
+was written), so start at once, from the repo root:
 
 ```
-cat ~/agentdag-eval/slopcodebench/runs/corrected-control-logs/arm.log
+.venv/bin/python scripts/scb_run_arm.py \
+  --config ~/agentdag-eval/slopcodebench/run-corrected-control.yaml \
+  --harness ~/agentdag-eval/slopcodebench/slop-code-bench \
+  --problems-path ~/agentdag-eval/slopcodebench/scb-problems-cumulative \
+  --log-dir ~/agentdag-eval/slopcodebench/runs/corrected-control-logs \
+  --problem database_migration:3127 --problem dynamic_config_service_api:4501
 ```
 
-- If it ends `ARM COMPLETE`: compute the readings (`scripts/slopcodebench_readings.py` over the
-  run dir(s) named in the log; the calibration write-up in
-  `docs/probes/2026-09-04-slopcodebench-control.md` under `## Results` is the shape to follow),
-  read the band verdict off `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, write the
-  results BELOW its divider, gate, push.
-- If it ends `REFRESH NEEDED before <problem>` (expected: the token expires 2026-09-05 03:14 and
-  `database_migration` would not fit after `circuit_eval`): make sure the credential has rolled
-  over (`~/.claude/.credentials.json` `claudeAiOauth.expiresAt`; this session's own API calls
-  refresh it, `claude auth status` does not), then relaunch with ONLY the remaining problems:
+Run it as a tracked background task and watch `corrected-control-logs/arm.log` for `END <problem>
+rc=N` lines and `ARM COMPLETE` (or `REFRESH NEEDED`, if the token were to expire again; at 8 hours
+it should not). Expect roughly 1h to 1.5h per problem under the host's current load. Do not run
+`make test` while a problem is being timed: the bmk gate resyncs the venv the launcher runs from.
 
-  ```
-  .venv/bin/python scripts/scb_run_arm.py \
-    --config ~/agentdag-eval/slopcodebench/run-corrected-control.yaml \
-    --harness ~/agentdag-eval/slopcodebench/slop-code-bench \
-    --problems-path ~/agentdag-eval/slopcodebench/scb-problems-cumulative \
-    --log-dir ~/agentdag-eval/slopcodebench/runs/corrected-control-logs \
-    --problem database_migration:3127 --problem dynamic_config_service_api:4501
-  ```
-
-  Each problem lands in its own run dir under `~/agentdag-eval/slopcodebench/runs/` named
-  `opus-5_whole-spec_high_<stamp>`; the arm's readings are the union of those dirs.
-- If a problem ends with a non-zero `rc`, read `corrected-control-logs/<problem>.log`; a problem
-  is re-run whole, never resumed, under the pre-registration's void rules.
-
-Only after the corrected control's verdict is written does the adapter build start (Tasks 7-11
-in `PLANS/2026-09-04-corrected-pair-plan.md`); SATURATED (`S >= 12`) stops it and moves the pair
-to the catalog's Hard problems under a new pre-registration.
+When `ARM COMPLETE`: `scripts/slopcodebench_readings.py` over the THREE run dirs (the finished
+`opus-5_whole-spec_high_20260904T2353` plus the two new ones), read the band verdict off
+`docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, write the results BELOW its divider in
+the shape of `docs/probes/2026-09-04-slopcodebench-control.md` `## Results`, gate, push.
+SATURATED (`S >= 12`) stops the adapter build (Tasks 7-11 of
+`PLANS/2026-09-04-corrected-pair-plan.md`) and moves the pair to the catalog's Hard problems under
+a new pre-registration. Task 10 of that plan now carries a line the coordinator arm needs:
+`kernel.deny_tools = []`, because the kernel closes `Task` by default since this session.
 
 ## In flight
 
-- The corrected control, problem `circuit_eval`, started 23:53:27 in run dir
-  `~/agentdag-eval/slopcodebench/runs/opus-5_whole-spec_high_20260904T2353`; its
-  `problem_catalog.json` records the derived catalog as the problem root, and checkpoint 1's
-  saved `prompt.txt` carries one NEW marker (correct for N=1). Expected about 2h15m under the
-  host's current load (load average about 30 from another session's nice-19 job; recorded per
-  problem in `arm.log`).
-- No agent of mine is alive. Every implementer and reviewer reported and was closed out.
+- Nothing. The control's first problem finished (rc 0, 8 of 8 checkpoints, $40.51, 2h24m); the
+  launcher exited; the watcher and timers this session armed died with it.
+- No agent of mine is alive. The one reviewer dispatched tonight reported and its findings are
+  applied.
 
 ## Committed, or not
 
-Everything is committed and pushed; `origin/main` is at `6449953` and CI was green on `cc6f3c7`
-(the later commits are docs, scripts and tests that passed `make test` before the push; check
-CI on `6449953` with the `ci_wait` jig from `bitranox:compuse-toolbox`). Check with
-`git status --porcelain` rather than trusting this line.
+Everything in agentdag is committed and pushed: `origin/main` is at `cbb2781` and CI plus CodeQL
+were green on it and on `5aefbde` before it. Check with `git status --porcelain` and `git status
+-sb` rather than trusting this line.
 
 **Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72); keep an explicit pathspec on
 every commit.
 
-Gitignored, so not in git: `EXECUTION-USER-REVIEW.md` (this evening's and night's decisions on
-top), `.bitranox/sdd/progress.md` (the task ledger, with the launch command and every carried
-Minor), `.bitranox/sdd/task-2-report.md` and `task-4-report.md`.
+**RESEARCH sibling repo** (`../RESEARCH`): 29 commits ahead of its remote, of which two are this
+session's (the sealed E1 model read placed beside its key; the P4 probe note pointing at row 3). I
+did not push it because the other 27 are not mine to publish wholesale. One foreign modified file
+sits in its tree too.
+
+Gitignored, so not in git: `EXECUTION-USER-REVIEW.md` (this night's decisions on top, user and own
+in separate sections), `.bitranox/sdd/progress.md` and the task reports from the previous session.
 
 ## Decided this session, with the reason
 
-- **The calibration arm is closed: S = 5 of 17, USABLE, calibrated against the published 4.** The
-  control repaired zero carried-forward defects, and read at source that is the harness's loop
-  (no feedback, context reset per checkpoint, delta-only prompt, "that is all you need to do"),
-  not the agent. A coordinator under that loop would be equally blind.
-- **The fix is data, not a harness patch** (user, three options): a derived catalog whose
-  `checkpoint_N.md` carries parts 1 to N, and a prompt that adds three sentences to `just-solve`.
-  Hidden tests stay hidden. Rejected: feeding results back; context continuity.
-- **The pair's settings** are in the pre-registration; the four the user decided (1.2M charged
-  token guard per checkpoint, no wall-clock timeout, bash denies `git push`/`gh pr`/`gh release`
-  only, parallel 8) and the ones I decided (pytest gate command, CLI 2.1.260 on both arms by
-  removing the SDK's bundled binary from the coordinator image, work directly in `/workspace`,
-  suspension as a normal end, cost from per-node `total_cost_usd`).
-- **Coordinator nodes get the full CLI tool set** (user, against my six-on-both recommendation).
-  A `Task`-spend probe must pass before the coordinator arm counts.
-- **The coordinator adapter is in this plan** (user), but its build waits for the corrected
-  control's verdict; the design agent's corrected premises are in the plan file at
-  `~/.claude/plans/fix-that-the-linked-newell.md` section D and in the memory fact on the
-  harness seams.
-- **No `make test` while an arm of ours is being timed** was the rule tonight; the arm now
-  running was launched AFTER the gate, and duration is a recorded condition, not a controlled one.
+- **C1 closed under option (c)** (user, after (a) collapsed: the only scorer named was the user,
+  who is the anchored reader). Not run as designed; the panel's other 24 verdicts DISCARDED on a
+  post-hoc finding that its executability lens is a per-arm constant across all 14 pairs while
+  coverage and proportion vary, and a sealed second reader spreads arm A. Record: mid plan C1
+  section. Follow-up is rank 39. The packet was NOT repaired: the absent briefs are E1's arm
+  condition by design.
+- **Rank 30: the P4 duplicate-execution finding is measured evidence in differentiator row 3**,
+  not a row of its own and not a Partially-ships entry (user).
+- **Rank 33: the run's actor is `[kernel] operator`, default `operator`** (user). Blank and the
+  reserved `system` are refused. A structural test fails if production code reads the OS user.
+- **Rank 38: the boundary is the existing hooks, hardened and stated** (user). `[kernel]
+  deny_tools` closes WebFetch, WebSearch, Task by default; both denylists refuse a blank value and
+  honour an explicit `[]`; README states the boundary in one paragraph and names Bash as the hole.
+  The real sandbox adapter is rank 37.
+- **The review's critical finding is stated, not fixed** (own): a background launch's coordinator
+  re-reads config from files alone, so env, `--set` and `--profile` values bind the launching
+  command, not the run. Pre-existing for every kernel key. README and CHANGELOG say so; rank 41
+  holds the fix, with persist-on-the-run recommended.
 
 ## Decided against, and why
 
-- Pinning both corrected arms to CLI 2.1.259 (the SDK's bundled one): it would put a second
-  deviation between the corrected control and the calibration arm. Fallback only if the SDK
-  refuses the PATH binary.
-- Re-running the Task 2 implementer when it returned a plan: it had inherited plan mode at
-  dispatch; resuming it with an approval message was correct and cheaper.
+- Repairing the C1 packet's missing briefs: the panel judged exactly that material.
+- Refusing an explicit empty denylist: the pre-registered corrected pair needs `deny_tools = []`
+  for its coordinator arm, so `[]` is an operator statement and only a BLANK is refused.
+- A known-tool allowlist for `deny_tools`: it would go stale with every CLI release; a shape check
+  on the CLI's exact-string matcher class is what keeps whole-name matching.
 
 ## Open, untouched
 
 One line each; `OPEN-WORK.md` holds the detail.
 
-- Ranks 25 and 30 (USER items) were not touched this session; 05 outranks them by the user's
-  own reasoning recorded on the line.
-- Rank 32 was re-scoped, not decided: on the SlopCodeBench route its cause cannot arise; the
-  binding requirement is recorded on the line.
-- Everything else sits at its own rank.
+- Rank 32 waits on the control's verdict (adapter requirement recorded on the line).
+- Rank 34's remaining arm needs no timed arm running; it was blocked all night.
+- Ranks 37, 39, 40, 41 are new or re-scoped tonight and sit at their ranks.
+- Everything from 50 down was not touched.
 
 ## Lessons for the next nap
 
-- When a Stop-hook handover ask arrives while agents are in flight, get the user's timing decision
-  once and then do not re-ask on the next fire; the answer covers the growth it predicted.
-- tooling: `gate.py --summary` is a regex and crashes on an unbalanced paren; queued in
-  contrib_queue.
-- When a reviewer's Important is a false CLAIM in a docstring rather than a defect, it still goes
-  back to the implementer: a wrong rationale about the instrument propagates as a fact.
+- When a backlog line calls an experiment's material handicapped, read the packet's own preamble
+  first: the handicap was the arm condition by design, and repairing it would have broken the
+  comparison.
+- When the only executor named for a decision is the person the decision excluded, say so once,
+  offer the fallback, and do not proceed under the original option.
+- When a config key is added to a CLI that relaunches itself in the background, test the
+  BACKGROUND path: an in-process test shares the launcher's config and cannot see that the child
+  re-reads it from files alone.
+- When a scorer returns a constant, check its neighbouring lenses on the same data: constant on
+  both arms over all 14 while two other lenses varied localises the defect to that lens.
+- When a reviewer without a shell cites a doc-only mechanism, fetch the doc before writing the
+  mechanism into a docstring; it was right, and the docstring now cites it.
+- tooling: `gate.py --name` must follow the `--gate` it labels; the usage error reads as a red
+  gate in a background task.
+- tooling: `anchor_edit.py` takes one anchor per call; a batch mode is queued in contrib_queue.
 
 ## Files that matter
 
 - `docs/probes/2026-09-05-slopcodebench-corrected-pair.md` - the pre-registration; nothing above
-  its divider may change now that a counted checkpoint is running.
-- `docs/probes/2026-09-04-slopcodebench-control.md` - the calibration arm, results written.
-- `PLANS/2026-09-04-corrected-pair-plan.md` - the task list; Tasks 1-6 done or in flight, 7-13
-  pending.
-- `scripts/scb_run_arm.py`, `scripts/scb_cumulative_catalog.py`, `scripts/slopcodebench_readings.py`,
-  `scripts/scb_prompts/whole-spec.jinja` - the corrected loop and its instruments.
-- `~/agentdag-eval/slopcodebench/run-corrected-control.yaml`, `agent-claude-code-oauth.yaml`,
-  `scb-problems-cumulative/CUMULATIVE-MANIFEST.json` - outside git, the run's inputs.
+  its divider may change.
+- `docs/probes/2026-09-04-slopcodebench-control.md` - the calibration arm, the results shape.
+- `PLANS/2026-09-04-corrected-pair-plan.md` - Tasks 7-13 pending; Task 10 carries the
+  `deny_tools = []` line.
+- `PLANS/build-plan-mid.md` (C1 section) and `PLANS/build-plan-high.md` (row 3, its paragraph,
+  risk 2) - tonight's decision records.
+- `src/agentdag/adapters/cli/commands/run.py` (`_operator_label`, `_config_denylist`,
+  `_ENV_ALLOWLIST`), `src/agentdag/adapters/kernel/hooks_claude.py` (`deny_closed_tools`),
+  `src/agentdag/adapters/config/defaultconfig.d/60-kernel.toml` - the boundary as shipped.
+- `tests/test_cli_run_operator.py`, `tests/test_cli_run_denylists.py`,
+  `tests/test_kernel_executor_port.py` - the tests that pin it.
+- `~/agentdag-eval/slopcodebench/` - outside git: run config, catalog, run dirs, arm log.
 
 ## How to verify
 
-- `make test` green (last run before the push at `6449953`).
+- `make test` green (last run before the push of `cbb2781`).
 - `scripts/slopcodebench_readings.py` over the three calibration run dirs still reads S=5 of 17,
-  C=0.828, repaired_defined=12, repaired_total=0 (the regression check in the Task 4 report).
-- A rendered prompt from the derived catalog has parts 1..N in order, one NEW marker, no canary.
+  C=0.828, repaired_defined=12, repaired_total=0.
+- `tests/test_cli_run_operator.py::test_no_production_module_reads_the_operating_account_name`
+  fails on a planted `getpass.getuser(` in any `src/` file (proved tonight).
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 delete it - if this session ends badly it is the only record of where things stood.
