@@ -72,8 +72,11 @@ class PlanContext:
     Carried beside ``cwd`` rather than derived FROM it, and the difference is the whole
     point: a cwd outside the run root is exactly what the coordinator's containment check
     refuses, so inferring "cwd is out of root, therefore it is a workspace" would delete
-    that check. This field is the AUTHORISATION, and an op body that forgets to forward it
-    gets a loud refusal rather than an unbounded node."""
+    that check. This field is the AUTHORISATION, and a body for an op that RUNS somewhere
+    (``work``, ``plan``, ``gate:make-test``) gets a loud refusal if it forgets to forward it:
+    the cwd it passes is then under no root the dispatch was given. ``scan`` takes no cwd, so
+    forgetting there is SILENT - the scan runs, and only its ``unwatched_roots`` reading goes
+    wrong. That one is covered by a test, not by the mechanism."""
 
     stopping: StopScope | None = None
     """The scope of the PLAN whose entries these bodies belong to, or None outside one.

@@ -136,9 +136,12 @@ def deny_outside_write_set(
     operator-supplied workspace, :attr:`~agentdag.application.kernel.ports.ExecutorRequest.
     extra_roots`), and the grant list still decides inside it. A target under one of those is
     matched by its ABSOLUTE POSIX path rather than a root-relative one, because outside the
-    isolation root there is nothing to be relative TO - and because that keeps the two kinds
-    unconfusable: a relative glob written for the run root can never match an absolute path,
-    so naming a workspace cannot silently widen ``wt/a/**``.
+    isolation root there is nothing to be relative TO. A grant ANCHORED on a literal segment
+    stays unconfusable that way - ``wt/a/**`` cannot match a path starting with ``/``, so
+    naming a workspace does not silently widen it. An UNANCHORED grant is a different matter:
+    :func:`~agentdag.domain.scan.is_covered` translates a trailing ``**`` to an fnmatch ``*``,
+    whose ``*`` spans ``/``, so a bare ``**`` matches an absolute path too. Root containment
+    is therefore a bound of its own here and not a restatement of the grant list.
 
     Args:
         isolation_root: The node's isolation root; a target resolving outside this and

@@ -373,9 +373,13 @@ class ExecutorRequest:
     Everything under :attr:`isolation_root` is addressed root-relatively - the write set, the
     isolation scan's manifest, a node's ``artefact_refs`` - and a path outside it has no such
     form at all. So a path under an extra root is addressed by its ABSOLUTE POSIX form
-    wherever those three would use a relative one, which also makes the two unconfusable: a
-    relative glob can never match an absolute path, so widening the roots cannot silently
-    widen a write set written for the run root.
+    wherever those three would use a relative one. That keeps a grant ANCHORED on a literal
+    segment unconfusable - ``wt/a/**`` cannot match a path starting with ``/`` - but it is not
+    what bounds an UNANCHORED one: :func:`~agentdag.domain.scan.is_covered` translates a
+    trailing ``**`` to an fnmatch ``*``, whose ``*`` spans ``/``, so a bare ``**`` matches an
+    absolute path too. What keeps naming a root from widening a write set is the root
+    containment that :func:`~agentdag.adapters.kernel.hooks_claude.deny_outside_write_set`
+    applies beside the grant list, not the shape of the globs.
 
     Every entry must be ABSOLUTE and already resolved (``expanduser().resolve()``). That is
     what lets :func:`~agentdag.adapters.kernel.executor_claude.allowed_writes` state the grant

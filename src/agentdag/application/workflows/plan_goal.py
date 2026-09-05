@@ -135,7 +135,7 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
             flow, not an error. The coordinator process exits and a later launch with a
             decision recorded resumes exactly here.
     """
-    cwd = _working_directory(co, args.workspace)
+    cwd = _working_directory(co, workspace=args.workspace)
     await run_root(
         goal=args.goal,
         planner=_planner_spec(),
@@ -150,7 +150,7 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
     )
 
 
-def _working_directory(co: Coordinator, workspace: Path | None) -> Path:
+def _working_directory(co: Coordinator, *, workspace: Path | None) -> Path:
     """Return where this plan works, refusing a workspace nothing could work in.
 
     With no workspace, a worktree the run owns, created here because nothing else does. With
