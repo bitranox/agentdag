@@ -5,7 +5,7 @@ description = "Coordinator that runs a small graph of AI-agent nodes with bounde
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "rich-click>=1.9.8",
+    "rich-click>=1.9.9",
     "lib_cli_exit_tools>=2.3.4",
     "lib_log_rich>=6.3.7",
     "lib_layered_config>=5.6.2",
