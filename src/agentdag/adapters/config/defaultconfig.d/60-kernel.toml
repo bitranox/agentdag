@@ -139,6 +139,11 @@ max_turns = 2000
 #   directory exists - it is not read as "deny nothing". To close nothing on purpose,
 #   write an explicit empty list: `deny_bash = []`, or AGENTDAG___KERNEL__DENY_BASH='[]'.
 #   A blank ENTRY is refused too: as a substring it would match every command.
+# Note: in a .env file write it COMMA-JOINED, as above. A .env value is never parsed as JSON,
+#   so `KERNEL__DENY_BASH=["git push"]` would be read as the single substring `["git push"]` -
+#   a denylist that matches that literal and NOT `git push`, which reads as closed and is open.
+#   A .env value that starts with [ or { is therefore refused by name. The `[]` form works
+#   through AGENTDAG___KERNEL__DENY_BASH and --set, which are parsed.
 deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
 
 # Purpose: tool names every node is refused OUTRIGHT by a PreToolUse hook, whatever the
@@ -175,6 +180,10 @@ deny_tools = ["WebFetch", "WebSearch", "Task"]
 #   empty list (`gate_command = []`) is REFUSED by name before any run directory exists:
 #   there is no argv to run, so it would leave the run with no gate at all. A BLANK value
 #   (an env var set to nothing) falls back to this packaged command, for the same reason.
+# Note: in a .env file write it COMMA-JOINED (`KERNEL__GATE_COMMAND=make,test`). A .env value
+#   is never parsed as JSON - unlike AGENTDAG___KERNEL__GATE_COMMAND and --set, which are - so
+#   an array written there would be read as one word. A .env value that starts with [ or { is
+#   refused by name rather than read that way.
 gate_command = ["make", "test"]
 
 # Purpose: the label a run records as its actor - `owner` in state.json, and `by` on every

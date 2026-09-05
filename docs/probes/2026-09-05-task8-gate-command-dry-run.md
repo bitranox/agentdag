@@ -18,8 +18,13 @@ The plan carries a `work` entry and a `gate:make-test` entry, with
 is what stops decision 4 refusing a root plan a do-nothing run would satisfy, and the gate
 half is what makes the run actually dispatch the gate rather than finishing at the work node.
 
-The run directory is under a scratch path outside every git work tree, and is not kept: the
-evidence below is quoted whole, because it is small.
+The run directory is deliberately NOT retained and is named here only so the method can be
+repeated: `<scratch>/dryruns/20260905T170332Z-1c936d` for arm 1 and
+`<scratch>/dryruns-control/20260905T170419Z-fd09e9` for arm 2, both under a session scratch path
+outside every git work tree. An agentdag run directory has to stay out of a work tree (each
+node's home holds a copy of the operator's credentials), so it cannot be committed as an
+artifact; the evidence below is quoted whole instead, which it can be because it is four files
+of a few lines each.
 
 ## Arm 1: `--set kernel.gate_command='["true"]'`
 

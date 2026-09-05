@@ -514,8 +514,13 @@ class RunSettings(BaseModel):
     deny_tools: tuple[str, ...]
     notify: str = Field(min_length=1)
     credential_file: str
-    gate_command: tuple[str, ...] = ("make", "test")
+    gate_command: tuple[str, ...] = Field(default=("make", "test"), min_length=1)
     """The argv every ``gate`` node of this run executes (``[kernel] gate_command``).
+
+    ``min_length=1`` because this record is what a RELAUNCH reads: the CLI refuses an empty
+    command when it resolves one, but a hand-edited ``state.json`` skips that and would reach
+    the gate adapter as a bare ``ValueError`` traceback. Refusing it where the run is loaded
+    keeps every bad value in this block failing the same way.
 
     Defaulted, unlike its neighbours, for the ``settings`` blocks written before this field
     existed: those runs gated on ``make test``, because that was the only thing a gate could

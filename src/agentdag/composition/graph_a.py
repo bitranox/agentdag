@@ -32,6 +32,9 @@ def wire(*, runs: Path) -> GraphAWiring:
     """
     return GraphAWiring(
         git=GitCli(),
+        # No command, deliberately: the baseline is the CONTROL the kernel is measured against,
+        # and a gate an operator can change is a variable in that comparison. `[kernel]
+        # gate_command` is the kernel's (`composition/kernel.py`), and does not reach here.
         gate=MakeTestGate(),
         work=ClaudeSdkWork(),
         approve=ConsoleApprove(),

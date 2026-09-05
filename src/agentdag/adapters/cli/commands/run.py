@@ -962,6 +962,61 @@ def _config_deny_tools(config: Config) -> tuple[str, ...]:
     return _config_denylist(config, "kernel.deny_tools", default_key="deny_tools", entry_shape=_TOOL_NAME)
 
 
+def _config_words(raw: object, *, key: str, default_key: str) -> list[str]:
+    """Read one config value as a list of stripped words, refusing every shape that is not one.
+
+    Shared by the denylists and the gate command, which take the same two shapes from
+    ``lib_layered_config``: a TOML array as a real list, and the documented comma-joined string
+    (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr``). The BLANK case is not decided here - the
+    two callers answer it differently and each does so before calling.
+
+    Two shapes are refused that a bare split would silently mangle:
+
+    * A string written as JSON. A ``.env`` value is delivered as TEXT - unlike an
+      ``AGENTDAG___`` variable or a ``--set``, both of which the layered config parses first -
+      so ``KERNEL__DENY_BASH=["git push"]`` arrives as those eleven characters and the split
+      yields the single substring ``["git push"]``, a denylist matching that literal and NOT
+      ``git push``. It reads as closed in the file and is open in the run, which is the one
+      failure mode a boundary must not have; the gate command's version of the same value
+      becomes a program named ``[]``. The identical text through the environment variable IS a
+      list and never reaches this branch, so refusing it here costs no working configuration.
+    * A member that is not text. The ``else`` below refuses a null or a mapping INSTEAD of the
+      list for the reason that neither is a list of words; a null INSIDE it is no more a word,
+      and ``str(None)`` would put the literal ``None`` in an argv or a denylist.
+
+    Args:
+        raw: The value the layered config returned.
+        key: The dotted config key, named in every refusal.
+        default_key: The key's name inside the packaged ``[kernel]`` table.
+
+    Returns:
+        The words, stripped; possibly empty, which each caller judges for itself.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a JSON-shaped string, a member
+            that is not a string, or a value that is not a list of words at all.
+    """
+    named = f"[kernel] {default_key} (config key {key})"
+    if isinstance(raw, str):
+        if raw.strip().startswith(("[", "{")):
+            _fail(
+                f"{named} is the TEXT {raw.strip()!r}, not a list. A .env value is never parsed as "
+                f"JSON, so this would be read as one word. Write it comma-joined there, or as a real "
+                f"array in a TOML file, with --set, or in the AGENTDAG___ environment variable"
+            )
+        return [item.strip() for item in raw.split(",")]
+    if isinstance(raw, (list, tuple)):
+        items = list(cast("Sequence[object]", raw))
+        unwordly = [item for item in items if not isinstance(item, str)]
+        if unwordly:
+            _fail(f"{named} carries {unwordly[0]!r}, which is not a word; every member must be a string")
+        return [item.strip() for item in cast("Sequence[str]", items)]
+    # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`, digits and
+    # `true`/`false` from an env var or --set, and a mapping would otherwise be iterated as its
+    # KEYS and silently accepted. None of these is a list of words.
+    _fail(f"{named} is {type(raw).__name__}, not a list of words; write a TOML array, or a comma-joined string")
+
+
 def _config_denylist(
     config: Config, key: str, *, default_key: str, entry_shape: re.Pattern[str] | None
 ) -> tuple[str, ...]:
@@ -990,23 +1045,12 @@ def _config_denylist(
             entry outside ``entry_shape``.
     """
     raw = config.get(key, default=_packaged_kernel_defaults()[default_key])
-    if isinstance(raw, str):
-        if not raw.strip():
-            _fail(
-                f"[kernel] {default_key} (config key {key}) is blank: name at least one entry, "
-                f"write [] to close nothing on purpose, or remove the override to use the packaged list"
-            )
-        entries = [item.strip() for item in raw.split(",")]
-    elif isinstance(raw, (list, tuple)):
-        entries = [str(item).strip() for item in cast("Sequence[object]", raw)]
-    else:
-        # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`,
-        # digits and `true`/`false` from an env var or --set, and a mapping would otherwise be
-        # iterated as its KEYS and silently accepted. None of these is a denylist.
+    if isinstance(raw, str) and not raw.strip():
         _fail(
-            f"[kernel] {default_key} (config key {key}) is {type(raw).__name__}, not a list of "
-            f"entries; write a TOML array, a comma-joined string, or [] to close nothing on purpose"
+            f"[kernel] {default_key} (config key {key}) is blank: name at least one entry, "
+            f"write [] to close nothing on purpose, or remove the override to use the packaged list"
         )
+    entries = _config_words(raw, key=key, default_key=default_key)
     for entry in entries:
         if not entry:
             _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which would match everything")
@@ -1046,20 +1090,9 @@ def _config_gate_command(config: Config) -> tuple[str, ...]:
     key = "kernel.gate_command"
     packaged = _packaged_gate_command()
     raw = config.get(key, default=packaged)
-    if isinstance(raw, str):
-        if not raw.strip():
-            return packaged
-        words = [item.strip() for item in raw.split(",")]
-    elif isinstance(raw, (list, tuple)):
-        words = [str(item).strip() for item in cast("Sequence[object]", raw)]
-    else:
-        # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`,
-        # digits and `true`/`false` from an env var or --set, and a mapping would otherwise be
-        # iterated as its KEYS and silently accepted. None of these is an argv.
-        _fail(
-            f"[kernel] gate_command (config key {key}) is {type(raw).__name__}, not a list of "
-            f'words; write a TOML array such as ["make", "test"], or a comma-joined string'
-        )
+    if isinstance(raw, str) and not raw.strip():
+        return packaged
+    words = _config_words(raw, key=key, default_key="gate_command")
     if not words:
         _fail(
             f"[kernel] gate_command (config key {key}) is empty: there is no argv to run, so a run "

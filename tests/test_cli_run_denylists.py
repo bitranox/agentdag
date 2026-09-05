@@ -67,6 +67,25 @@ def blank_deny_bash_in_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.mark.os_agnostic
+def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_read_as_one_entry(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A ``.env`` value is TEXT, and this list fails OPEN when that is not noticed.
+
+    ``AGENTDAG___KERNEL__DENY_BASH='["git push"]'`` is parsed as a list; the same words in a
+    ``.env`` are not, so they used to become the single substring ``["git push"]`` - a denylist
+    that matches that literal and NOT ``git push``, which reads as closed in the file and is
+    open in the run.
+    """
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__DENY_BASH=["git push"]\n', encoding="utf-8")
+
+    rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
+
+    _assert_refused_by_name(rc, output, "kernel.deny_bash", tmp_path / "runs")
+
+
+@pytest.mark.os_agnostic
 def test_a_blank_deny_bash_env_var_is_refused_not_read_as_no_denylist(
     cli_runner: CliRunner, tmp_path: Path, blank_deny_bash_in_env: None
 ) -> None:

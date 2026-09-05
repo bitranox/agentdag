@@ -92,6 +92,12 @@ proxy and CA variables a download needs are all load-bearing; ``BMK_PYTHON_CMD``
 child needs to start at all (a child handed an environment without ``SYSTEMROOT`` dies
 in Winsock with empty output rather than an error).
 
+``PYTHONPATH`` is the one entry that changes which CODE the gate executes rather than only how
+it starts, and the recorded argv does not capture it - the environment appears in the gate log's
+header and nowhere else. It is the operator's variable, never a node's: a node cannot reach the
+coordinator's environment. Read a gate log's header, not just its argv, when a green gate is
+surprising.
+
 What is deliberately NOT here matters as much:
 
 * ``XDG_RUNTIME_DIR`` and ``DBUS_SESSION_BUS_ADDRESS``. They belong to the operator's

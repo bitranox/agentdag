@@ -149,6 +149,7 @@ def test_a_run_whose_settings_predate_the_gate_command_wires_the_default(cli_run
 
     assert resumed.exit_code == 0, resumed.output
     assert "no settings block" not in resumed.output, resumed.output  # the BLOCK is there; only the field is not
+    assert calls, "the resume built no wiring at all"
     assert _wired_gate_commands(calls) == [("make", "test")] * len(calls), calls
 
 
@@ -178,6 +179,7 @@ def test_a_blank_gate_command_falls_back_to_the_packaged_default(cli_runner: Cli
     result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls))
 
     assert result.exit_code == 0, result.output
+    assert calls, "the run built no wiring at all"
     assert _wired_gate_commands(calls) == [("make", "test")] * len(calls), calls
 
 
@@ -206,6 +208,64 @@ def test_a_gate_command_that_is_not_a_list_of_words_is_refused(cli_runner: CliRu
 
 
 @pytest.mark.os_agnostic
+def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_split_into_nonsense(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A ``.env`` value is TEXT: unlike an ``AGENTDAG___`` variable or ``--set``, nothing parses it.
+
+    So the JSON array an operator naturally writes arrives as one string and the comma split
+    would turn it into the words ``["pytest"`` and ``"-q"]`` - an argv nobody wrote, from a value
+    that looks right in the file.
+    """
+    (tmp_path / "runs").mkdir()
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__GATE_COMMAND=["pytest","-q"]\n', encoding="utf-8")
+    argv = ["--env-file", str(env_file), *start_args(tmp_path)]
+
+    result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path))
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT, result.output
+    assert "kernel.gate_command" in result.output, result.output
+
+
+@pytest.mark.os_agnostic
+def test_an_empty_json_array_written_into_a_dotenv_is_refused_like_any_other(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The route that bypassed the empty-command refusal: ``[]`` in a ``.env`` is the STRING ``[]``.
+
+    Read as one word it is a program named ``[]``, so the run starts, spends its work node, and
+    the gate then dies on a missing executable - the outcome the refusal exists to prevent,
+    reached through the one route that does not parse its value.
+    """
+    (tmp_path / "runs").mkdir()
+    env_file = tmp_path / "dotenv"
+    env_file.write_text("KERNEL__GATE_COMMAND=[]\n", encoding="utf-8")
+    argv = ["--env-file", str(env_file), *start_args(tmp_path)]
+
+    result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path))
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT, result.output
+    assert "kernel.gate_command" in result.output, result.output
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+@pytest.mark.os_agnostic
+def test_a_gate_command_word_that_is_not_text_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """A null INSIDE the list is refused for the same reason a null instead of the list is.
+
+    ``str(None)`` is ``"None"``, so without this the run would gate on ``make None``.
+    """
+    (tmp_path / "runs").mkdir()
+    argv = ["--set", 'kernel.gate_command=["make", null]', *start_args(tmp_path)]
+
+    result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path))
+
+    assert result.exit_code == ExitCode.INVALID_ARGUMENT, result.output
+    assert "kernel.gate_command" in result.output, result.output
+
+
+@pytest.mark.os_agnostic
 def test_a_comma_joined_gate_command_from_an_env_style_override_is_split(cli_runner: CliRunner, tmp_path: Path) -> None:
     """The env-var shape ``AGENTDAG___KERNEL__GATE_COMMAND=make,test`` arrives as one string."""
     (tmp_path / "runs").mkdir()
@@ -215,4 +275,5 @@ def test_a_comma_joined_gate_command_from_an_env_style_override_is_split(cli_run
     result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls))
 
     assert result.exit_code == 0, result.output
+    assert calls, "the run built no wiring at all"
     assert _wired_gate_commands(calls) == [("pytest", "-q")] * len(calls), calls
