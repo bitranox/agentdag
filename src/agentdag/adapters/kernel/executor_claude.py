@@ -555,7 +555,7 @@ def outcome_from_usage(
     first_turn_input: int,
     cwd_rel: str,
     subtype: str = "",
-    cost_usd: float | None = None,
+    cost_usd: float | None,
 ) -> NodeOutcome:
     """Translate one dispatch's terminal usage into the outcome the coordinator branches on.
 
@@ -586,9 +586,11 @@ def outcome_from_usage(
             BEFORE ``is_error``: ``error_max_turns`` means the dispatch used every turn
             it was allowed, which is a CEILING being reached rather than a fault.
         cost_usd: ``ResultMessage.total_cost_usd`` - what the CLI itself says this
-            dispatch cost. Defaults to ``None``, which records that no figure was
-            reported and is a different statement from 0 (a subscription row costs
-            nothing at the margin).
+            dispatch cost. Required, no default, so a caller cannot forget it silently
+            (an outcome whose ``cost_usd`` reads ``None`` because nobody passed one looks
+            identical to a dispatch that genuinely reported none). Pass ``None``
+            explicitly for that case - a different statement from 0, a subscription row
+            costing nothing at the margin.
 
     Returns:
         ``status=NEEDS_CONTINUATION`` when the turn ceiling was reached;
@@ -601,7 +603,7 @@ def outcome_from_usage(
         ...     model="sonnet", num_turns=1, is_error=False, text="ok",
         ...     usage={"input_tokens": 1, "cache_creation_input_tokens": 0,
         ...            "cache_read_input_tokens": 0, "output_tokens": 2},
-        ...     first_turn_input=1, cwd_rel="wt/r",
+        ...     first_turn_input=1, cwd_rel="wt/r", cost_usd=None,
         ... ).status
         <NodeStatus.DONE: 'done'>
     """

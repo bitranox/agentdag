@@ -267,6 +267,30 @@ class NodeSpec(BaseModel):
     compact: dict[str, int] | None = None
 
 
+def _omit_none(handler: SerializerFunctionWrapHandler, model: BaseModel, *keys: str) -> dict[str, Any]:
+    """Dump ``model`` through ``handler``, then drop any of ``keys`` that serialized to ``None``.
+
+    Shared by every wrap-serializer in this module that must OMIT an absent optional field
+    entirely rather than write it out as ``null`` - :class:`Tokens`, :class:`NodeOutcome` and
+    :class:`ResultRecord` each have their own field(s) and their own reason (record hashing,
+    schema typing), documented on their own serializer method; this is only the mechanics
+    they all share.
+
+    Args:
+        handler: The wrap-serializer's own handler, called once to get the plain dump.
+        model: The model instance being serialized (``self`` at the call site).
+        keys: Field names to drop from the dump when their value is ``None``.
+
+    Returns:
+        The handler's dict with every ``None``-valued key in ``keys`` removed.
+    """
+    data = handler(model)
+    for key in keys:
+        if data.get(key) is None:
+            data.pop(key, None)
+    return data
+
+
 class Tokens(BaseModel):
     """Measured token usage for one dispatch, per field (design 2.2).
 
@@ -294,9 +318,11 @@ class Tokens(BaseModel):
     cache_write: int | None = None
     """Cache-creation tokens for this dispatch: what it spent WRITING the prompt cache.
 
-    ``None`` means nobody measured it - an executor that reports no such figure, or a block
-    written before this field existed - and is why the field is not simply defaulted to 0,
-    which would be a measurement rather than an absence."""
+    ``None`` is the value of a tokens block written before this field existed - it never
+    ran the arithmetic at all, so there is nothing to default it to without changing that
+    record's dump. A dispatch that DID run the arithmetic and produced no usage (no terminal
+    message ever reported one) reads ``0``, the same as the three sibling fields on that
+    path (see :func:`~agentdag.adapters.kernel.executor_claude.tokens_from_usage`)."""
 
     @model_serializer(mode="wrap")
     def _drop_absent_cache_write(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -311,10 +337,7 @@ class Tokens(BaseModel):
         tokens block's ``required`` list for exactly this reason - optional, never a
         required-but-nullable property, the same shape ``sandbox`` uses on the record itself.
         """
-        data = handler(self)
-        if data.get("cache_write") is None:
-            data.pop("cache_write", None)
-        return data
+        return _omit_none(handler, self, "cache_write")
 
 
 class NodeError(BaseModel):
@@ -407,10 +430,7 @@ class NodeOutcome(BaseModel):
         at all - only a nullable field like ``tokens`` may legitimately serialise
         as ``null``.
         """
-        data = handler(self)
-        if data.get("error") is None:
-            data.pop("error", None)
-        return data
+        return _omit_none(handler, self, "error")
 
 
 class ResultRecord(NodeOutcome):
@@ -454,11 +474,7 @@ class ResultRecord(NodeOutcome):
         :class:`ResultRecord` dump, since pydantic looks up the decorator by class, not by
         method name).
         """
-        data = handler(self)
-        for key in ("error", "sandbox"):
-            if data.get(key) is None:
-                data.pop(key, None)
-        return data
+        return _omit_none(handler, self, "error", "sandbox")
 
 
 class LockHolder(BaseModel):

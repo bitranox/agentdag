@@ -398,6 +398,7 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
         },
         first_turn_input=3923,
         cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert o.tokens is not None
     assert o.tokens.in_ == 50 + 3873 + 119786
@@ -414,6 +415,7 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
         usage={},
         first_turn_input=0,
         cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert bad.status == "failed"
     assert bad.error is not None
@@ -431,6 +433,7 @@ def test_result_translation_names_a_non_auth_error_as_executor_error_and_transie
         usage={},
         first_turn_input=0,
         cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert o.status == "failed"
     assert o.error is not None
@@ -441,7 +444,14 @@ def test_result_translation_names_a_non_auth_error_as_executor_error_and_transie
 @pytest.mark.os_agnostic
 def test_result_translation_missing_usage_fields_default_to_zero() -> None:
     o = outcome_from_usage(
-        model="sonnet", num_turns=1, is_error=False, text="ok", usage={}, first_turn_input=0, cwd_rel="wt/r"
+        model="sonnet",
+        num_turns=1,
+        is_error=False,
+        text="ok",
+        usage={},
+        first_turn_input=0,
+        cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert o.tokens is not None
     assert o.tokens.in_ == 0
@@ -1758,6 +1768,7 @@ def test_the_turn_ceiling_is_a_continuation_not_a_fault() -> None:
         first_turn_input=21,
         cwd_rel="wt/root",
         subtype="error_max_turns",
+        cost_usd=None,
     )
     assert hit.status is NodeStatus.NEEDS_CONTINUATION
     assert hit.error is None, "a ceiling reached is not a fault, and a caller branches on error"
@@ -1776,6 +1787,7 @@ def test_the_turn_ceiling_is_a_continuation_not_a_fault() -> None:
         first_turn_input=21,
         cwd_rel="wt/root",
         subtype="error_during_execution",
+        cost_usd=None,
     )
     assert genuine.status is NodeStatus.FAILED
     assert genuine.error is not None
@@ -1792,6 +1804,7 @@ def test_the_turn_ceiling_is_a_continuation_not_a_fault() -> None:
         first_turn_input=21,
         cwd_rel="wt/root",
         subtype="success",
+        cost_usd=None,
     )
     assert ok.status is NodeStatus.DONE
     assert ok.key_facts["turns_exhausted"] is False
@@ -1931,7 +1944,14 @@ def test_the_tokens_block_carries_cache_creation_separately_from_the_input_total
         "output_tokens": 1034,
     }
     o = outcome_from_usage(
-        model="sonnet", num_turns=1, is_error=False, text="ok", usage=usage, first_turn_input=3923, cwd_rel="wt/r"
+        model="sonnet",
+        num_turns=1,
+        is_error=False,
+        text="ok",
+        usage=usage,
+        first_turn_input=3923,
+        cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert o.tokens is not None
     assert o.tokens.in_ == 50 + 3873 + 119786  # unchanged: still the input TOTAL
@@ -1940,7 +1960,14 @@ def test_the_tokens_block_carries_cache_creation_separately_from_the_input_total
     # A usage mapping this SDK version did not fill in reads 0, the same default every other
     # field takes at this seam - never None, which is reserved for an executor reporting none.
     empty = outcome_from_usage(
-        model="sonnet", num_turns=1, is_error=False, text="ok", usage={}, first_turn_input=0, cwd_rel="wt/r"
+        model="sonnet",
+        num_turns=1,
+        is_error=False,
+        text="ok",
+        usage={},
+        first_turn_input=0,
+        cwd_rel="wt/r",
+        cost_usd=None,
     )
     assert empty.tokens is not None
     assert empty.tokens.cache_write == 0

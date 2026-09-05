@@ -267,7 +267,7 @@
       "tokens": {
         "in": 8200,
         "out": 640,
-        "cache_read": 5100,
+        "cache_read": 0,
         "reasoning": 0,
         "cache_write": 3000
       },
