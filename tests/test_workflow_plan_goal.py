@@ -38,6 +38,7 @@ from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import KernelError
 from agentdag.domain.keys import hash8
 from agentdag.domain.models import NodeOutcome, ResultRecord, RunStatus
+from agentdag.domain.plan import PLAN_FILENAME
 
 if TYPE_CHECKING:
     from agentdag.adapters.kernel.hooks_claude import HookCallback
@@ -270,6 +271,32 @@ def test_the_planner_plans_inside_the_workspace_too(tmp_path: Path) -> None:
     assert planner.cwd == workspace
     assert planner.extra_roots == (workspace,)
     assert planner.read_roots == (planner.node_dir, workspace)
+
+
+@pytest.mark.os_agnostic
+def test_a_workspace_named_like_the_plan_file_does_not_win_the_plan_ref_selection(tmp_path: Path) -> None:
+    """The planner picks its plan ref from ``artefact_refs``, and ref 0 is the TREE.
+
+    On a workspace run that tree ref is absolute, so a workspace whose last path segment is
+    literally ``plan.json`` is a decoy the suffix alone cannot tell from the real ref. Picking
+    it hands ``FsRunDir.read_text`` an absolute path, which its containment guard refuses with
+    a bare ``ValueError`` that ``dispatch_planner``'s ``except ValidationError`` does not
+    catch - so an exotic but entirely reachable directory name crashes the run rather than
+    planning it. The selector skips absolute refs, which is the only kind that can be read
+    back through the run directory anyway.
+    """
+    workspace = tmp_path / "plan.json"  # a DIRECTORY, named exactly like the file
+    workspace.mkdir()
+    run_dir = fresh(tmp_path)
+
+    assert drive(run_dir, PlanGoalArgs(goal="g", workspace=workspace), RecordingPlanExecutor(one_work_plan("g"))) is (
+        RunStatus.DONE
+    )
+
+    planner = _result_records(run_dir)["p_root"]
+    assert planner.artefact_refs[0].endswith(PLAN_FILENAME), "the decoy this selection must skip"
+    assert Path(planner.artefact_refs[0]).is_absolute()
+    assert json.loads(run_dir.read_text(planner.artefact_refs[1]))["goal"] == "g"
 
 
 @pytest.mark.os_agnostic

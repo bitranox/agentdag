@@ -15,6 +15,7 @@ Contents:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -176,7 +177,7 @@ async def _plan_or_reasons(
         is_stopping=is_stopping,
         workspace=ctx.workspace,
     )
-    rel = next((ref for ref in record.artefact_refs if ref.endswith(PLAN_FILENAME)), None)
+    rel = _plan_ref(record)
     if rel is None:
         return NotPlanned(reasons=(f"the planner node wrote no {PLAN_FILENAME}",), record=record)
     try:
@@ -189,6 +190,29 @@ async def _plan_or_reasons(
     if isinstance(outcome, Accepted):
         return Planned(plan=outcome.plan, record=record)
     return NotPlanned(reasons=outcome.reasons, record=record)
+
+
+def _plan_ref(record: ResultRecord) -> str | None:
+    """Return the RUN-RELATIVE ref naming this planner's plan, or ``None`` if it wrote none.
+
+    Absolute refs are skipped rather than matched. A dispatch working in a workspace reports
+    its tree by absolute path, so ``artefact_refs[0]`` is absolute on such a run, and a
+    workspace whose last segment is literally ``plan.json`` would otherwise win this
+    selection - handing :meth:`~agentdag.application.kernel.ports.RunDir.read_text` a path
+    its containment guard refuses with a bare ``ValueError`` the caller does not catch. Only
+    a run-relative ref can be read back through the run directory, so only one is a
+    candidate.
+
+    Args:
+        record: The planner node's record.
+
+    Returns:
+        The first run-relative ref ending in the plan filename, or ``None``.
+    """
+    return next(
+        (ref for ref in record.artefact_refs if ref.endswith(PLAN_FILENAME) and not Path(ref).is_absolute()),
+        None,
+    )
 
 
 def _journal(outcome: Planned | NotPlanned, *, node_id: str, ctx: PlanContext) -> None:
