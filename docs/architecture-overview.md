@@ -197,11 +197,17 @@ Full comparison, including which side of each row is built, in
 
 ## 7. What a node may touch, and what stops it
 
-A node works in its own worktree. It declares a write set. Two tool hooks refuse edits that resolve
-outside its isolation root or outside that declared set, and refuse a list of forbidden shell
-commands. After the node finishes, a
+A node works in its own worktree. It declares a write set. Tool hooks refuse edits that resolve
+outside the roots the node was given or outside that declared set, and refuse a list of forbidden
+shell commands. After the node finishes, a
 scan compares the whole run tree before and after and fails the branch on anything it wrote that
 nobody declared.
+
+A run's roots are usually just one, the run directory. A `plan-goal` run given
+`--arg workspace=DIR` gets a second: the plan works in that directory, the run directory still
+holds every node's bookkeeping, and each node is bounded by both. The scan still compares the run
+directory alone, so a workspace is a region no scan judges, and the scan records the root it did
+not cover rather than leaving a clean verdict to be read as covering everything.
 
 For the one graph that exists, a further rule applies: a run never writes to a real repository. It
 works on bare mirrors made once, and neither the mirror nor the worktree keeps a remote, so a reflex
@@ -273,7 +279,7 @@ cascade, not your skills, not your plugins. The executor asks for no setting sou
 the node its own configuration directory and a true environment allowlist, blanking everything else
 rather than omitting it.
 
-The hooks a node runs are agentdag's own, enforcing its isolation root and its command denylist.
+The hooks a node runs are agentdag's own, enforcing the roots it was given and its command denylist.
 
 **Not yet:** the operator's own environment as the node's standing capability. The settings, tools,
 skills, self-learning memory, tool-call hooks and CLAUDE.md cascade a session carries are what make

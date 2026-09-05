@@ -7,6 +7,22 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Added
+- `plan-goal --arg workspace=DIR`: a second isolation root. The plan works in an operator-supplied
+  directory instead of a worktree the run owns, so the tree it changes outlives the run and sits
+  where the operator can see it, while the run directory still holds every node's bookkeeping. A
+  dispatch is bounded by both roots and by nothing else: the write hook contains against each and
+  grants the workspace whole, a working directory under it is named by its absolute path in the
+  dispatch key and in the node's artefact refs, and a directory under neither root is still refused
+  before anything is dispatched. The path is resolved where the argument is accepted, because a
+  containment check against an unresolved relative path inspects the process's own directory and
+  passes; that is also what makes the value persisted in `state.json` absolute, so a background
+  child or a resume re-validates the same directory rather than re-resolving against its own
+  working directory. A blank value is refused rather than read as "no workspace", and a path that
+  is missing or is not a directory is refused before the first node spends anything, never created.
+  What it costs is recorded rather than implied: the isolation scan compares the run directory
+  alone, so a workspace is a region no scan judges, and every scan of such a run records the root
+  it did not cover. A workspace inside the run directory is refused, since the scan would watch it
+  and every write the plan made there would read as a stray write.
 - `[kernel] gate_command`: the argv every gate node runs, `["make", "test"]` by shipped default.
   It is a run setting like the denylists - resolved once at `run start`, written into
   `state.json`, and read back by the background child, a `resume`, an `approve` and a `retry`, so

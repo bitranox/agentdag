@@ -77,7 +77,7 @@ the [documentation index](../README.md).
   - `approve_console.py`  -  ApprovePort: the console confirmation asked once before anything is pushed
 - `src/agentdag/adapters/kernel/`  -  Kernel adapter package, one module per port:
   - `executor_claude.py`  -  The Claude executor: one SDK client per node, an allowlisted environment, a per-node credential, per-turn usage
-  - `hooks_claude.py`  -  The two PreToolUse hooks: deny writes outside the isolation root, deny the configured command shapes
+  - `hooks_claude.py`  -  The PreToolUse hooks: deny writes outside the roots a node was given, confine its reads, deny the configured command shapes, close whole tools
   - `journal_jsonl.py`  -  The append-only journal and its audit copy, each written and synced in order
   - `run_store_fs.py`  -  One run directory on disk: state, decisions, intents, artefacts, worktrees, node directories, markers
   - `lock_file.py`  -  The exclusive run lock, with a holder identity that survives pid reuse

@@ -34,8 +34,9 @@ from agentdag.application.kernel.run import run_coordinator
 from agentdag.application.workflows import get_workflow
 from agentdag.application.workflows.plan_goal import WORKTREE, PlanGoalArgs
 from agentdag.composition.kernel import build_op_registry
+from agentdag.domain.journal import ResultLine
 from agentdag.domain.kernel_errors import KernelError
-from agentdag.domain.models import NodeOutcome, RunStatus
+from agentdag.domain.models import NodeOutcome, ResultRecord, RunStatus
 
 if TYPE_CHECKING:
     from agentdag.adapters.kernel.hooks_claude import HookCallback
@@ -84,18 +85,35 @@ class RecordingPlanExecutor:
             (request.node_dir / "plan.json").write_text(self.raw, encoding="utf-8")
         else:
             (request.cwd / "touched.txt").write_text("done\n", encoding="utf-8")
-        return outcome({"sonnet": 10})
+        return outcome({"sonnet": 10}).model_copy(update={"artefact_refs": [_tree_ref(request)]})
 
     def work_requests(self) -> list[ExecutorRequest]:
         """Only the non-planner dispatches: what the plan's own entries ran as."""
         return [request for request in self.requests if "You are a planner" not in request.prompt]
 
 
-def drive(tmp_path: Path, args: PlanGoalArgs, executor: RecordingPlanExecutor) -> RunStatus:
-    """Run plan-goal end to end over a fresh run directory and report how it ended."""
+def _tree_ref(request: ExecutorRequest) -> str:
+    """Name the dispatch's tree as the shipped executor's ``artefact_refs`` do.
+
+    A second implementation of the shipped ``_cwd_rel`` rule rather than a call into it: an
+    adapter at this port has to bound itself by the roots it was handed, and stating the rule
+    here is what makes the arms below assert against a ref production would really produce -
+    a hardcoded ``wt/a`` would hide that a workspace dispatch's ref is absolute.
+    """
+    if request.isolation_root in request.cwd.parents:
+        return request.cwd.relative_to(request.isolation_root).as_posix()
+    return request.cwd.as_posix()
+
+
+def fresh(tmp_path: Path) -> FsRunDir:
+    """Lay out the run directory an arm drives its run over."""
     base = tmp_path / "runs"
     base.mkdir(parents=True, exist_ok=True)
-    run_dir = FsRunDir.create(base, "r1")
+    return FsRunDir.create(base, "r1")
+
+
+def drive(run_dir: FsRunDir, args: PlanGoalArgs, executor: RecordingPlanExecutor) -> RunStatus:
+    """Run plan-goal end to end over ``run_dir`` and report how it ended."""
     outcome = asyncio.run(
         run_coordinator(
             run_dir=run_dir,
@@ -127,7 +145,7 @@ def test_a_run_naming_no_workspace_still_works_in_the_run_s_own_worktree(tmp_pat
     """The absent case is today's behaviour exactly: one root, and nothing outside it."""
     executor = RecordingPlanExecutor(one_work_plan("tidy the docs"))
 
-    status = drive(tmp_path, PlanGoalArgs(goal="tidy the docs"), executor)
+    status = drive(fresh(tmp_path), PlanGoalArgs(goal="tidy the docs"), executor)
 
     assert status is RunStatus.DONE
     worked = executor.work_requests()
@@ -149,7 +167,7 @@ def test_a_run_naming_a_workspace_works_there_and_the_write_hook_permits_it(tmp_
     (workspace / "src").mkdir(parents=True)
     executor = RecordingPlanExecutor(one_work_plan("tidy the docs"))
 
-    status = drive(tmp_path, PlanGoalArgs(goal="tidy the docs", workspace=workspace), executor)
+    status = drive(fresh(tmp_path), PlanGoalArgs(goal="tidy the docs", workspace=workspace), executor)
 
     assert status is RunStatus.DONE
     assert (workspace / "touched.txt").read_text(encoding="utf-8") == "done\n"
@@ -178,12 +196,63 @@ def test_the_planner_plans_inside_the_workspace_too(tmp_path: Path) -> None:
     workspace.mkdir()
     executor = RecordingPlanExecutor(one_work_plan("tidy the docs"))
 
-    drive(tmp_path, PlanGoalArgs(goal="tidy the docs", workspace=workspace), executor)
+    drive(fresh(tmp_path), PlanGoalArgs(goal="tidy the docs", workspace=workspace), executor)
 
     planner = executor.requests[0]
     assert planner.cwd == workspace
     assert planner.extra_roots == (workspace,)
     assert planner.read_roots == (planner.node_dir, workspace)
+
+
+@pytest.mark.os_agnostic
+def test_a_workspace_run_still_names_its_plan_by_a_run_relative_ref(tmp_path: Path) -> None:
+    """The TREE ref goes absolute for a workspace dispatch; the PLAN ref must not.
+
+    ``FsRunDir.read_text`` refuses an absolute path on purpose - it is the run directory's
+    own containment guard, not a general file reader - and the planner reads ``plan.json``
+    back through it. The two stay compatible because a plan ref is composed from the node
+    directory, which is under the run root whatever the plan's cwd is. This arm is what
+    fails if that ever stops being true, and it is the reason ``read_text`` was left alone.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    run_dir = fresh(tmp_path)
+
+    assert drive(run_dir, PlanGoalArgs(goal="g", workspace=workspace), RecordingPlanExecutor(one_work_plan("g"))) is (
+        RunStatus.DONE
+    )
+
+    planner = _result_records(run_dir)["p_root"]
+    assert planner.artefact_refs[0] == workspace.as_posix(), "the tree ref IS absolute here"
+    plan_ref = next(ref for ref in planner.artefact_refs if ref.endswith("plan.json"))
+    assert not Path(plan_ref).is_absolute()
+    assert json.loads(run_dir.read_text(plan_ref))["goal"] == "g"
+
+
+@pytest.mark.os_agnostic
+def test_the_resolved_workspace_is_what_the_run_persists_and_a_relaunch_re_validates(tmp_path: Path) -> None:
+    """Resolving at the boundary is only worth anything if the RESOLVED value is what survives.
+
+    A relaunch - the background child, a resume, an approve - re-validates ``state.args``,
+    and it does so in a process whose cwd is the run directory. An unresolved relative path
+    stored here would name a different directory on the next launch; an absolute one
+    re-validates to itself, which this arm asserts by running the round trip.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    run_dir = fresh(tmp_path)
+
+    drive(run_dir, PlanGoalArgs(goal="g", workspace=workspace), RecordingPlanExecutor(one_work_plan("g")))
+
+    stored = run_dir.read_state().args
+    assert stored["workspace"] == str(workspace)
+    assert PlanGoalArgs.model_validate(stored).workspace == workspace
+
+
+def _result_records(run_dir: FsRunDir) -> dict[str, ResultRecord]:
+    """Every dispatched node's record, by node id, read back out of the run's journal."""
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    return {line.record.node_id: line.record for line in journal.lines() if isinstance(line, ResultLine)}
 
 
 @pytest.mark.os_agnostic
@@ -235,7 +304,7 @@ def test_a_workspace_that_does_not_exist_is_refused(tmp_path: Path) -> None:
     executor = RecordingPlanExecutor(one_work_plan("g"))
 
     with pytest.raises(KernelError, match="does not exist"):
-        drive(tmp_path, PlanGoalArgs(goal="g", workspace=tmp_path / "nope"), executor)
+        drive(fresh(tmp_path), PlanGoalArgs(goal="g", workspace=tmp_path / "nope"), executor)
 
     assert not (tmp_path / "nope").exists(), "a missing workspace is refused, never created"
     assert executor.requests == [], "nothing was dispatched"
@@ -249,7 +318,7 @@ def test_a_workspace_that_is_not_a_directory_is_refused(tmp_path: Path) -> None:
     executor = RecordingPlanExecutor(one_work_plan("g"))
 
     with pytest.raises(KernelError, match="not a directory"):
-        drive(tmp_path, PlanGoalArgs(goal="g", workspace=afile), executor)
+        drive(fresh(tmp_path), PlanGoalArgs(goal="g", workspace=afile), executor)
 
     assert executor.requests == [], "nothing was dispatched"
 
