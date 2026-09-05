@@ -19,6 +19,7 @@ Reading the request field by field, asking what a SECOND vendor would pass for e
 | `max_turns`                  | its agent loop's turn bound                                     |
 | `write_set`                  | glob strings; enforced by our scan, not by the vendor           |
 | `deny_bash`                  | command patterns to refuse - see below                          |
+| `deny_tools`                 | tool names to refuse outright - see below                       |
 | `read_roots`                 | directories the node may read inside, or None - see below       |
 | `token_cap`, `deadline_s`    | counts and seconds, checked at its own turn seam                |
 | `handover_at_tokens`         | a context-window size in tokens - see below                     |
@@ -28,6 +29,16 @@ Two fields carry an assumption rather than a neutral value. ``deny_bash`` presum
 agent has a shell tool to deny. That is a bound on the KIND of executor (a tool-using
 agent), not on the vendor, and it is stated here so the next reading starts from it
 rather than rediscovering it.
+
+``deny_tools`` (2026-09-05) carries the same KIND assumption as ``deny_bash`` - a tool-using
+agent - plus one the shell list does not: its VALUES are the vendor's own tool names, and the
+shipped default (``WebFetch``, ``WebSearch``, ``Task``) names Claude Code's. The field's shape
+is neutral (identifiers to refuse), its default is not, and a second vendor's operator lists
+that vendor's names in config. Its tolerance rule follows ``read_roots``, not ``token_cap``:
+the field exists to bound what a node may REACH, so an adapter that has such tools and cannot
+refuse them by name must REFUSE a request carrying a non-empty list rather than run open. An
+adapter with no tools at all - this file's ``NonSdkExecutor`` - honours any list vacuously, the
+same way it honours ``deny_bash`` with no shell to deny, so it is handed a non-empty one here.
 
 ``read_roots`` (2026-09-02) is a neutral VALUE - directories, naming no tool and no vendor
 concept - and is the same shape as ``write_set`` pointed the other way, so a second vendor
@@ -146,6 +157,7 @@ def _request(tmp_path: Path) -> ExecutorRequest:
         isolation_root=tmp_path,
         write_set=("wt/a/**",),
         deny_bash=("rm -rf /",),
+        deny_tools=("WebFetch",),  # vacuously honoured: this adapter has no tool by that or any name
         read_roots=None,  # this adapter cannot confine reads, so None is its only honest value
         token_cap=1000,
         deadline_s=30.0,
@@ -186,6 +198,7 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "isolation_root",
         "write_set",
         "deny_bash",
+        "deny_tools",
         "read_roots",
         "token_cap",
         "deadline_s",
