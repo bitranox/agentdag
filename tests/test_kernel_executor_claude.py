@@ -2099,6 +2099,25 @@ def test_options_for_installs_the_write_hook_with_the_request_s_extra_roots(tmp_
 
 
 @pytest.mark.os_agnostic
+def test_every_permission_mode_names_a_value_the_installed_sdk_accepts() -> None:
+    """A structural invariant on the enum, checked against the SDK rather than against our own copy.
+
+    ``_sdk_permission_mode`` refuses a member the adapter cannot dispatch, but it compares against
+    a tuple in this module, so the two could agree while both drifted from the SDK. This reads the
+    installed ``claude_agent_sdk.PermissionMode`` literal itself, so a member the SDK renamed or
+    dropped is reported here rather than reaching the CLI as an argument it silently rejects.
+    """
+    from typing import get_args
+
+    from claude_agent_sdk import PermissionMode as SdkPermissionMode
+
+    accepted = set(get_args(SdkPermissionMode))
+
+    assert accepted, "read no values off the SDK literal at all, so this check would pass vacuously"
+    assert {mode.value for mode in PermissionMode} <= accepted
+
+
+@pytest.mark.os_agnostic
 def test_options_for_passes_the_executor_s_tool_set_and_permission_mode(tmp_path: Path) -> None:
     """The two knobs of the tool surface reach ``ClaudeAgentOptions`` verbatim.
 

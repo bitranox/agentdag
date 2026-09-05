@@ -53,7 +53,8 @@ the coordinator branches on; it is unit-tested with no SDK call at all
 (``tests/test_kernel_executor_claude.py``).
 
 Contents:
-    * :data:`DEFAULT_TOOLS` - the tool set a node gets when the caller does not override it.
+    * :data:`~agentdag.domain.models.DEFAULT_TOOLS` - re-exported: the auto-approval set a node
+      gets when the caller names none.
     * :class:`CredentialSource` - what :class:`ClaudeExecutor` needs from a credential.
     * :class:`OAuthTokenFile` - a per-operator OAuth-token keyfile, when config names one.
     * :class:`CredentialCopy` - a private, owner-only copy of ``.credentials.json``; the
