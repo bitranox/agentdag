@@ -244,7 +244,7 @@ A run never writes to a real repository.
 
 ### The gate is a separate process, and gates are not serialised
 
-The gate is the run's own `[kernel] gate_command` - `make test` by default - run in the node's own worktree as a separate process; the coordinator reads its exit code and nothing else. It runs under an allowlisted environment rather than the coordinator's whole one, and the argv it ran is what the node records: its `input.json`, its brief and its journal key all name the command the machine actually executed. A plan cannot choose it, and an empty `gate_command` is refused before a run directory exists, because a run with no gate is the one thing the gate exists to prevent. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
+The gate is `make test` in the node's own worktree, run as a separate process; the coordinator reads its exit code and nothing else. The baseline's gate command is fixed at that, which is part of what makes it the control; the kernel's is configurable, see [Coordinator](#coordinator-agentdag-run) below. Gate runs are not serialised against each other: bmk 3.17.0 guards its own shared tool environment, so every bmk holds a shared lock on it for its lifetime and only the provisioning waits, never the whole gate. `--parallel` therefore bounds the gates as well as the agent nodes.
 
 ### One credential per node
 
@@ -268,6 +268,17 @@ a crash window that re-dispatches only what a journal shows never finished. `age
 against until M5 compares the two.
 
 Codex (a second executor arm) and a per-turn token spend cap are NOT in this version.
+
+**The gate is the run's own command.** `[kernel] gate_command` is the argv every gate node
+runs, `["make", "test"]` by default, in the node's own worktree and under an allowlisted
+environment rather than the coordinator's whole one. What the node RECORDS is what ran: the
+argv comes from the wired gate itself, so a node's `input.json`, its brief and its journal key
+all name the command the machine executed, and the planner is told it too. A plan cannot choose
+it - the gate is the step the agent that wrote the change has no say over - and an explicit
+empty command is refused before a run directory exists, because a run with no gate is what the
+gate exists to prevent. Like every other `[kernel]` setting it is resolved once at `run start`
+and travels on the run, so the background coordinator and every later `resume`, `approve` or
+`retry` gate on the command the run was started with.
 
 One-time setup: the run directory needs to exist and be writable before the first `run start`.
 
