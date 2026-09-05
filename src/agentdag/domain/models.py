@@ -208,11 +208,22 @@ class PermissionMode(StrEnum):
     short-circuits the rest of the pipeline, so the write-set, Bash-command, closed-tool and
     read-confinement hooks refuse exactly the same calls under either one (read at source in the
     bundled CLI 2.1.259; the SDK's own docs name a ``PreToolUse`` hook as the way to gate every
-    call under bypass). The modes are NOT equally permissive in every other respect: what each
-    decides is the fate of a call no hook denied - :attr:`DONT_ASK` refuses one that no allow
-    rule covers, :attr:`BYPASS_PERMISSIONS` runs it (provided the CLI honours the mode rather
-    than silently downgrading it, unconfirmed in this headless configuration) - so choosing
-    bypass does widen a run.
+    call under bypass). The modes are NOT equally permissive in every other respect, for a call
+    that reaches the CLI's own mode fallback with no rule, hook, or tool-specific classifier
+    having already decided it: :attr:`DONT_ASK` denies it there, :attr:`BYPASS_PERMISSIONS` runs
+    it there (provided the CLI honours the mode rather than silently downgrading it, unconfirmed
+    in this headless configuration) - so choosing bypass does widen a run.
+
+    That fallback is not the whole story for :attr:`DONT_ASK`, and a call can be decided BEFORE
+    it by something the mode never sees. Read at source, same CLI build: the bundled CLI
+    auto-allows a Bash command it classifies read-only (``ls``, ``git status``, and similar)
+    ahead of the mode fallback - the decision reads ``{behavior:"allow",
+    reason:"Read-only command is allowed"}`` - independent of ``permission_mode`` and of whether
+    Bash is named in ``[kernel] tools`` at all. This is why this repo's own measured row
+    (``PLANS/build-plan-mid.md``: Bash ran in 8 of 24 dispatches under ``DONT_ASK`` while absent
+    from ``allowed_tools``) is real rather than a contradiction: those calls never reached the
+    fallback :attr:`DONT_ASK` denies. So :attr:`DONT_ASK` does not refuse every call omitted from
+    ``[kernel] tools`` - only the ones that reach its fallback undecided.
 
     The four the CLI also accepts are refused by the config reader by name: ``plan`` executes no
     tool at all. ``default`` and ``acceptEdits`` fall back to asking, and read at source, a
@@ -223,7 +234,10 @@ class PermissionMode(StrEnum):
     branching on a model's judgement, which is the thing this coordinator exists to avoid.
 
     Attributes:
-        DONT_ASK: Deny a call no allow rule covers. The shipped default.
+        DONT_ASK: Deny a call that reaches the CLI's mode fallback with no rule, hook, or
+            tool-specific classifier having already decided it - NOT every call a tool omitted
+            from ``[kernel] tools`` makes, because a read-only Bash command is auto-allowed
+            before the mode is ever consulted (measured). The shipped default.
         BYPASS_PERMISSIONS: Auto-approve a call no hook denied, whatever the allow rules say -
             provided the provider CLI honours the mode in this headless configuration rather
             than silently downgrading it to ``default``, which was not established.

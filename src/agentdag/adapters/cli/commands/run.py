@@ -1034,8 +1034,8 @@ def _config_permission_mode(config: Config) -> PermissionMode:
     Only the two modes an UNATTENDED run can dispatch under are offered
     (:class:`~agentdag.domain.models.PermissionMode`); every other value the provider's CLI
     accepts is refused here by name, before any run directory exists, rather than reaching a
-    node whose uncovered calls then get auto-denied for want of an approval surface, or whose
-    calls get handed to a model classifier to decide.
+    node whose uncovered calls then get auto-denied (read at source, not measured live) for
+    want of an approval surface, or whose calls get handed to a model classifier to decide.
     A blank is refused too: which mode a run dispatched under is recorded on the run, so it
     must be a value someone chose.
 

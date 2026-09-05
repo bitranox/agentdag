@@ -1102,13 +1102,18 @@ class ClaudeExecutor:
             The run-wide value lives in config (``[kernel] tools``) and reaches this field
             through the composition; defaults to :data:`DEFAULT_TOOLS` so an executor built
             directly still has one.
-        permission_mode: What the CLI does with a call NO hook denied and no allow rule
-            covers - :attr:`~agentdag.domain.models.PermissionMode.DONT_ASK` refuses it,
-            :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS` runs it PROVIDED
-            the provider CLI honours the mode; whether it does in this headless configuration,
-            rather than silently downgrading to ``default``, was not established (see
-            ``[kernel] permission_mode``'s config comment) - so this field records what was
-            REQUESTED, not proven to be what ran. It does not reach the deny hooks: the CLI
+        permission_mode: What the CLI does with a call NO hook and no rule decided, once it
+            reaches the CLI's own mode fallback - :attr:`~agentdag.domain.models.PermissionMode.DONT_ASK`
+            denies it THERE, :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS`
+            runs it THERE, PROVIDED the provider CLI honours the mode; whether it does in this
+            headless configuration, rather than silently downgrading to ``default``, was not
+            established (see ``[kernel] permission_mode``'s config comment) - so this field
+            records what was REQUESTED, not proven to be what ran. That fallback is not the
+            whole story for ``DONT_ASK``: a tool-specific classifier can decide a call before
+            the mode is ever consulted (see
+            :class:`~agentdag.domain.models.PermissionMode`'s docstring for the measured Bash
+            example, where a read-only command runs under ``DONT_ASK`` although absent from
+            ``[kernel] tools``). It does not reach the deny hooks: the CLI
             consults a ``PreToolUse`` decision before it evaluates permission rules, and a hook
             deny short-circuits the rest, so every hook this class registers refuses the same
             calls under either mode. The run-wide value lives in config

@@ -23,11 +23,11 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   neither offered mode prompts: naming a tool auto-approves it, and omitting one closes nothing,
   under either mode. Only the two modes an unattended run can dispatch under are offered: `plan`
   executes no tool, `default` and `acceptEdits` fall back to asking and a headless call with no
-  approval surface auto-denies rather than stalling, and `auto` hands the decision to a model
-  classifier. `tools = []` is refused by name, unlike an empty denylist, and not because it
-  would leave a node toolless - the SDK writes the flag only for a non-empty list, so `[]`
-  passes no `--allowedTools` at all and is at least as permissive as naming one. A blank value
-  is refused for both keys.
+  approval surface auto-denies rather than stalling (read at source, not measured live), and
+  `auto` hands the decision to a model classifier. `tools = []` is refused by name, unlike an
+  empty denylist, and not because it would leave a node toolless - the SDK writes the flag only
+  for a non-empty list, so `[]` passes no `--allowedTools` at all and is at least as permissive
+  as naming one. A blank value is refused for both keys.
 - `plan-goal --arg workspace=DIR`: a second isolation root. The plan works in an operator-supplied
   directory instead of a worktree the run owns, so the tree it changes outlives the run and sits
   where the operator can see it, while the run directory still holds every node's bookkeeping. A

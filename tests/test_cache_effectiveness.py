@@ -79,7 +79,8 @@ class TestGetConfig:
             "gate_command": ["make", "test"],
             # The set a node's calls are auto-approved from; not a bound - only the deny hooks refuse one.
             "tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
-            # What the CLI does with a call no hook denied: refuse one no allow rule covers.
+            # What the CLI does with a call the mode fallback sees undecided: dontAsk denies
+            # THERE, not every call a tool omitted from `tools` makes (PermissionMode's docstring).
             "permission_mode": "dontAsk",
             # The actor label every run records; a constant, never the operating account's name.
             "operator": "operator",

@@ -188,7 +188,9 @@ tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 
 # Purpose: what the CLI does with a node's tool call that NO PreToolUse hook denied
 # Type: string, one of "dontAsk" or "bypassPermissions"
-# Default: "dontAsk" - refuse a call no allow rule covers
+# Default: "dontAsk" - deny a call that reaches the CLI's mode fallback undecided (see the
+#   "does not deny every uncovered call" note below - it is not every call a tool omitted
+#   from [kernel] tools makes)
 # Environment Variable: AGENTDAG___KERNEL__PERMISSION_MODE=bypassPermissions
 # .env: KERNEL__PERMISSION_MODE=bypassPermissions
 # Note: it does not reach the deny hooks. The CLI consults a PreToolUse hook's decision BEFORE
@@ -196,6 +198,14 @@ tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 #   deny_bash, deny_tools and the write-set and read-confinement hooks refuse exactly the same
 #   calls under either mode (read at source in the bundled CLI 2.1.259 and stated by the SDK's
 #   own docs, which name a PreToolUse hook as the way to gate every call under bypass).
+# Note: "dontAsk" does not deny every uncovered call. It only decides a call that reaches the
+#   CLI's own mode fallback with no rule, hook, or tool-specific classifier having already
+#   decided it. Read at source, same CLI build: the bundled CLI auto-allows a Bash command it
+#   classifies read-only (ls, git status, and similar) before the mode is ever consulted,
+#   independent of permission_mode and of whether Bash is named in [kernel] tools at all. This
+#   is why this repo's own measured row (PLANS/build-plan-mid.md) shows Bash running under
+#   dontAsk while absent from allowed_tools - that call never reached the fallback dontAsk
+#   denies. See PermissionMode's docstring (domain/models.py) for the full source citation.
 # Note: "bypassPermissions" auto-approves whatever no hook denied, so a node may call a tool
 #   `tools` never named. The provider's CLI can also DOWNGRADE it to "default" when the bypass
 #   disclaimer was never accepted, and a call that then lands in "default" with no approval
@@ -203,11 +213,11 @@ tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 #   is "no approval surface in this session; permission request denied automatically") - so
 #   read a node's transcript after changing this, rather than assuming the mode took.
 # Note: the CLI's other four modes are refused by name before any run directory exists. `plan`
-#   executes no tool at all; `default` and `acceptEdits` fall back to asking, and a headless
-#   run auto-denies that ask rather than stalling on it, since no approval surface exists to
-#   answer it; `auto` hands the decision to a model classifier, which is the one thing this
-#   coordinator exists not to branch on. A blank is refused too - which mode a run dispatched
-#   under is recorded on the run, so it must be a value someone chose.
+#   executes no tool at all; `default` and `acceptEdits` fall back to asking, and read at
+#   source, a headless run auto-denies that ask rather than stalling on it, since no approval
+#   surface exists to answer it; `auto` hands the decision to a model classifier, which is the
+#   one thing this coordinator exists not to branch on. A blank is refused too - which mode a
+#   run dispatched under is recorded on the run, so it must be a value someone chose.
 permission_mode = "dontAsk"
 
 # Purpose: the argv every gate node of a run executes - the mechanical check an agent

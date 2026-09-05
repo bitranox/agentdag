@@ -2142,7 +2142,9 @@ def test_options_for_passes_the_executor_s_tool_set_and_permission_mode(tmp_path
 
 @pytest.mark.os_agnostic
 def test_an_executor_built_without_a_tool_surface_dispatches_the_shipped_one(tmp_path: Path) -> None:
-    """The defaults are the six tools under ``dontAsk``, whose fallback for an unlisted tool is deny."""
+    """The defaults are the six tools under ``dontAsk``, whose MODE FALLBACK for an undecided
+    call is deny - not a guarantee every unlisted tool is refused (see PermissionMode's
+    docstring for the measured Bash exception)."""
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
     executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())

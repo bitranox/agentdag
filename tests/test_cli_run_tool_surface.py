@@ -205,9 +205,9 @@ def test_a_permission_mode_an_unattended_run_cannot_use_is_refused_by_name(
     """Only the two modes that decide every call without a person or a classifier are offered.
 
     ``plan`` executes no tool at all; ``default`` and ``acceptEdits`` fall back to asking, and a
-    headless call with no approval surface auto-denies rather than stalling; ``auto`` routes the
-    decision to a model classifier, which is the one thing this coordinator exists not to branch
-    on.
+    headless call with no approval surface auto-denies rather than stalling (read at source,
+    not measured live); ``auto`` routes the decision to a model classifier, which is the one
+    thing this coordinator exists not to branch on.
     """
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", f"kernel.permission_mode={mode}"])
 
