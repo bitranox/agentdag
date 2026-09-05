@@ -169,7 +169,12 @@ async def _plan_or_reasons(
     """
     prompt = PLANNER_PROMPT.format(schema=_schema_text(), ops=_ops_text(registry))
     record = await ctx.co.plan_node(
-        spec, brief=_brief(goal, evidence), cwd=ctx.cwd, prompt=prompt, is_stopping=is_stopping
+        spec,
+        brief=_brief(goal, evidence),
+        cwd=ctx.cwd,
+        prompt=prompt,
+        is_stopping=is_stopping,
+        workspace=ctx.workspace,
     )
     rel = next((ref for ref in record.artefact_refs if ref.endswith(PLAN_FILENAME)), None)
     if rel is None:

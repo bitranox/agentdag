@@ -234,6 +234,7 @@ class Coordinator:
         cwd: Path,
         prompt: str = DEFAULT_PROMPT,
         is_stopping: Callable[[], bool] | None = None,
+        workspace: Path | None = None,
     ) -> ResultRecord:
         """Dispatch one work node: an executor, running ``brief`` against ``cwd``.
 
@@ -288,20 +289,28 @@ class Coordinator:
                 executor's turn seam (``ExecutorRequest.is_stopping``). ``None`` for a
                 dispatch belonging to no subtree. A predicate rather than a bool because the
                 subtree decides while the node is already running.
+            workspace: The operator-supplied workspace this run works in, already resolved,
+                or ``None`` for a run confined to its own directory. It widens the roots
+                ``cwd`` may lie under by exactly one AND reaches the executor as
+                ``ExecutorRequest.extra_roots``, which is what makes the node's writes there
+                permitted rather than denied by the write hook. Passed per call rather than
+                held on the coordinator so a call site that forgets it FAILS - a workspace
+                cwd it did not authorise is refused below, loudly, instead of being dispatched
+                with a boundary nobody widened.
 
         Returns:
             The node's result record, with this node's charged tokens already added to
             :attr:`tokens_by_row`.
 
         Raises:
-            KernelError: ``cwd`` sits outside the run root - a misconfiguration in
+            KernelError: ``cwd`` sits outside every root this dispatch was given - a misconfiguration in
                 whatever BUILT the request, so it raises HERE, before anything is
                 dispatched: a failed record for it would just be retried forever
                 (fixing it changes ``cwd``, hence the call's own identity, so nothing
                 a bare resume could ever re-serve usefully).
         """
         dispatched, input_obj, body = self._executor_call(
-            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping
+            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping, workspace=workspace
         )
         return await self._dispatch(dispatched, brief=brief, input_obj=input_obj, body=body)
 
@@ -313,6 +322,7 @@ class Coordinator:
         cwd: Path,
         prompt: str = DEFAULT_PROMPT,
         is_stopping: Callable[[], bool] | None = None,
+        workspace: Path | None = None,
     ) -> ResultRecord:
         """Dispatch a planner node and surface the ``plan.json`` it wrote, if it wrote one.
 
@@ -346,12 +356,21 @@ class Coordinator:
             prompt: What the executor is told to do with the brief.
             is_stopping: As :meth:`work`. A planner node is as stoppable as any other: its
                 subtree can be abandoned while it is still writing a plan nobody will run.
+            workspace: As :meth:`work`. A planner's reads are confined to its node directory
+                and ``cwd``, so a planner planning FOR a workspace reads inside it and
+                nowhere else.
 
         Returns:
             The planner node's record, carrying the plan's path when there is one.
         """
         dispatched, input_obj, body = self._executor_call(
-            spec, brief=brief, cwd=cwd, prompt=prompt, is_stopping=is_stopping, confine_reads=True
+            spec,
+            brief=brief,
+            cwd=cwd,
+            prompt=prompt,
+            is_stopping=is_stopping,
+            confine_reads=True,
+            workspace=workspace,
         )
         return await self._dispatch(
             dispatched, brief=brief, input_obj=input_obj, body=self._also_surfacing_the_plan(body)
@@ -383,6 +402,7 @@ class Coordinator:
         prompt: str,
         is_stopping: Callable[[], bool] | None = None,
         confine_reads: bool = False,
+        workspace: Path | None = None,
     ) -> tuple[NodeSpec, dict[str, Any], Body]:
         """Resolve the row and build the dispatched spec, the input object and the body.
 
@@ -396,6 +416,7 @@ class Coordinator:
             brief: The node's brief; its content hash is part of the journal key.
             cwd: The working directory the executor runs in.
             prompt: What the executor is told to do with the brief.
+            workspace: The operator-supplied workspace, as :meth:`work` documents it.
             confine_reads: Whether this node may only read inside its own node directory
                 and ``cwd``. False for a node that has to work on a real tree; true for a
                 node whose whole input arrives in its prompt, where an unconfined read is
@@ -410,14 +431,8 @@ class Coordinator:
             KernelError: ``cwd`` sits outside the run root.
         """
         row = self.policy.resolve(spec)
-        try:
-            cwd_rel = cwd.relative_to(self.run_dir.root)
-        except ValueError as exc:
-            raise KernelError(
-                f"cwd {cwd} of node {spec.node_id!r} is outside the run root {self.run_dir.root}"
-            ) from exc
         input_obj = {
-            "cwd": cwd_rel.as_posix(),
+            "cwd": self._recorded_cwd(cwd, workspace=workspace, node_id=spec.node_id),
             "prompt": prompt,
             "model": row.alias,
             "effort": spec.effort,
@@ -461,6 +476,7 @@ class Coordinator:
                 effort=spec.effort,
                 max_turns=self.policy.max_turns,
                 isolation_root=self.run_dir.root,
+                extra_roots=() if workspace is None else (workspace,),
                 write_set=tuple(spec.write_set),
                 deny_bash=self.policy.deny_bash,
                 deny_tools=self.policy.deny_tools,
@@ -603,8 +619,56 @@ class Coordinator:
             transient=False,
         )
 
+    def _recorded_cwd(self, cwd: Path, *, workspace: Path | None, node_id: str) -> str:
+        """Name ``cwd`` the way this dispatch's key will, refusing one under no root it was given.
+
+        The run root's own paths are named RELATIVE to it, so a run directory that moves is
+        still the same call. A ``workspace`` is the one other root a dispatch may be given
+        (design 2.1, C8, widened by Task 9), and a path under it is named ABSOLUTELY: it has
+        no relative form, and a workspace that moved is a different directory rather than the
+        same one under a new name.
+
+        Args:
+            cwd: The working directory the node will run in.
+            workspace: The operator-supplied workspace this dispatch may work in, already
+                resolved, or ``None`` for a dispatch confined to the run root alone.
+            node_id: Whose dispatch this is; named in the refusal so an operator can see
+                which node was wired wrong.
+
+        Returns:
+            The path as the dispatch's ``input_obj`` records it.
+
+        Raises:
+            KernelError: ``workspace`` lies inside the run root, or ``cwd`` lies outside
+                every root this dispatch was given. Both are misconfigurations in whatever
+                BUILT the call, so they are raised HERE, before anything is dispatched.
+        """
+        if workspace is not None and self._within_run_root(workspace):
+            raise KernelError(
+                f"workspace {workspace} of node {node_id!r} is inside the run root "
+                f"{self.run_dir.root}; a workspace is a SECOND root, and the isolation scan "
+                f"does not watch it - one under the run root would be watched and every write "
+                f"the plan made there would read as a stray write"
+            )
+        if self._within_run_root(cwd):
+            return cwd.relative_to(self.run_dir.root).as_posix()
+        if workspace is not None and (cwd == workspace or workspace in cwd.parents):
+            return cwd.as_posix()
+        named = f" and outside the workspace {workspace}" if workspace is not None else ""
+        raise KernelError(f"cwd {cwd} of node {node_id!r} is outside the run root {self.run_dir.root}{named}")
+
+    def _within_run_root(self, path: Path) -> bool:
+        """Return whether ``path`` is the run root or sits under it."""
+        return path == self.run_dir.root or self.run_dir.root in path.parents
+
     def snapshot(self) -> Mapping[str, str]:
         """Take the isolation-root manifest a later :meth:`scan` compares against.
+
+        The run root and nothing else. A ``workspace`` a dispatch was given is therefore
+        never in the manifest, and that is structural rather than incidental:
+        :meth:`_recorded_cwd` refuses a workspace inside the run root, so there is no way to
+        name one this walk could reach. :meth:`scan` records the exclusion on the scan it
+        judges, which is where a reader of the run meets it.
 
         Returns:
             Relative POSIX path -> content hash, for everything under the run root the
@@ -612,7 +676,7 @@ class Coordinator:
         """
         return self.scanner.snapshot(self.run_dir.root)
 
-    async def gate(self, spec: NodeSpec, *, cwd: Path) -> ResultRecord:
+    async def gate(self, spec: NodeSpec, *, cwd: Path, workspace: Path | None = None) -> ResultRecord:
         """Dispatch a mechanical gate: run :attr:`gate_port`'s command in ``cwd``, record its exit code.
 
         The argv comes from the PORT and nowhere else, which is what makes the recorded
@@ -624,8 +688,12 @@ class Coordinator:
 
         Args:
             spec: The gate node's spec.
-            cwd: The working directory the gate runs in; recorded in the key as a path
-                relative to the run root, like :meth:`work`'s ``cwd``.
+            cwd: The working directory the gate runs in; recorded in the key exactly as
+                :meth:`work`'s ``cwd`` is - relative to the run root, or absolute under a
+                named ``workspace``.
+            workspace: The operator-supplied workspace this run works in, or ``None``. A
+                gate runs where the work happened, so it is bounded by the same roots that
+                work was: without this a plan working in a workspace could not gate itself.
 
         Returns:
             The gate's record: ``done`` on exit code 0, else ``failed``, with the exit
@@ -633,14 +701,9 @@ class Coordinator:
             ``artefact_refs[0]``.
 
         Raises:
-            KernelError: ``cwd`` sits outside the run root.
+            KernelError: ``cwd`` sits outside every root this dispatch was given.
         """
-        try:
-            cwd_rel = cwd.relative_to(self.run_dir.root).as_posix()
-        except ValueError as exc:
-            raise KernelError(
-                f"cwd {cwd} of node {spec.node_id!r} is outside the run root {self.run_dir.root}"
-            ) from exc
+        cwd_rel = self._recorded_cwd(cwd, workspace=workspace, node_id=spec.node_id)
         argv = self.gate_port.command
         input_obj = {"argv": list(argv), "cwd": cwd_rel}
 
@@ -666,7 +729,13 @@ class Coordinator:
         return await self._dispatch(spec, brief=f"gate: {' '.join(argv)}", input_obj=input_obj, body=body)
 
     async def scan(
-        self, spec: NodeSpec, *, watched: str, before: Mapping[str, str], write_set: Sequence[str]
+        self,
+        spec: NodeSpec,
+        *,
+        watched: str,
+        before: Mapping[str, str],
+        write_set: Sequence[str],
+        workspace: Path | None = None,
     ) -> ResultRecord:
         """Dispatch the isolation-root scan as a gate node: writes to an UNDECLARED path are the finding.
 
@@ -691,6 +760,14 @@ class Coordinator:
         outside the run root entirely, so it is never even in the manifest) is caught
         either way, concurrency included.
 
+        A ``workspace`` is NOT watched at all. This scan diffs the run root, and a workspace
+        is a second root outside it (refused inside it by :meth:`_recorded_cwd`), so every
+        write the plan made there is a write no scan judged. That is the cost of working
+        outside the run's own directory, and a clean verdict from a run that named one says
+        strictly less than a clean verdict from one that did not - so the workspace is
+        recorded as an input of this dispatch rather than left for a reader to infer from
+        the workflow's arguments.
+
         ``wt/.partial-*/**`` is allowed for the same reason as ``nodes/**``: it is the
         coordinator's OWN bookkeeping (graph A's staging clone, cleaned up and renamed
         by ``_ensure_worktree`` before its branch's own snapshot), not a node's write.
@@ -704,6 +781,8 @@ class Coordinator:
             watched: What this scan is watching, for the brief and the log; free text.
             before: The manifest :meth:`snapshot` took before the watched node ran.
             write_set: The globs the watched node was allowed to write to.
+            workspace: The operator-supplied workspace the watched node worked in, or
+                ``None``. Recorded, never scanned - see the paragraph above.
 
         Returns:
             ``done`` when nothing strayed (``key_facts["stray"] == []``), else ``failed``
@@ -734,7 +813,14 @@ class Coordinator:
             "retries/**",
             "wt/.partial-*/**",  # a staging clone mid-rename: coordinator bookkeeping, not a node write
         ]
-        input_obj = {"watched": watched, "write_set": list(write_set)}
+        input_obj: dict[str, Any] = {"watched": watched, "write_set": list(write_set)}
+        if workspace is not None:
+            # An INPUT of the scan, not a finding: it is what this scan was told it does not
+            # cover. Recording it here puts it in `input.json` AND in the dispatch key, so a
+            # scan of a workspace run can never be replay-served from a run without one -
+            # which a `key_facts` entry could not do, and which is the half that matters when
+            # the two runs otherwise look identical.
+            input_obj["unwatched_roots"] = [workspace.as_posix()]
 
         async def body(node_dir: Path) -> NodeOutcome:
             after = dict(self.scanner.snapshot(self.run_dir.root))

@@ -13,14 +13,17 @@ allocators. Everything else it reads off the coordinator it is handed.
 Contents:
     * :class:`PlanGoalArgs` - the goal, and where its work runs.
     * :func:`program` - mint the specs, then run the root ladder.
+    * :func:`working_directory` - the run's own worktree, or the workspace it was given.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ...domain.kernel_errors import KernelError
 from ...domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
 from ..kernel.execute import NodeBudget, NodeIds
 from ..kernel.registry import PlanContext
@@ -29,7 +32,7 @@ from ..kernel.root import run_root, with_budget_grants
 if TYPE_CHECKING:
     from ..kernel.context import Coordinator
 
-__all__ = ["PLANNER_ID", "PlanGoalArgs", "program"]
+__all__ = ["PLANNER_ID", "PlanGoalArgs", "program", "working_directory"]
 
 PLANNER_ID = "p_root"
 """The root planner's node id, and the prefix of every journal line about a planning attempt."""
@@ -47,7 +50,7 @@ at run start from the journal alone. Sharing a node would leave it unable to tel
 decisions were about the budget without rebuilding every payload the run ever offered."""
 
 WORKTREE = "root"
-"""The directory under ``wt/`` the planned entries run in.
+"""The directory under ``wt/`` the planned entries run in when no workspace is named.
 
 One directory for the whole plan rather than one per entry: an entry that wants its own
 isolation declares it on its own spec, which is where the design puts that decision."""
@@ -66,12 +69,57 @@ _PLANNER_TOKENS = 400_000
 
 
 class PlanGoalArgs(BaseModel):
-    """What this workflow is told: the goal, and nothing else it can get from the coordinator."""
+    """What this workflow is told: the goal, where to work on it, and nothing else."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     goal: str = Field(min_length=1)
     """What to plan for, in the operator's own words. It becomes the root planner's brief."""
+
+    workspace: Path | None = None
+    """The directory this plan works IN, or ``None`` to work in a worktree the run owns.
+
+    A workspace is a SECOND isolation root: the run directory still holds every node's
+    bookkeeping and is still the only thing the isolation scan watches, while the tree the
+    plan actually changes lives outside it, where the operator can see it and keep it after
+    the run is gone. Every dispatch is bounded by both roots and by nothing else
+    (:attr:`~agentdag.application.kernel.ports.ExecutorRequest.extra_roots`).
+
+    Always ABSOLUTE and fully resolved once validated - see :meth:`_resolved_workspace` for
+    why that has to happen here rather than at the first use."""
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _resolved_workspace(cls, value: object) -> object:
+        """Expand and resolve the workspace at the boundary, refusing a blank one.
+
+        Resolved HERE because ``Path("./ws").parents`` is ``[Path(".")]``: a containment
+        check against an unresolved relative path inspects the process's own directory and
+        passes, so every guard downstream would be inspecting the wrong thing. Doing it at
+        validation also fixes the value that reaches ``state.json``, and a relaunch - a
+        background child, a resume, an approve - re-validates an ALREADY absolute path
+        rather than re-resolving a relative one against whatever cwd that process has.
+
+        Args:
+            value: The raw argument: ``None``, or a path as typed on the command line.
+
+        Returns:
+            The resolved absolute path, or ``None``; anything else is handed back for
+            pydantic to reject with its own type error.
+
+        Raises:
+            ValueError: the argument is present but blank. ``--arg workspace=`` is a typo,
+                and it is not the same statement as omitting the argument - ``Path("")``
+                resolves to the process's own working directory, which would silently make
+                that the root a plan writes in.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("workspace must not be blank; omit it to work in a worktree the run owns")
+        if not isinstance(value, (str, Path)):
+            return value
+        return Path(value).expanduser().resolve()
 
 
 async def program(co: Coordinator, args: PlanGoalArgs) -> None:
@@ -88,20 +136,52 @@ async def program(co: Coordinator, args: PlanGoalArgs) -> None:
             flow, not an error. The coordinator process exits and a later launch with a
             decision recorded resumes exactly here.
     """
-    cwd = co.run_dir.worktree(WORKTREE)
-    cwd.mkdir(parents=True, exist_ok=True)
+    cwd = working_directory(co, args.workspace)
     await run_root(
         goal=args.goal,
         planner=_planner_spec(),
         approve=_approve_spec(),
         budget_approve=_budget_approve_spec(),
-        ctx=PlanContext(co=co, cwd=cwd),
+        ctx=PlanContext(co=co, cwd=cwd, workspace=args.workspace),
         registry=co.registry,
         limits=with_budget_grants(co.policy.run_limits, co=co, approve_id=BUDGET_APPROVE_ID),
         graph={},
         spent=NodeBudget(),
         ids=NodeIds(),
     )
+
+
+def working_directory(co: Coordinator, workspace: Path | None) -> Path:
+    """Return where this plan works, refusing a workspace nothing could work in.
+
+    With no workspace, a worktree the run owns, created here because nothing else does. With
+    one, the operator's own directory, which is NEVER created: a mistyped path would then be
+    made somewhere on disk and the plan would work in an empty tree believing it was the
+    project. The two refusals below are about USABILITY - an operator finds out before the
+    first node spends anything. What makes a workspace SAFE is decided by the coordinator,
+    which refuses one inside the run root and bounds every dispatch by both roots.
+
+    Args:
+        co: The coordinator, for the run directory the default worktree lives under.
+        workspace: :attr:`PlanGoalArgs.workspace`, already resolved.
+
+    Returns:
+        The directory every planned entry runs in.
+
+    Raises:
+        KernelError: the named workspace does not exist, or is not a directory.
+    """
+    if workspace is None:
+        cwd = co.run_dir.worktree(WORKTREE)
+        cwd.mkdir(parents=True, exist_ok=True)
+        return cwd
+    if not workspace.exists():
+        raise KernelError(
+            f"workspace {workspace} does not exist; create it, or omit --arg workspace to work in the run"
+        )
+    if not workspace.is_dir():
+        raise KernelError(f"workspace {workspace} is not a directory")
+    return workspace
 
 
 def _planner_spec() -> NodeSpec:

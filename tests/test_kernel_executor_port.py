@@ -18,6 +18,7 @@ Reading the request field by field, asking what a SECOND vendor would pass for e
 | `effort`                     | its own reasoning-effort knob, or `None` where it has none      |
 | `max_turns`                  | its agent loop's turn bound                                     |
 | `write_set`                  | glob strings; enforced by our scan, not by the vendor           |
+| `extra_roots`                | further filesystem paths its writes are bounded by - see below  |
 | `deny_bash`                  | command patterns to refuse - see below                          |
 | `deny_tools`                 | tool names to refuse outright - see below                       |
 | `read_roots`                 | directories the node may read inside, or None - see below       |
@@ -39,6 +40,17 @@ the field exists to bound what a node may REACH, so an adapter that has such too
 refuse them by name must REFUSE a request carrying a non-empty list rather than run open. An
 adapter with no tools at all - this file's ``NonSdkExecutor`` - honours any list vacuously, the
 same way it honours ``deny_bash`` with no shell to deny, so it is handed a non-empty one here.
+
+``extra_roots`` (Task 9) is a neutral VALUE of exactly the kind ``isolation_root`` already
+is - filesystem paths, naming no tool and no vendor concept - so a second vendor supplies it
+as easily as it supplies the root. Its assumption is the same one ``read_roots`` carries and
+NOT the one ``token_cap`` does: an adapter that ignores it loses CORRECTNESS, because the
+field says which directories a node's writes may land in, and a dispatch whose ``cwd`` is
+under an extra root cannot even start in an adapter that only knows ``isolation_root``. So an
+adapter that cannot bound writes to a set of roots must REFUSE a request carrying a non-empty
+``extra_roots`` rather than run it, exactly as it must refuse a non-``None`` ``read_roots``.
+The empty tuple is the honest value for such an adapter's callers to pass, and it is what
+this file's own ``NonSdkExecutor`` is handed - the same reading ``read_roots=None`` gets.
 
 ``read_roots`` (2026-09-02) is a neutral VALUE - directories, naming no tool and no vendor
 concept - and is the same shape as ``write_set`` pointed the other way, so a second vendor
@@ -156,6 +168,7 @@ def _request(tmp_path: Path) -> ExecutorRequest:
         max_turns=3,
         isolation_root=tmp_path,
         write_set=("wt/a/**",),
+        extra_roots=(),  # this adapter bounds writes to one root only, so () is its only honest value
         deny_bash=("rm -rf /",),
         deny_tools=("WebFetch",),  # vacuously honoured: this adapter has no tool by that or any name
         read_roots=None,  # this adapter cannot confine reads, so None is its only honest value
@@ -196,6 +209,7 @@ def test_the_executor_request_carries_no_field_a_second_vendor_could_not_supply(
         "effort",
         "max_turns",
         "isolation_root",
+        "extra_roots",
         "write_set",
         "deny_bash",
         "deny_tools",

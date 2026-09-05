@@ -402,7 +402,13 @@ def _build_work(entry: Entry, ctx: PlanContext) -> Body:
     """
 
     async def body() -> ResultRecord:
-        return await ctx.co.work(entry.spec, brief=entry.brief, cwd=ctx.cwd, is_stopping=_stop_predicate(entry, ctx))
+        return await ctx.co.work(
+            entry.spec,
+            brief=entry.brief,
+            cwd=ctx.cwd,
+            is_stopping=_stop_predicate(entry, ctx),
+            workspace=ctx.workspace,
+        )
 
     return body
 
@@ -427,7 +433,7 @@ def _build_gate_make_test(entry: Entry, ctx: PlanContext) -> Body:
     """
 
     async def body() -> ResultRecord:
-        return await ctx.co.gate(entry.spec, cwd=ctx.cwd)
+        return await ctx.co.gate(entry.spec, cwd=ctx.cwd, workspace=ctx.workspace)
 
     return body
 
@@ -445,7 +451,13 @@ def _build_scan(entry: Entry, ctx: PlanContext) -> Body:
 
     async def body() -> ResultRecord:
         before = ctx.co.snapshot()
-        return await ctx.co.scan(entry.spec, watched=args.watched, before=before, write_set=entry.spec.write_set)
+        return await ctx.co.scan(
+            entry.spec,
+            watched=args.watched,
+            before=before,
+            write_set=entry.spec.write_set,
+            workspace=ctx.workspace,
+        )
 
     return body
 

@@ -22,6 +22,7 @@ from agentdag.application.kernel.ports import stamp
 from agentdag.domain.handover import HANDOVER_AS_WRITTEN_FILENAME, HANDOVER_FILENAME, IDENTITY_KEYS
 from agentdag.domain.journal import ResultLine, RetryGrantLine, StartedLine
 from agentdag.domain.kernel_errors import KernelError, Suspended
+from agentdag.domain.keys import hash8
 from agentdag.domain.models import (
     Budget,
     ErrorType,
@@ -978,3 +979,133 @@ def test_a_node_declaring_no_budget_takes_the_policy_default_rather_than_being_e
     declared = work_spec().model_copy(update={"node_id": "w_declared", "budget": Budget(tokens={"sonnet": 7})})
     asyncio.run(coordinator.work(declared, brief="own budget", cwd=cwd))
     assert executor.requests[-1].token_cap == 7, "a declared budget is never overridden by the default"
+
+
+@pytest.mark.os_agnostic
+def test_work_accepts_a_cwd_in_the_named_workspace_and_grants_it_to_the_executor(tmp_path: Path) -> None:
+    """A workspace is a SECOND root: the cwd check widens to it, and the executor is told.
+
+    Both halves matter. Widening the check alone would send the node out with ``extra_roots``
+    empty, and the write hook would then deny every write in the very directory it was given.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+    workspace = tmp_path / "ws"
+    (workspace / "src").mkdir(parents=True)
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=workspace / "src", workspace=workspace))
+
+    assert executor.requests[-1].cwd == workspace / "src"
+    assert executor.requests[-1].extra_roots == (workspace,)
+
+
+@pytest.mark.os_agnostic
+def test_work_names_a_workspace_cwd_absolutely_in_the_dispatch_key(tmp_path: Path) -> None:
+    """A run-relative name is meaningless outside the run root, and a workspace that moved is
+    a different call rather than the same tree under a new path."""
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({}))
+    coordinator = wire(run_dir, executor, FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=workspace, workspace=workspace))
+
+    written = (executor.requests[-1].node_dir / "input.json").read_text(encoding="utf-8")
+    assert json.loads(written)["cwd"] == workspace.as_posix()
+
+
+@pytest.mark.os_agnostic
+def test_work_still_refuses_a_cwd_under_neither_the_run_root_nor_the_workspace(tmp_path: Path) -> None:
+    """Naming ONE workspace widens the roots by one; it does not open the filesystem."""
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    stray = tmp_path / "elsewhere"
+    stray.mkdir()
+
+    with pytest.raises(KernelError, match="outside the run root"):
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=stray, workspace=workspace))
+
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    assert journal.lines() == []
+
+
+@pytest.mark.os_agnostic
+def test_a_workspace_inside_the_run_root_is_refused(tmp_path: Path) -> None:
+    """The whole point of the second root is that the isolation scan does not watch it.
+
+    A workspace UNDER the run root is watched, so every write the plan makes there would be
+    reported as a stray write by a scan that believes it covers the run. Refused where the
+    coordinator accepts the workspace, which is what lets :meth:`Coordinator.snapshot` say
+    plainly that a workspace is never in its manifest.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    inside = run_dir.root / "ws"
+    inside.mkdir()
+
+    with pytest.raises(KernelError, match="inside the run root"):
+        asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=inside, workspace=inside))
+
+
+@pytest.mark.os_agnostic
+def test_gate_accepts_a_cwd_in_the_named_workspace(tmp_path: Path) -> None:
+    """The gate runs where the work happened, so it is bounded by the same roots the work was."""
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec = work_spec().model_copy(update={"node_id": "g_test@1", "kind": Kind.GATE, "executor": "code"})
+
+    record = asyncio.run(coordinator.gate(spec, cwd=workspace, workspace=workspace))
+
+    node_dir = (run_dir.root / record.artefact_refs[0]).parent
+    assert json.loads((node_dir / "input.json").read_text(encoding="utf-8"))["cwd"] == workspace.as_posix()
+
+
+@pytest.mark.os_agnostic
+def test_gate_still_refuses_a_cwd_under_neither_root(tmp_path: Path) -> None:
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    stray = tmp_path / "elsewhere"
+    stray.mkdir()
+    spec = work_spec().model_copy(update={"node_id": "g_test@1", "kind": Kind.GATE, "executor": "code"})
+
+    with pytest.raises(KernelError, match="outside the run root"):
+        asyncio.run(coordinator.gate(spec, cwd=stray, workspace=workspace))
+
+
+@pytest.mark.os_agnostic
+def test_scan_records_the_workspace_it_did_not_watch(tmp_path: Path) -> None:
+    """A clean scan of a workspace run says less than a clean scan of an ordinary one.
+
+    The scan diffs the run root and nothing else, so a run whose plan works in a workspace
+    has writes no scan judged. Recorded as an INPUT of the scan - the roots it was told it
+    does not cover - so it lands in ``input.json`` and in the dispatch key, and a scan run
+    with a workspace can never be served back from one run without.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RecordingExecutor(outcome({})), FakeScanner())
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec = work_spec().model_copy(update={"node_id": "g_scan@1", "kind": Kind.GATE, "executor": "code"})
+    before = coordinator.snapshot()
+
+    record = asyncio.run(
+        coordinator.scan(spec, watched="w@1", before=before, write_set=["wt/a/**"], workspace=workspace)
+    )
+
+    node_dir = run_dir.node_dir(spec.node_id, hash8(record.input_hash))
+    written = json.loads((node_dir / "input.json").read_text(encoding="utf-8"))
+    assert written["unwatched_roots"] == [workspace.as_posix()]
+
+    plain = work_spec().model_copy(update={"node_id": "g_scan@2", "kind": Kind.GATE, "executor": "code"})
+    plain_record = asyncio.run(coordinator.scan(plain, watched="w@1", before=before, write_set=["wt/a/**"]))
+    plain_dir = run_dir.node_dir(plain.node_id, hash8(plain_record.input_hash))
+    plain_input = json.loads((plain_dir / "input.json").read_text(encoding="utf-8"))
+    assert "unwatched_roots" not in plain_input, "a run with no workspace records no exclusion"

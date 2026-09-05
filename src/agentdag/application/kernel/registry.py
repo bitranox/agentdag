@@ -54,19 +54,26 @@ class UnregisteredOpError(KernelError):
 class PlanContext:
     """What a registered op's :attr:`OpSpec.build` needs beyond the ``Entry`` itself.
 
-    Not a type Task 29 shipped: :class:`~agentdag.domain.plan.Plan`/:class:`~agentdag.domain.
-    plan.Entry` are pure planner output that names an op, never resolves one, so nothing
-    upstream of this task had a reason to define what "the rest of what a body needs" is.
-    Kept to exactly the two fields the ops this task registers actually read: ``work`` and
-    ``gate:make-test`` are the only ones that take a ``cwd``
-    (:meth:`~agentdag.application.kernel.context.Coordinator.work`,
-    :meth:`~agentdag.application.kernel.context.Coordinator.gate`), and every op needs the
-    coordinator itself to dispatch through. A field only a later task turns out to need
-    belongs to that task, not guessed at here.
+    :class:`~agentdag.domain.plan.Plan`/:class:`~agentdag.domain.plan.Entry` are pure planner
+    output that names an op and never resolves one, so everything a body needs BESIDES the
+    entry arrives here. Kept to exactly what the registered ops read: every op dispatches
+    through the coordinator; ``work``, ``plan`` and ``gate:make-test`` run somewhere, so they
+    read ``cwd`` and the ``workspace`` that authorises it; ``scan`` records the workspace it
+    did not watch. A field no registered op reads does not belong here.
     """
 
     co: Coordinator
     cwd: Path
+
+    workspace: Path | None = None
+    """The operator-supplied workspace this run's plan works in, or ``None`` for a plan
+    confined to the run's own directory.
+
+    Carried beside ``cwd`` rather than derived FROM it, and the difference is the whole
+    point: a cwd outside the run root is exactly what the coordinator's containment check
+    refuses, so inferring "cwd is out of root, therefore it is a workspace" would delete
+    that check. This field is the AUTHORISATION, and an op body that forgets to forward it
+    gets a loud refusal rather than an unbounded node."""
 
     stopping: StopScope | None = None
     """The scope of the PLAN whose entries these bodies belong to, or None outside one.
