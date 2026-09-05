@@ -2067,3 +2067,31 @@ def test_the_write_hook_bounds_by_root_even_when_the_grant_list_would_cover_ever
     assert fire(hook, "Write", {"file_path": str(root / "wt" / "f.py")}) is None
     assert fire(hook, "Write", {"file_path": str(workspace / "f.py")}) is None
     assert fire(hook, "Write", {"file_path": str(tmp_path / "outside.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_options_for_installs_the_write_hook_with_the_request_s_extra_roots(tmp_path: Path) -> None:
+    """The one production line handing the workspace to the hook, fired through the real builder.
+
+    Every other write-hook arm in this file composes ``deny_outside_write_set`` itself, so all
+    of them stay green with ``extra_roots=`` deleted from :meth:`ClaudeExecutor._options_for` -
+    while every workspace write on a real dispatch would be denied. This arm pulls the hook
+    that method actually INSTALLED out by its matcher and fires a workspace path at it, so the
+    wiring line is what the assertion depends on.
+
+    Network-free for the same reason as the effort arm above: ``_options_for`` builds options
+    and starts nothing.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    workspace = tmp_path / "ws"
+    (workspace / "src").mkdir(parents=True)
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    request = _request(tmp_path, cwd=workspace, write_set=(), extra_roots=(workspace,))
+
+    options = executor._options_for(request, is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+    hook = _only_hook(_pretooluse(options), "Write|Edit|MultiEdit|NotebookEdit")
+
+    assert fire(hook, "Write", {"file_path": str(workspace / "src" / "mod.py")}) is None
+    assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
+    assert fire(hook, "Write", {"file_path": str(tmp_path / "elsewhere.py")}) == "deny"
