@@ -205,6 +205,10 @@ def test_a_gate_command_that_is_not_a_list_of_words_is_refused(cli_runner: CliRu
 
     assert result.exit_code == ExitCode.INVALID_ARGUMENT, result.output
     assert "kernel.gate_command" in result.output, result.output
+    # The "close nothing on purpose" hint is correct for a denylist and WRONG here: an empty
+    # gate_command is refused outright a few lines later, so stating it would tell an operator
+    # to write the one value this same reader refuses by name.
+    assert "close nothing on purpose" not in result.output, result.output
 
 
 @pytest.mark.os_agnostic

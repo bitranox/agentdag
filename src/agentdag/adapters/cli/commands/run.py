@@ -962,7 +962,7 @@ def _config_deny_tools(config: Config) -> tuple[str, ...]:
     return _config_denylist(config, "kernel.deny_tools", default_key="deny_tools", entry_shape=_TOOL_NAME)
 
 
-def _config_words(raw: object, *, key: str, default_key: str) -> list[str]:
+def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: str = "") -> list[str]:
     """Read one config value as a list of stripped words, refusing every shape that is not one.
 
     Shared by the denylists and the gate command, which take the same two shapes from
@@ -988,6 +988,11 @@ def _config_words(raw: object, *, key: str, default_key: str) -> list[str]:
         raw: The value the layered config returned.
         key: The dotted config key, named in every refusal.
         default_key: The key's name inside the packaged ``[kernel]`` table.
+        not_a_list_hint: Appended to the "not a list of words" refusal below, naming what an
+            operator can write INSTEAD when the empty case is a choice - ``[] to close nothing
+            on purpose`` for a denylist. Left blank for the gate command, where that is false:
+            an empty argv is refused outright, so stating the hint there would tell an operator
+            to write the one value that is refused by name a few lines later.
 
     Returns:
         The words, stripped; possibly empty, which each caller judges for itself.
@@ -1014,7 +1019,10 @@ def _config_words(raw: object, *, key: str, default_key: str) -> list[str]:
     # A null, a number, a bool or a mapping: the layered config coerces `null`/`none`, digits and
     # `true`/`false` from an env var or --set, and a mapping would otherwise be iterated as its
     # KEYS and silently accepted. None of these is a list of words.
-    _fail(f"{named} is {type(raw).__name__}, not a list of words; write a TOML array, or a comma-joined string")
+    _fail(
+        f"{named} is {type(raw).__name__}, not a list of words; write a TOML array or a "
+        f"comma-joined string{not_a_list_hint}"
+    )
 
 
 def _config_denylist(
@@ -1050,7 +1058,9 @@ def _config_denylist(
             f"[kernel] {default_key} (config key {key}) is blank: name at least one entry, "
             f"write [] to close nothing on purpose, or remove the override to use the packaged list"
         )
-    entries = _config_words(raw, key=key, default_key=default_key)
+    entries = _config_words(
+        raw, key=key, default_key=default_key, not_a_list_hint=", or [] to close nothing on purpose"
+    )
     for entry in entries:
         if not entry:
             _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which would match everything")

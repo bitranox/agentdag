@@ -163,6 +163,17 @@ def test_a_value_that_is_neither_a_list_nor_a_string_is_refused_by_name(
 
 
 @pytest.mark.os_agnostic
+def test_a_value_that_is_not_a_list_names_the_empty_list_as_a_choice(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """The "not a list of words" refusal, shared with the gate command, still tells a denylist
+    operator that ``[]`` is a way to close nothing on purpose - the guidance the refactor that
+    pulled this check into a shared reader once dropped silently."""
+    rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", "kernel.deny_bash=true"])
+
+    _assert_refused_by_name(rc, output, "kernel.deny_bash", tmp_path / "runs")
+    assert "close nothing on purpose" in output, output
+
+
+@pytest.mark.os_agnostic
 def test_a_deny_tools_entry_that_cannot_be_a_tool_name_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
     """A matcher never fires on a name with a space in it, so the typo would widen the boundary silently."""
     set_args = ["--set", f"kernel.deny_tools={json.dumps(['Web Fetch'])}"]
