@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from test_cli_run import CommittingExecutor, services_with, start_args
+from test_cli_run_settings import suspended_run_id
 
 from agentdag.adapters import cli as cli_mod
 from agentdag.adapters.cli.exit_codes import ExitCode
@@ -205,3 +206,33 @@ def test_a_blank_permission_mode_is_refused_by_name(cli_runner: CliRunner, tmp_p
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--set", "kernel.permission_mode="])
 
     _assert_refused_by_name(rc, output, "kernel.permission_mode", tmp_path / "runs")
+
+
+@pytest.mark.os_agnostic
+def test_a_resume_dispatches_under_the_tool_surface_the_run_was_started_with(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The claim the whole shape rests on: a value binds the RUN, not the process that typed it.
+
+    A resume loads config from files alone, so a tool surface given by ``--set`` would reach only
+    the starting process unless it is carried on the run - and a relaunch that quietly narrowed
+    the set or moved the mode would change what the run is allowed to do halfway through it.
+    """
+    (tmp_path / "runs").mkdir()
+    set_args = ["--set", 'kernel.tools=["Read", "Task"]', "--set", "kernel.permission_mode=bypassPermissions"]
+    started = cli_runner.invoke(
+        cli_mod.cli, [*set_args, *start_args(tmp_path)], obj=services_with(CommittingExecutor(), tmp_path)
+    )
+    assert started.exit_code == 0, started.output
+    run_id = suspended_run_id(started.output)
+
+    calls: list[Mapping[str, object]] = []
+    resume_argv = ["run", "resume", run_id, "--runs", str(tmp_path / "runs"), "--foreground"]
+    resumed = cli_runner.invoke(
+        cli_mod.cli, resume_argv, obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls)
+    )
+
+    assert resumed.exit_code == 0, resumed.output
+    assert calls, "the resume built no wiring at all"
+    assert _tools_of(calls) == [("Read", "Task")] * len(calls), calls
+    assert [call["permission_mode"] for call in calls] == ["bypassPermissions"] * len(calls), calls
