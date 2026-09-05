@@ -20,7 +20,7 @@ from agentdag.adapters.kernel.executor_claude import OAuthTokenFile
 from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.adapters.kernel.policy_yaml import load_policy
 from agentdag.domain.kernel_errors import KernelError, SpecRejected
-from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.models import DEFAULT_TOOLS, Budget, Isolation, Kind, NodeSpec, PermissionMode, TierRole
 from agentdag.domain.policy import Thresholds
 
 if TYPE_CHECKING:
@@ -196,6 +196,8 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
             max_turns=25,
             deny_bash=(),
             deny_tools=(),
+            tools=DEFAULT_TOOLS,
+            permission_mode=PermissionMode.DONT_ASK,
             gate_command=("make", "test"),
             notifier=NoNotifier(),
         )
@@ -211,6 +213,8 @@ def test_wiring_refuses_a_table_offering_a_row_no_executor_can_run(tmp_path: Pat
         max_turns=25,
         deny_bash=(),
         deny_tools=(),
+        tools=DEFAULT_TOOLS,
+        permission_mode=PermissionMode.DONT_ASK,
         gate_command=("make", "test"),
         notifier=NoNotifier(),
     )

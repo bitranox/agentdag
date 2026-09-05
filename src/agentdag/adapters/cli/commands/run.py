@@ -111,6 +111,7 @@ from agentdag.domain.models import (
     ApprovePayload,
     Decision,
     NodeStatus,
+    PermissionMode,
     ResultRecord,
     RetryGrant,
     RunSettings,
@@ -930,26 +931,40 @@ def _operator_label(config: Config) -> str:
 
 
 _TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-"""The shape an entry must have for the joined matcher to stay an EXACT-NAME match.
+"""The shape a tool name must have to survive being joined into a matcher or into ``--allowedTools``.
 
-The CLI reads a hook matcher made only of letters, digits, ``_``, ``-``, spaces, ``,`` and
-``|`` as an exact name or a ``|``/``,``-separated list of exact names, and a matcher with ANY
-other character as an unanchored JavaScript regex (code.claude.com hooks reference, "Matcher
-patterns", read 2026-09-05). The names are joined with ``|`` into ONE matcher, so a single
-entry carrying a ``.`` or ``*`` would flip every name in the list onto the regex path, where
-``Task`` also matches ``TaskOutput``. Hence: letters, digits, ``_`` and ``-`` only - the
-hyphen because MCP tools are commonly named with it (``mcp__server__resolve-library-id``) - and
-no space, comma or pipe, which the CLI would read as separators."""
+``deny_tools`` joins its names with ``|`` into ONE hook matcher, and ``tools`` joins its names
+with ``,`` into ONE ``--allowedTools`` value, so in both a separator character inside a single
+entry silently changes what the whole list means.
+
+For the matcher: the CLI reads one made only of letters, digits, ``_``, ``-``, spaces, ``,``
+and ``|`` as an exact name or a ``|``/``,``-separated list of exact names, and a matcher with
+ANY other character as an unanchored JavaScript regex (code.claude.com hooks reference,
+"Matcher patterns", read 2026-09-05) - where ``Task`` also matches ``TaskOutput``. For
+``--allowedTools``: a comma inside an entry splits it into two names that match no tool, and
+the run reads as widened while it is not.
+
+Hence: letters, digits, ``_`` and ``-`` only - the hyphen because MCP tools are commonly named
+with it (``mcp__server__resolve-library-id``) - and no space, comma or pipe. A per-tool
+specifier (``Bash(git diff:*)``) is refused with everything else rather than passed through
+unvalidated."""
 
 
 def _config_deny_bash(config: Config) -> tuple[str, ...]:
     """Read ``[kernel] deny_bash``, the Bash command substrings every node is refused.
 
-    Shares :func:`_config_denylist`'s blank-versus-empty rule: a blank value is refused by
+    Shares :func:`_config_name_list`'s blank-versus-empty rule: a blank value is refused by
     name, an explicit ``[]`` is honoured. An entry that is blank after stripping is refused
     too - as a substring it would match EVERY command, which is a mistake, not a policy.
     """
-    return _config_denylist(config, "kernel.deny_bash", default_key="deny_bash", entry_shape=None)
+    return _config_name_list(
+        config,
+        "kernel.deny_bash",
+        default_key="deny_bash",
+        entry_shape=None,
+        empty_means="close nothing on purpose",
+        entry_problem="would match every command",
+    )
 
 
 def _config_deny_tools(config: Config) -> tuple[str, ...]:
@@ -959,7 +974,87 @@ def _config_deny_tools(config: Config) -> tuple[str, ...]:
     a tool name (:data:`_TOOL_NAME`), because a matcher on a name with a space or a slash
     in it fires on nothing and the operator would believe the tool closed.
     """
-    return _config_denylist(config, "kernel.deny_tools", default_key="deny_tools", entry_shape=_TOOL_NAME)
+    return _config_name_list(
+        config,
+        "kernel.deny_tools",
+        default_key="deny_tools",
+        entry_shape=_TOOL_NAME,
+        empty_means="close nothing on purpose",
+        entry_problem="no hook matcher can match, leaving the tool open while the config reads closed",
+    )
+
+
+def _config_tools(config: Config) -> tuple[str, ...]:
+    """Read ``[kernel] tools``, the tool set every node's calls are AUTO-APPROVED from.
+
+    This does not CLOSE anything: ``allowed_tools`` on the SDK is an auto-approval list, and
+    measured, nodes ran tools outside it. Widening it removes prompts; only ``deny_tools`` and
+    the other ``PreToolUse`` hooks refuse a call.
+
+    Its empty rule is the OPPOSITE of the denylists', decided on what an empty value MEANS
+    here: an empty denylist denies nothing, which is a boundary an operator can reasonably
+    widen, while an empty tool set auto-approves nothing - under the shipped ``dontAsk`` that
+    is a node which can only emit text, and it costs a full dispatch to discover. So ``[]`` is
+    refused by name before any run directory exists, as is a blank; absent is the packaged set.
+
+    Args:
+        config: The merged layered configuration.
+
+    Returns:
+        The tool names, at least one, each a bare name (:data:`_TOOL_NAME`).
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, an explicitly
+            empty set, an entry that is not a tool name, or a value that is not a list.
+    """
+    tools = _config_name_list(
+        config,
+        "kernel.tools",
+        default_key="tools",
+        entry_shape=_TOOL_NAME,
+        empty_means=None,
+        entry_problem="names no tool, so the run reads as widened while it is not",
+    )
+    if not tools:
+        _fail(
+            "[kernel] tools (config key kernel.tools) is empty: a node whose calls are auto-approved from "
+            "no tool at all can only emit text, and pays a full dispatch to find out. Name the tools this "
+            "run's nodes may use, or remove the override to use the packaged set"
+        )
+    return tools
+
+
+def _config_permission_mode(config: Config) -> PermissionMode:
+    """Read ``[kernel] permission_mode``, what the CLI does with a call no hook denied.
+
+    Only the two modes an UNATTENDED run can dispatch under are offered
+    (:class:`~agentdag.domain.models.PermissionMode`); every other value the provider's CLI
+    accepts is refused here by name, before any run directory exists, rather than reaching a
+    node that then stalls on a prompt nobody answers or asks a model classifier to decide.
+    A blank is refused too: which mode a run dispatched under is recorded on the run, so it
+    must be a value someone chose.
+
+    Args:
+        config: The merged layered configuration.
+
+    Returns:
+        The mode, as the domain enum the run records and the executor dispatches under.
+
+    Raises:
+        SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value or one that is not
+            an offered mode.
+    """
+    key = "kernel.permission_mode"
+    raw = config.get(key, default=_packaged_kernel_defaults()["permission_mode"])
+    value = "" if raw is None else str(raw).strip()
+    offered = ", ".join(mode.value for mode in PermissionMode)
+    if value not in {mode.value for mode in PermissionMode}:
+        _fail(
+            f"[kernel] permission_mode (config key {key}) is {value!r}: an unattended run can only "
+            f"dispatch under a mode that decides every call without a person or a model classifier. "
+            f"Write one of {offered}, or remove the override to use the packaged mode"
+        )
+    return PermissionMode(value)
 
 
 def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: str = "") -> list[str]:
@@ -1025,47 +1120,63 @@ def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: s
     )
 
 
-def _config_denylist(
-    config: Config, key: str, *, default_key: str, entry_shape: re.Pattern[str] | None
+def _config_name_list(
+    config: Config,
+    key: str,
+    *,
+    default_key: str,
+    entry_shape: re.Pattern[str] | None,
+    empty_means: str | None,
+    entry_problem: str,
 ) -> tuple[str, ...]:
-    """Read one of the two denylists, failing CLOSED on a blank and honouring an explicit empty list.
+    """Read one ``[kernel]`` list of names, failing CLOSED on a blank value and on a blank entry.
 
-    Two shapes arrive from ``lib_layered_config``: a TOML array (the common case) as a real
-    list, and an env-var override (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr``, the
-    convention ``60-kernel.toml`` documents) as ONE comma-joined string that this splits.
-    The two absent-ish cases are decided deliberately and differently: a BLANK string - an
-    env var set to nothing, ``--set kernel.deny_bash=`` - is a misconfiguration and is
-    refused before any run directory exists, because reading it as "deny nothing" is how a
-    boundary disappears without anyone choosing that; an explicit EMPTY LIST (``[]``) is an
-    operator stating that this run widens the boundary, and is returned as ``()``.
+    Serves the two denylists and the tool set. Two shapes arrive from ``lib_layered_config``: a
+    TOML array (the common case) as a real list, and an env-var override
+    (``AGENTDAG___KERNEL__DENY_BASH=git push,gh pr``, the convention ``60-kernel.toml``
+    documents) as ONE comma-joined string that this splits.
+
+    A BLANK string - an env var set to nothing, ``--set kernel.deny_bash=`` - is a
+    misconfiguration and is refused before any run directory exists for every caller, because
+    reading it as "the empty list" is how a boundary disappears without anyone choosing that.
+    An explicit EMPTY LIST is the case that differs per key, which is what ``empty_means``
+    says: a phrase means ``[]`` is a choice this reader honours and names in its refusals, and
+    ``None`` means the caller refuses ``[]`` itself and this reader must never advertise it.
 
     Args:
         config: The merged layered configuration.
         key: The dotted config key, named in every refusal.
         default_key: The key's name inside the packaged ``[kernel]`` table.
         entry_shape: A pattern every entry must match, or ``None`` for none beyond non-blank.
+        empty_means: What an explicit ``[]`` means for this key, phrased for a refusal message
+            ("close nothing on purpose"), or ``None`` when the CALLER refuses an empty list.
+        entry_problem: What a blank or malformed ENTRY does to this key, phrased to follow
+            "which" ("would match every command"). Per key, because the consequence is: a blank
+            substring matches every Bash command, while a blank tool name matches none, and a
+            refusal that states the wrong one sends an operator looking in the wrong place.
 
     Returns:
-        The entries, stripped, possibly empty.
+        The entries, stripped; empty only when ``empty_means`` is set, since the caller that
+        passes ``None`` refuses that case itself.
 
     Raises:
         SystemExit: With :attr:`ExitCode.INVALID_ARGUMENT` on a blank value, a blank entry, or an
             entry outside ``entry_shape``.
     """
+    write_empty = f"write [] to {empty_means}, " if empty_means is not None else ""
+    not_a_list_hint = f", or [] to {empty_means}" if empty_means is not None else ""
     raw = config.get(key, default=_packaged_kernel_defaults()[default_key])
     if isinstance(raw, str) and not raw.strip():
         _fail(
             f"[kernel] {default_key} (config key {key}) is blank: name at least one entry, "
-            f"write [] to close nothing on purpose, or remove the override to use the packaged list"
+            f"{write_empty}or remove the override to use the packaged list"
         )
-    entries = _config_words(
-        raw, key=key, default_key=default_key, not_a_list_hint=", or [] to close nothing on purpose"
-    )
+    entries = _config_words(raw, key=key, default_key=default_key, not_a_list_hint=not_a_list_hint)
     for entry in entries:
         if not entry:
-            _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which would match everything")
+            _fail(f"[kernel] {default_key} (config key {key}) carries a blank entry, which {entry_problem}")
         if entry_shape is not None and not entry_shape.match(entry):
-            _fail(f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name a hook can match")
+            _fail(f"[kernel] {default_key} (config key {key}) entry {entry!r} is not a tool name: it {entry_problem}")
     return tuple(entries)
 
 
@@ -1078,7 +1189,7 @@ def _packaged_gate_command() -> tuple[str, ...]:
 def _config_gate_command(config: Config) -> tuple[str, ...]:
     """Read ``[kernel] gate_command``, the argv every gate node of this run executes.
 
-    Its blank-versus-empty rule is the OPPOSITE of :func:`_config_denylist`'s, and
+    Its blank-versus-empty rule is the OPPOSITE of :func:`_config_name_list`'s, and
     deliberately: an empty DENYLIST denies nothing, which is a boundary an operator can
     reasonably choose to widen, while an empty ARGV is not a command at all - nothing can run
     it, so ``[]`` is refused by name here rather than failing once a node reaches the gate,
@@ -1133,6 +1244,8 @@ def _resolve_settings(
         default_node_tokens=_config_int(config, "kernel.default_node_tokens", "default_node_tokens"),
         deny_bash=_config_deny_bash(config),
         deny_tools=_config_deny_tools(config),
+        tools=_config_tools(config),
+        permission_mode=_config_permission_mode(config),
         notify=_notify_choice(config),
         credential_file=_configured_credential_file(config),
         gate_command=_config_gate_command(config),
@@ -1167,6 +1280,8 @@ def _build_wiring(ctx: click.Context, settings: RunSettings) -> tuple[KernelWiri
         default_node_tokens=settings.default_node_tokens,
         deny_bash=settings.deny_bash,
         deny_tools=settings.deny_tools,
+        tools=settings.tools,
+        permission_mode=settings.permission_mode,
         gate_command=settings.gate_command,
         notifier=_build_notifier(ctx, settings.notify),
     )

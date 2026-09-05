@@ -120,6 +120,8 @@ def test_run_start_persists_the_resolved_kernel_settings_on_the_run(cli_runner: 
         "deny_tools": [],
         "notify": "none",
         "credential_file": "",
+        "tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+        "permission_mode": "dontAsk",
         "gate_command": ["make", "test"],
     }
 

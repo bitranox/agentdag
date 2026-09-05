@@ -1,12 +1,14 @@
 """The Claude kernel executor: allowlisted env, a per-node credential, PreToolUse
 hooks, and tokens that mean what they say (design 7, M2 probe).
 
-Each node gets its own :class:`~claude_agent_sdk.ClaudeSDKClient`, run under
-``permission_mode="dontAsk"`` with the two hooks :mod:`.hooks_claude` builds -
-``deny_outside_write_set`` matched against ``Write|Edit|MultiEdit|NotebookEdit``,
-``deny_bash_commands`` matched against ``Bash`` - so nothing not pre-approved ever
-prompts and nothing outside the isolation root or on the bash denylist is silently
-allowed. ``setting_sources=[]`` keeps the coordinator's own project settings out of
+Each node gets its own :class:`~claude_agent_sdk.ClaudeSDKClient`, run under the run's
+:class:`~agentdag.domain.models.PermissionMode` (``dontAsk`` by default) with the two hooks
+:mod:`.hooks_claude` builds - ``deny_outside_write_set`` matched against
+``Write|Edit|MultiEdit|NotebookEdit``, ``deny_bash_commands`` matched against ``Bash`` - so
+nothing outside the isolation root or on the bash denylist is silently allowed. The mode
+decides only what happens to a call NO hook denied: the CLI consults a ``PreToolUse`` hook's
+decision before it evaluates permission rules at all, so the hooks below refuse the same calls
+whichever mode a run chose. ``setting_sources=[]`` keeps the coordinator's own project settings out of
 the node's context, same as :mod:`agentdag.adapters.graph_a.work_claude_sdk` (M1); this
 is new code sharing only the idea, not the module.
 
@@ -75,7 +77,16 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClie
 
 from ...domain.handover import HANDOVER_FILENAME
 from ...domain.kernel_errors import KernelError
-from ...domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus, Tokens
+from ...domain.models import (
+    DEFAULT_TOOLS,
+    CredentialVerdict,
+    ErrorType,
+    NodeError,
+    NodeOutcome,
+    NodeStatus,
+    PermissionMode,
+    Tokens,
+)
 from ...domain.scrub import scrub
 from .clock_utc import UtcClock
 from .credential_probe import NoCredentialProbe
@@ -94,6 +105,7 @@ if TYPE_CHECKING:
 
     from claude_agent_sdk import EffortLevel
     from claude_agent_sdk import HookCallback as _SdkHookCallback
+    from claude_agent_sdk import PermissionMode as SdkPermissionMode
 
     from ...application.kernel.ports import Clock, CredentialProbe, ExecutorRequest
 
@@ -110,9 +122,6 @@ __all__ = [
     "separated_refusal",
     "tokens_from_usage",
 ]
-
-DEFAULT_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
-"""The tool set a node gets when :class:`ClaudeExecutor` is built with no override (M1's ``_TOOLS``)."""
 
 _CONFIG_DIR_NAME = ".claude"
 _CREDENTIALS_NAME = ".credentials.json"
@@ -167,6 +176,15 @@ _AUTH_FAILURE_TEXT = "Not logged in"
 
 _EFFORT_LEVELS: tuple[EffortLevel, ...] = ("low", "medium", "high", "xhigh", "max")
 """Every value ``claude_agent_sdk.types.EffortLevel`` allows, read from source (0.2.139)."""
+
+_SDK_PERMISSION_MODES: tuple[SdkPermissionMode, ...] = ("dontAsk", "bypassPermissions")
+"""The values of ``claude_agent_sdk.types.PermissionMode`` that :class:`PermissionMode` offers.
+
+The SDK's own union carries six; a coordinator dispatches unattended, so
+:class:`~agentdag.domain.models.PermissionMode` offers only these two and the domain enum is
+where that choice is documented. This tuple exists to prove to the type checker AND at runtime
+that a member's value is a string the SDK accepts (:func:`_sdk_permission_mode`), the same way
+:data:`_EFFORT_LEVELS` does for an effort."""
 
 
 class _Interruptible(Protocol):
@@ -869,6 +887,30 @@ def _message_to_jsonable(message: object) -> dict[str, Any]:
     return {"type": type(message).__name__, **raw}
 
 
+def _sdk_permission_mode(mode: PermissionMode) -> SdkPermissionMode:
+    """Translate a domain permission mode into the string the SDK's own union accepts.
+
+    Args:
+        mode: The mode the run was started with.
+
+    Returns:
+        ``mode.value``, narrowed to the SDK's ``PermissionMode`` literal by the membership
+        guard below - the same idiom :func:`_validated_effort` uses, and for the same reason:
+        it is the one place a plain enum value is PROVEN to be a value the SDK takes.
+
+    Raises:
+        KernelError: ``mode`` names a value :data:`_SDK_PERMISSION_MODES` does not carry, which
+            can only mean the domain enum grew a member this adapter was never taught to
+            dispatch - a wiring bug, caught before any model call spends anything.
+    """
+    value = mode.value
+    if value not in _SDK_PERMISSION_MODES:
+        raise KernelError(
+            f"permission mode {value!r} is not one the SDK accepts; must be one of {_SDK_PERMISSION_MODES}"
+        )
+    return value
+
+
 def _validated_effort(effort: str | None) -> EffortLevel | None:
     """Validate ``request.effort`` against the SDK's own allowed values, BEFORE the dispatch.
 
@@ -1048,8 +1090,19 @@ class ClaudeExecutor:
             the shipped default lives in config (``[kernel] deny_tools``) and reaches this
             field through the composition, never as a second literal that could drift;
             an executor built directly with neither closes no tool.
-        tools: The tool set a node may call, matched against
-            ``ClaudeAgentOptions.allowed_tools``. Defaults to :data:`DEFAULT_TOOLS`.
+        tools: The tool set a node's calls are AUTO-APPROVED from, passed as
+            ``ClaudeAgentOptions.allowed_tools``. It is not a bound: measured, nodes ran
+            tools outside it, so widening this removes prompts rather than granting reach,
+            and only a ``PreToolUse`` deny hook closes anything. The run-wide value lives in
+            config (``[kernel] tools``) and reaches this field through the composition;
+            defaults to :data:`DEFAULT_TOOLS` so an executor built directly still has one.
+        permission_mode: What the CLI does with a call NO hook denied and no allow rule
+            covers - :attr:`~agentdag.domain.models.PermissionMode.DONT_ASK` refuses it,
+            :attr:`~agentdag.domain.models.PermissionMode.BYPASS_PERMISSIONS` runs it. It
+            does not reach the deny hooks: the CLI consults a ``PreToolUse`` decision before
+            it evaluates permission rules, and a hook deny short-circuits the rest, so every
+            hook this class registers refuses the same calls under either mode. The run-wide
+            value lives in config (``[kernel] permission_mode``); defaults to ``DONT_ASK``.
         clock: The seam :meth:`_run` reads wall-clock time through to enforce a node's
             own deadline (design 7, M3) - the SAME kind of injected seam every other
             duration in this kernel is measured on (``application.kernel.ports.Clock``),
@@ -1069,6 +1122,7 @@ class ClaudeExecutor:
     deny_bash: tuple[str, ...] = field(kw_only=True)
     deny_tools: tuple[str, ...] = field(default=(), kw_only=True)
     tools: tuple[str, ...] = field(default=DEFAULT_TOOLS, kw_only=True)
+    permission_mode: PermissionMode = field(default=PermissionMode.DONT_ASK, kw_only=True)
     clock: Clock = field(default_factory=UtcClock, kw_only=True)
     credential_probe: CredentialProbe = field(default_factory=NoCredentialProbe, kw_only=True)
 
@@ -1309,7 +1363,7 @@ class ClaudeExecutor:
             model=request.model,
             effort=effort,
             max_turns=request.max_turns,
-            permission_mode="dontAsk",
+            permission_mode=_sdk_permission_mode(self.permission_mode),
             allowed_tools=list(self.tools),
             hooks={
                 "PreToolUse": [

@@ -350,7 +350,12 @@ other node's Bash is filtered by the
 `[kernel] deny_bash` substring list, which is refused by name when set to a blank value rather
 than read as an empty list. The tools that reach the network or spawn a sub-agent are refused
 outright: `WebFetch`, `WebSearch` and `Task` by default, `[kernel] deny_tools`. An operator
-widens either list deliberately by writing an explicit `[]`. Bash is the hole in that boundary:
+widens either list deliberately by writing an explicit `[]`. What a node may reach for WITHOUT
+being asked is a separate, weaker setting - `[kernel] tools`, the SDK's auto-approval list, and
+`[kernel] permission_mode`, what the CLI does with a call no hook denied. Neither is part of the
+boundary: widening them removes prompts, and a node runs a tool it was never handed only when no
+deny hook refuses it, because the CLI consults a `PreToolUse` decision before it evaluates any
+permission rule. Bash is the hole in that boundary:
 a shell command can read and write anywhere the operating-system user can, and nothing catches
 a write it makes outside the run directory. Both lists, like every other `[kernel]` setting, are
 resolved once at `run start` and written to the run's `state.json` as its `settings` block; the

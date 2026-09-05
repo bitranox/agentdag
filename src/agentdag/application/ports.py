@@ -1,4 +1,4 @@
-"""Application ports — callable Protocol definitions for adapter functions.
+"""Application ports - callable Protocol definitions for adapter functions.
 
 Each Protocol class defines a ``__call__`` method whose signature exactly
 matches the corresponding adapter function.  Existing module-level functions
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..adapters.email.sender import EmailConfig
     from ..adapters.kernel.executor_claude import CredentialSource
     from ..domain.enums import DeployTarget, OutputFormat
+    from ..domain.models import PermissionMode
     from .graph_a_ports import GraphAWiring
     from .kernel.notify import Notifier
     from .kernel.ports import KernelWiring
@@ -132,6 +133,8 @@ class WireKernel(Protocol):
         default_node_tokens: int | None,
         deny_bash: Sequence[str],
         deny_tools: Sequence[str],
+        tools: Sequence[str],
+        permission_mode: PermissionMode,
         gate_command: Sequence[str],
         notifier: Notifier,
     ) -> KernelWiring: ...

@@ -41,7 +41,7 @@ from ..application.kernel.ports import KernelWiring
 from ..application.kernel.registry import OpRegistry, OpSpec
 from ..domain.condition import referenceable_view
 from ..domain.kernel_errors import KernelError
-from ..domain.models import ApproveOption, ApprovePayload, NodeOutcome, NodeStatus
+from ..domain.models import ApproveOption, ApprovePayload, NodeOutcome, NodeStatus, PermissionMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -73,6 +73,8 @@ def wire_kernel(
     max_turns: int,
     deny_bash: Sequence[str],
     deny_tools: Sequence[str],
+    tools: Sequence[str],
+    permission_mode: PermissionMode,
     gate_command: Sequence[str],
     notifier: Notifier,
     default_node_tokens: int | None = None,
@@ -94,6 +96,12 @@ def wire_kernel(
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
         deny_tools: The tool names every node's PreToolUse hook refuses outright. Required,
             like ``deny_bash``: the composition is the one caller that must not forget it.
+        tools: The tool set every node's calls are AUTO-APPROVED from (``[kernel] tools``),
+            which is not a bound - only the deny hooks refuse a call. Required for the same
+            reason as the denylists.
+        permission_mode: What the CLI does with a node's call that no hook denied
+            (``[kernel] permission_mode``). Required for the same reason: a default here would
+            be a second declaration of what an unconfigured run dispatches under.
         gate_command: The argv every ``gate`` node runs (``[kernel] gate_command``). Required
             for the same reason: a default here would be a second declaration of what an
             unconfigured gate runs, free to drift from the packaged config the CLI reads.
@@ -114,6 +122,8 @@ def wire_kernel(
             credentials=credential,
             deny_bash=tuple(deny_bash),
             deny_tools=tuple(deny_tools),
+            tools=tuple(tools),
+            permission_mode=permission_mode,
             clock=clock,
             # Reads the token from the SAME credential source the dispatch used, so the
             # probe asks about exactly the credential that was refused - a probe pointed

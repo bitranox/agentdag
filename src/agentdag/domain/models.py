@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler
 
 __all__ = [
     "CODE_KINDS",
+    "DEFAULT_TOOLS",
     "FAN_OUT_KINDS",
     "ApproveOption",
     "ApprovePayload",
@@ -51,6 +52,7 @@ __all__ = [
     "NodeOutcome",
     "NodeSpec",
     "NodeStatus",
+    "PermissionMode",
     "Requirement",
     "ResultRecord",
     "RetryGrant",
@@ -85,6 +87,13 @@ CODE_KINDS = frozenset({Kind.GATE, Kind.REDUCE, Kind.WAIT, Kind.STAGE, Kind.APPL
 
 FAN_OUT_KINDS = frozenset({Kind.MAP, Kind.BATCH})
 """Fan-out and fold performed by the coordinator itself, which carry NO executor (design 2.1)."""
+
+DEFAULT_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
+"""The tool set a node's calls are auto-approved from when nothing names another.
+
+The shipped value an operator sees lives in ``[kernel] tools`` and is read from the packaged
+TOML, never from here; this constant is what a run that names no set gets - an executor built
+directly with no override, and a ``settings`` block written before ``tools`` existed."""
 
 
 class NodeStatus(StrEnum):
@@ -185,6 +194,34 @@ class CredentialVerdict(StrEnum):
     RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
     INDETERMINATE = "indeterminate"
+
+
+class PermissionMode(StrEnum):
+    """The mode a dispatched node's tool calls are decided under (``[kernel] permission_mode``).
+
+    Two members, not the provider CLI's six, because a coordinator dispatches UNATTENDED and
+    only these two decide every call without a person or a model. Each member's value is the
+    string the CLI itself takes.
+
+    Neither member weakens the node's confinement. The CLI consults a ``PreToolUse`` hook's
+    decision before it evaluates permission rules at all, and a hook ``deny`` short-circuits
+    the rest of the pipeline, so the write-set, Bash-command, closed-tool and read-confinement
+    hooks refuse exactly the same calls under either one. What the mode decides is what happens
+    to a call NO hook denied: :attr:`DONT_ASK` refuses one that no allow rule covers,
+    :attr:`BYPASS_PERMISSIONS` runs it.
+
+    The four the CLI also accepts are refused by the config reader by name: ``plan`` executes
+    no tool at all, ``default`` and ``acceptEdits`` fall back to a prompt an unattended session
+    has nobody to answer, and ``auto`` routes the decision to a model classifier - branching on
+    a model's judgement, which is the thing this coordinator exists to avoid.
+
+    Attributes:
+        DONT_ASK: Deny a call no allow rule covers. The shipped default.
+        BYPASS_PERMISSIONS: Auto-approve a call no hook denied, whatever the allow rules say.
+    """
+
+    DONT_ASK = "dontAsk"
+    BYPASS_PERMISSIONS = "bypassPermissions"
 
 
 class SuspendReason(StrEnum):
@@ -514,6 +551,28 @@ class RunSettings(BaseModel):
     deny_tools: tuple[str, ...]
     notify: str = Field(min_length=1)
     credential_file: str
+    tools: tuple[Annotated[str, Field(min_length=1)], ...] = Field(default=DEFAULT_TOOLS, min_length=1)
+    """The tool set every dispatched node's calls are auto-approved from (``[kernel] tools``).
+
+    Not a bound: the SDK's ``allowed_tools`` auto-approves, and measured, nodes ran tools
+    outside it - ``deny_tools`` and the other ``PreToolUse`` hooks are what refuse a call.
+
+    The constraints repeat what the CLI's resolver (``_config_tools``) already refuses, because
+    a hand-edited ``state.json`` skips the CLI entirely: ``min_length=1`` on the tuple refuses
+    the empty set the resolver refuses by name, and the same on each member refuses a blank
+    name, which would reach ``--allowedTools`` as an empty comma-separated field.
+
+    Defaulted, like ``gate_command`` and unlike its unconstrained neighbours, for the
+    ``settings`` blocks written before this field existed: those runs dispatched with
+    :data:`DEFAULT_TOOLS`, because that was the only set an executor had. It is frozen at that
+    and does not track the packaged ``[kernel] tools``, which says what a NEW run gets and
+    cannot change what an old one already ran."""
+
+    permission_mode: PermissionMode = PermissionMode.DONT_ASK
+    """What the CLI did with a node's call that no hook denied (``[kernel] permission_mode``).
+
+    Defaulted to ``DONT_ASK`` for the same reason as ``tools``: every run written before this
+    field existed dispatched under it, because the executor hard-coded it."""
     gate_command: tuple[Annotated[str, Field(min_length=1)], ...] = Field(default=("make", "test"), min_length=1)
     """The argv every ``gate`` node of this run executes (``[kernel] gate_command``).
 

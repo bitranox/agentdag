@@ -24,7 +24,15 @@ from agentdag.adapters.kernel.executor_claude import (
     separated_refusal,
 )
 from agentdag.application.kernel.ports import ProbeFinding
-from agentdag.domain.models import CredentialVerdict, ErrorType, NodeError, NodeOutcome, NodeStatus
+from agentdag.domain.models import (
+    DEFAULT_TOOLS,
+    CredentialVerdict,
+    ErrorType,
+    NodeError,
+    NodeOutcome,
+    NodeStatus,
+    PermissionMode,
+)
 from agentdag.domain.policy import FailureAction
 
 
@@ -262,6 +270,8 @@ def test_the_production_wiring_gives_the_executor_a_probe_that_can_actually_ask(
         max_turns=5,
         deny_bash=(),
         deny_tools=(),
+        tools=DEFAULT_TOOLS,
+        permission_mode=PermissionMode.DONT_ASK,
         gate_command=("make", "test"),
         notifier=NoNotifier(),
     )

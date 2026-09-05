@@ -40,7 +40,16 @@ from agentdag.adapters.kernel.notify_none import NoNotifier
 from agentdag.application.kernel.planner import dispatch_planner
 from agentdag.application.kernel.registry import PlanContext
 from agentdag.composition.kernel import build_op_registry, wire_kernel
-from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, NodeStatus, RunSettings
+from agentdag.domain.models import (
+    DEFAULT_TOOLS,
+    Budget,
+    Isolation,
+    Kind,
+    NodeSpec,
+    NodeStatus,
+    PermissionMode,
+    RunSettings,
+)
 
 if TYPE_CHECKING:
     from agentdag.adapters.kernel.run_store_fs import FsRunDir
@@ -291,6 +300,8 @@ def test_the_wired_registry_describes_the_wired_gate(tmp_path: Path) -> None:
         max_turns=5,
         deny_bash=(),
         deny_tools=(),
+        tools=DEFAULT_TOOLS,
+        permission_mode=PermissionMode.DONT_ASK,
         notifier=NoNotifier(),
         gate_command=("pytest", "-q"),
     )

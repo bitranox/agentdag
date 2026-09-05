@@ -7,6 +7,20 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Added
+- `[kernel] tools` and `[kernel] permission_mode`: the tool surface a run hands its nodes. `tools`
+  is the set passed as the SDK's `allowed_tools`, the six a node needs to read a repo, change it
+  and run something by shipped default; `permission_mode` is what the provider's CLI does with a
+  call no hook denied, `dontAsk` by shipped default. Both are run settings like the denylists -
+  resolved once at `run start`, written into `state.json`, and read back by the background child,
+  a `resume`, an `approve` and a `retry` - so a value given by `--set`, an environment variable or
+  a profile binds the whole run. Neither closes anything: `allowed_tools` auto-approves rather than
+  bounds, and the CLI consults a `PreToolUse` hook's decision before it evaluates permission rules
+  at all, so `deny_bash`, `deny_tools` and the write-set and read-confinement hooks refuse exactly
+  the same calls under either mode. Only the two modes an unattended run can dispatch under are
+  offered: `plan` executes no tool, `default` and `acceptEdits` fall back to a prompt nobody is
+  there to answer, and `auto` hands the decision to a model classifier. `tools = []` is refused by
+  name, unlike an empty denylist, because a node whose calls are auto-approved from nothing can
+  only emit text and costs a full dispatch to find out; a blank value is refused for both keys.
 - `plan-goal --arg workspace=DIR`: a second isolation root. The plan works in an operator-supplied
   directory instead of a worktree the run owns, so the tree it changes outlives the run and sits
   where the operator can see it, while the run directory still holds every node's bookkeeping. A

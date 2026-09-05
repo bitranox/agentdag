@@ -77,6 +77,10 @@ class TestGetConfig:
             "deny_tools": ["WebFetch", "WebSearch", "Task"],
             # The mechanical check every gate node runs; a run carries the one it was started with.
             "gate_command": ["make", "test"],
+            # The set a node's calls are auto-approved from; not a bound - only the deny hooks refuse one.
+            "tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+            # What the CLI does with a call no hook denied: refuse one no allow rule covers.
+            "permission_mode": "dontAsk",
             # The actor label every run records; a constant, never the operating account's name.
             "operator": "operator",
         }

@@ -160,6 +160,50 @@ deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "
 #   on nothing and the tool would read as closed while it is open.
 deny_tools = ["WebFetch", "WebSearch", "Task"]
 
+# Purpose: the tool set every node's calls are AUTO-APPROVED from - the SDK's allowed_tools
+# Type: array of strings, each a bare tool name, at least one
+# Default: the six a node needs to read a repo, change it and run something
+# Environment Variable: AGENTDAG___KERNEL__TOOLS=Read,Edit,Write,Bash,Grep,Glob
+# .env: KERNEL__TOOLS=Read,Edit,Write,Bash,Grep,Glob
+# Note: this does NOT bound the tool surface. `allowed_tools` is an auto-approval list, and
+#   measured, nodes ran tools outside it - so naming a tool here removes a prompt, and leaving
+#   one out closes nothing. `deny_tools` above and the write-set, read-confinement and Bash
+#   hooks are the only things that refuse a call. Widen this to hand nodes the full CLI tool
+#   set; close a tool by naming it in deny_tools, never by omitting it here.
+# Note: the empty rule is the OPPOSITE of deny_tools', on purpose. An explicit empty list
+#   (`tools = []`) is REFUSED by name before any run directory exists: a node whose calls are
+#   auto-approved from nothing can only emit text under the shipped permission_mode, and it
+#   costs a full dispatch to discover. A BLANK value is refused too.
+# Note: bare names only. They are joined with commas into ONE --allowedTools value, so a comma
+#   or a space inside an entry splits it into names that match no tool, and the run reads as
+#   widened while it is not. A per-tool specifier (`Bash(git diff:*)`) is refused for the same
+#   reason: nothing here validates one, so it would be passed through unchecked.
+# Note: in a .env file write it COMMA-JOINED, as above. A .env value is never parsed as JSON,
+#   so an array written there would be read as one word; a value starting with [ or { is refused.
+tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
+
+# Purpose: what the CLI does with a node's tool call that NO PreToolUse hook denied
+# Type: string, one of "dontAsk" or "bypassPermissions"
+# Default: "dontAsk" - refuse a call no allow rule covers
+# Environment Variable: AGENTDAG___KERNEL__PERMISSION_MODE=bypassPermissions
+# .env: KERNEL__PERMISSION_MODE=bypassPermissions
+# Note: it does not reach the deny hooks. The CLI consults a PreToolUse hook's decision BEFORE
+#   it evaluates permission rules, and a hook deny short-circuits the rest of the pipeline, so
+#   deny_bash, deny_tools and the write-set and read-confinement hooks refuse exactly the same
+#   calls under either mode (read at source in the bundled CLI 2.1.259 and stated by the SDK's
+#   own docs, which name a PreToolUse hook as the way to gate every call under bypass).
+# Note: "bypassPermissions" auto-approves whatever no hook denied, so a node may call a tool
+#   `tools` never named. The provider's CLI can also DOWNGRADE it to "default" when the bypass
+#   disclaimer was never accepted, and a run that lands in "default" stalls every call on a
+#   prompt nobody is there to answer - so read a node's transcript after changing this, rather
+#   than assuming the mode took.
+# Note: the CLI's other four modes are refused by name before any run directory exists. `plan`
+#   executes no tool at all; `default` and `acceptEdits` fall back to a prompt an unattended run
+#   has nobody to answer; `auto` hands the decision to a model classifier, which is the one
+#   thing this coordinator exists not to branch on. A blank is refused too - which mode a run
+#   dispatched under is recorded on the run, so it must be a value someone chose.
+permission_mode = "dontAsk"
+
 # Purpose: the argv every gate node of a run executes - the mechanical check an agent
 #   cannot satisfy by asserting it did the work
 # Type: array of strings (the program, then its arguments)

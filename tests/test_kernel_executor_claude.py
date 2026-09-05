@@ -28,6 +28,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, HookMatcher, 
 # review, exactly because they are tested this way.
 from agentdag.adapters.kernel import executor_claude as executor_claude_module
 from agentdag.adapters.kernel.executor_claude import (
+    DEFAULT_TOOLS,
     HANDOVER_GRACE_TURNS,
     ClaudeExecutor,
     CredentialCopy,
@@ -48,7 +49,7 @@ from agentdag.adapters.kernel.hooks_claude import (
 from agentdag.application.kernel.ports import ExecutorRequest
 from agentdag.domain.handover import HANDOVER_FILENAME
 from agentdag.domain.kernel_errors import KernelError
-from agentdag.domain.models import NodeStatus
+from agentdag.domain.models import NodeStatus, PermissionMode
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -2095,3 +2096,72 @@ def test_options_for_installs_the_write_hook_with_the_request_s_extra_roots(tmp_
     assert fire(hook, "Write", {"file_path": str(workspace / "src" / "mod.py")}) is None
     assert fire(hook, "Edit", {"file_path": str(request.node_dir / "notes.md")}) is None
     assert fire(hook, "Write", {"file_path": str(tmp_path / "elsewhere.py")}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_options_for_passes_the_executor_s_tool_set_and_permission_mode(tmp_path: Path) -> None:
+    """The two knobs of the tool surface reach ``ClaudeAgentOptions`` verbatim.
+
+    ``allowed_tools`` is an auto-approval list rather than a bound, so this pins WIRING
+    only: that the run's configured set and mode are what the SDK is asked for, not that
+    either one closes anything.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(
+        OAuthTokenFile(keyfile),
+        deny_bash=(),
+        tools=("Read", "Task"),
+        permission_mode=PermissionMode.BYPASS_PERMISSIONS,
+    )
+
+    options = executor._options_for(_request(tmp_path), is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+
+    assert options.allowed_tools == ["Read", "Task"]
+    assert options.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.os_agnostic
+def test_an_executor_built_without_a_tool_surface_dispatches_the_shipped_one(tmp_path: Path) -> None:
+    """The defaults are the six tools under ``dontAsk``, whose fallback for an unlisted tool is deny."""
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+
+    options = executor._options_for(_request(tmp_path), is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+
+    assert options.allowed_tools == list(DEFAULT_TOOLS)
+    assert options.permission_mode == "dontAsk"
+
+
+@pytest.mark.os_agnostic
+def test_the_deny_hooks_are_registered_unchanged_under_the_widening_permission_mode(tmp_path: Path) -> None:
+    """The premise the mode knob rests on: widening the mode does not remove a single deny hook.
+
+    ``bypassPermissions`` auto-approves what the permission rules would have asked about, and
+    the CLI consults a PreToolUse hook's decision BEFORE that evaluation, so the write-set,
+    Bash and closed-tool hooks still refuse. Asserted on what each hook DOES, not on its
+    presence: a matcher that fired on nothing would look identical to one that is installed.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(
+        OAuthTokenFile(keyfile),
+        deny_bash=("git push",),
+        deny_tools=("WebFetch",),
+        tools=("Read", "Write", "Bash", "WebFetch"),
+        permission_mode=PermissionMode.BYPASS_PERMISSIONS,
+    )
+
+    request = _request(tmp_path, write_set=("wt/r/**",))
+    options = executor._options_for(request, is_stopping=lambda: False)  # pyright: ignore[reportPrivateUsage]
+
+    matchers = _pretooluse(options)
+    write_hook = _only_hook(matchers, "Write|Edit|MultiEdit|NotebookEdit")
+    # A granted write must still be ALLOWED, or the three denies below would be satisfied by a
+    # hook that refuses everything - which cannot tell a live boundary from a broken one.
+    assert fire(write_hook, "Write", {"file_path": str(request.cwd / "f.py")}) is None
+    assert fire(write_hook, "Write", {"file_path": str(tmp_path / "elsewhere" / "x.txt")}) == "deny"
+    assert fire(_only_hook(matchers, "Bash"), "Bash", {"command": "git push origin main"}) == "deny"
+    assert fire(_only_hook(matchers, "Bash"), "Bash", {"command": "pytest -q"}) is None
+    assert fire(_only_hook(matchers, "WebFetch"), "WebFetch", {"url": "https://example.invalid"}) == "deny"
