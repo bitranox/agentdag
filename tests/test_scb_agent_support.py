@@ -310,8 +310,17 @@ def test_parsed_record_list_returns_none_for_a_non_array_line(support: ModuleTyp
     assert support.parsed_record_list(json.dumps({"cost_usd": 1.0})) is None
 
 
-def test_parsed_record_list_returns_none_for_a_non_json_line(support: ModuleType) -> None:
+def test_parsed_record_list_returns_none_for_a_line_with_no_leading_bracket(support: ModuleType) -> None:
+    """Fails the ``startswith("[")`` guard, so ``json.loads`` is never called."""
     assert support.parsed_record_list("credential: keyfile") is None
+
+
+def test_parsed_record_list_returns_none_for_malformed_json_after_the_bracket_guard(
+    support: ModuleType,
+) -> None:
+    """Passes the ``startswith("[")`` guard and reaches ``json.loads``, which raises
+    ``json.JSONDecodeError`` - this is the only test that exercises that ``except`` branch."""
+    assert support.parsed_record_list("[not valid json") is None
 
 
 def test_parsed_record_list_drops_array_entries_that_are_not_objects(support: ModuleType) -> None:
