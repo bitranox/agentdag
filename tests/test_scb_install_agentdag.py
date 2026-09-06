@@ -240,13 +240,31 @@ def test_install_compiles_the_shipped_agent_template(tmp_path: Path) -> None:
     ast.parse((harness / PACKAGE_RELATIVE / "agent.py").read_text(encoding="utf-8"))
 
 
-def test_install_refuses_a_template_that_does_not_compile_and_writes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("broken", ["agent.py.tmpl", "support.py.tmpl"])
+def test_install_refuses_a_template_that_does_not_compile_and_writes_nothing(tmp_path: Path, broken: str) -> None:
+    """Every rendered module is gated, not only the one named agent.
+
+    The body ships as data, so this compile is the whole of the checking either template
+    gets in this repo.
+    """
     harness = make_harness(tmp_path)
     before = tree_of(harness)
-    source = broken_source(tmp_path / "broken")
-    with pytest.raises(InstallError, match=r"agent\.py does not compile"):
+    source = broken_source(tmp_path / "broken", broken=broken)
+    expected = re.escape(f"{broken.removesuffix('.tmpl')} does not compile")
+    with pytest.raises(InstallError, match=expected):
         install(harness=harness, agentdag_version=SHA, source=source)
     assert tree_of(harness) == before
+
+
+def test_install_writes_the_support_module_wired_to_the_agent(tmp_path: Path) -> None:
+    """The agent's pure half is a separate module, so a half-installed package is a real risk."""
+    harness = make_harness(tmp_path)
+    install(harness=harness, agentdag_version=SHA)
+    package = harness / PACKAGE_RELATIVE
+    assert (package / "support.py").is_file()
+    agent = ast.parse((package / "agent.py").read_text(encoding="utf-8"))
+    relative_imports = {node.module for node in agent.body if isinstance(node, ast.ImportFrom) and node.level == 1}
+    assert "support" in relative_imports, "the agent no longer reads its own pure half"
 
 
 def test_install_writes_the_arm_config_with_the_requested_version(tmp_path: Path) -> None:
@@ -301,12 +319,14 @@ def test_install_refuses_a_source_holding_no_python_template(tmp_path: Path) -> 
         install(harness=harness, agentdag_version=SHA, source=source)
 
 
-def broken_source(root: Path) -> Path:
-    """A source package whose agent template is not valid Python."""
+def broken_source(root: Path, *, broken: str = "agent.py.tmpl") -> Path:
+    """A source package with one template that is not valid Python."""
     package = root / "agentdag_scb_agent"
     package.mkdir(parents=True)
-    (package / "agent.py.tmpl").write_text("def broken(:\n", encoding="utf-8")
+    (package / "agent.py.tmpl").write_text("from .support import launch_command\n", encoding="utf-8")
+    (package / "support.py.tmpl").write_text("def launch_command() -> None:\n    return None\n", encoding="utf-8")
     (package / "__init__.py.tmpl").write_text("from .agent import AgentdagAgent\n", encoding="utf-8")
+    (package / broken).write_text("def broken(:\n", encoding="utf-8")
     (package / "docker.j2").write_text("FROM scratch\n", encoding="utf-8")
     (root / "agentdag.yaml").write_text(
         textwrap.dedent(

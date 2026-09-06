@@ -30,8 +30,12 @@ RUN find "$UV_TOOL_DIR/agentdag" -path '*/claude_agent_sdk/_bundled/claude' -del
     && test -z "$(find "$UV_TOOL_DIR/agentdag" -path '*/claude_agent_sdk/_bundled/claude' -print -quit)"
 
 # Fail the BUILD, not the arm, when any of the three promises above does not hold.
-# setsid is what puts the coordinator and its nodes in one killable process group.
-RUN command -v setsid \
+# setsid is what puts the coordinator and its nodes in one killable process group, and
+# --wait is what makes the launch block for that group instead of detaching from it. A
+# setsid without --wait (busybox provides one) would return an empty stdout on every
+# checkpoint, which reads as a run that printed no terminal line, so it is asserted rather
+# than assumed. Running it is the assertion: it exits non-zero if either half is missing.
+RUN setsid --wait true \
     && agentdag --version \
     && claude --version | grep -qF '{{ cli_version }}'
 

@@ -11,6 +11,10 @@ image pins and every node's own transcript records. What differs is what runs in
 container - one ``agentdag run start plan-goal`` per checkpoint rather than one
 ``claude --print``.
 
+This module holds what needs the harness's own types. Everything decided by its arguments
+alone lives in ``support.py`` beside it, which the agentdag repo executes and tests directly;
+this module cannot be imported there at all, so anything left here is covered by reading.
+
 Two things are deliberately NOT mirrored:
 
 * The ``~/.claude`` mount. Coordinator nodes are dispatched with ``setting_sources=[]`` and a
@@ -26,7 +30,6 @@ Two things are deliberately NOT mirrored:
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import shutil
 import tempfile
@@ -55,6 +58,16 @@ from slop_code.execution import StreamingRuntime
 from slop_code.execution.runtime import RuntimeResult
 from slop_code.logging import get_logger
 
+from .support import DONE_OUTCOME
+from .support import PGID_FILE_NAME
+from .support import SUSPENDED_PREFIX
+from .support import LaunchSpec
+from .support import count_steps
+from .support import launch_command
+from .support import skip_node_homes
+from .support import spend_of
+from .support import terminal_line
+
 log = get_logger(__name__)
 
 OAUTH_CREDENTIAL_KEY = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -77,143 +90,46 @@ overlay's size; on a bind mount it survives, and ``save_artifacts`` can harvest 
 KEYFILE = f"{HOME_PATH}/.agentdag/oauth-token"
 """Where the bootstrap command writes the OAuth token for the coordinator to read."""
 
-PGID_FILE = f"{RUNS_DIR}/.launch.pgid"
+POLICY_FILE = f"{HOME_PATH}/agentdag-policy.yaml"
+"""Where an arm-supplied tier policy is mounted read-only, when the config names one.
+
+A sibling of the run mount rather than a file inside it: the run store is harvested into the
+checkpoint's artifacts, and a policy is the arm's configuration, not a run's own record."""
+
+PGID_FILE = f"{RUNS_DIR}/{PGID_FILE_NAME}"
 """Where the launcher records its own process-group id, for the wall-clock kill to aim at."""
-
-LAUNCH_SCRIPT = f"{RUNS_DIR}/.launch.sh"
-"""The exact command a checkpoint launched, on disk, both to dodge a layer of shell quoting
-and because it is the record of what ran."""
-
-HEREDOC_MARKER = "AGENTDAG_LAUNCH_EOF"
-"""Delimiter of the heredoc carrying the launcher. Refused if it occurs in the body."""
-
-RUN_OUTCOME = re.compile(r"^run (?P<run_id>[^\s:]+) (?P<outcome>.+)$")
-"""The coordinator's own terminal line under ``--foreground``: ``run <id> done``,
-``run <id> suspended at <node>``, or ``run <id> <status>``. The run id is what every later
-reading is keyed on, so it is read from the run's own output rather than guessed from the
-newest directory."""
-
-SUSPENDED_PREFIX = "suspended at "
-DONE_OUTCOME = "done"
-
-
-def setting_argument(value: JsonValue) -> str:
-    """Render one agentdag ``--set`` value.
-
-    A string is passed through, because agentdag coerces a ``--set`` value with a JSON
-    parse and falls back to the raw string; anything else is written as JSON, which is how
-    a list reaches it at all (``kernel.deny_tools=[]`` is an explicit empty list and is
-    honoured, while a blank value is refused by name).
-
-    Args:
-        value: The value as the arm's config states it.
-
-    Returns:
-        The text to place after ``=`` in a ``--set SECTION.KEY=VALUE`` argument.
-    """
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, separators=(",", ":"))
 
 
 def usage_from_records(records: list[dict[str, tp.Any]]) -> tuple[float, TokenUsage]:
     """Total a coordinator run's cost and tokens from its own result records.
 
-    ``tokens.in`` is agentdag's input TOTAL - uncached input plus cache creation plus cache
-    read - while the harness reports those three separately, so the uncached part is what is
-    left after the two cache components are taken out. ``charged_tokens`` is deliberately not
-    read: it excludes cache reads, and adding it to a cost that includes them would be two
-    different units in one row.
+    A run whose records report no cost at all is refused rather than costed at zero. Some
+    records legitimately carry none - a gate node runs pytest and spends nothing - but a run
+    always dispatches at least its planner, so none at all means the cost was not reported
+    rather than not incurred, and this arm exists to be counted against a control.
 
     Args:
         records: What ``agentdag run records <id> --json`` printed.
 
     Returns:
         The run's total cost in dollars and its token usage in the harness's own shape.
+
+    Raises:
+        AgentError: Not one record reported a cost.
     """
-    cost = 0.0
-    tokens = TokenUsage()
-    for record in records:
-        reported = record.get("cost_usd")
-        if reported is not None:
-            cost += float(reported)
-        block = record.get("tokens")
-        if isinstance(block, dict):
-            tokens += _tokens_of(tp.cast("dict[str, tp.Any]", block))
-    return cost, tokens
-
-
-def _tokens_of(block: dict[str, tp.Any]) -> TokenUsage:
-    """Convert one record's ``tokens`` block into the harness's ``TokenUsage``."""
-    cache_read = int(block.get("cache_read") or 0)
-    cache_write = int(block.get("cache_write") or 0)
-    total_input = int(block.get("in") or 0)
-    return TokenUsage(
-        input=max(total_input - cache_read - cache_write, 0),
-        output=int(block.get("out") or 0),
-        cache_read=cache_read,
-        cache_write=cache_write,
-        reasoning=int(block.get("reasoning") or 0),
+    spend = spend_of(records)
+    if spend.costed_records == 0:
+        raise AgentError(
+            f"none of this run's {len(records)} result records reported a cost; "
+            "recording the checkpoint at zero would corrupt the arm's own measurement"
+        )
+    return spend.cost_usd, TokenUsage(
+        input=spend.tokens.input,
+        output=spend.tokens.output,
+        cache_read=spend.tokens.cache_read,
+        cache_write=spend.tokens.cache_write,
+        reasoning=spend.tokens.reasoning,
     )
-
-
-def count_steps(run_dir: Path) -> int:
-    """Count distinct assistant messages across every node transcript of one run.
-
-    This is the control's own step rule - distinct assistant ``message_id`` - applied across
-    the nodes a coordinator run dispatched instead of across one CLI session, so the two arms'
-    step counts mean the same thing.
-
-    Args:
-        run_dir: A coordinator run's directory on the host side of the mount.
-
-    Returns:
-        How many distinct assistant messages the run's nodes produced.
-    """
-    seen: set[str] = set()
-    for transcript in sorted(run_dir.glob("nodes/*/*/transcript.jsonl")):
-        for line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
-            _collect_message_id(line, seen)
-    return len(seen)
-
-
-def _collect_message_id(line: str, seen: set[str]) -> None:
-    """Add one transcript line's assistant message id to ``seen``, ignoring anything else."""
-    stripped = line.strip()
-    if not stripped:
-        return
-    try:
-        record = json.loads(stripped)
-    except json.JSONDecodeError:
-        return
-    if not isinstance(record, dict) or record.get("type") != "AssistantMessage":
-        return
-    message_id = record.get("message_id")
-    if isinstance(message_id, str) and message_id:
-        seen.add(message_id)
-
-
-def skip_node_homes(root: Path) -> tp.Callable[[str, list[str]], set[str]]:
-    """Build a ``copytree`` filter dropping every node's home directory.
-
-    A node home is the config directory its Claude CLI child ran with. It is bookkeeping
-    rather than evidence, it is the one place under a run directory a credential can land,
-    and it is by far the largest thing there.
-
-    Args:
-        root: The run directory being copied, so the depth test is relative to it.
-
-    Returns:
-        An ``ignore`` callable for :func:`shutil.copytree`.
-    """
-
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        relative = Path(directory).relative_to(root).parts
-        if len(relative) == 3 and relative[0] == "nodes":
-            return {name for name in names if name == "home"}
-        return set()
-
-    return ignore
 
 
 class AgentdagConfig(AgentConfigBase):
@@ -234,6 +150,11 @@ class AgentdagConfig(AgentConfigBase):
     timeout: int | None = Field(
         default=None,
         description="Wall-clock ceiling in seconds for one checkpoint's coordinator run.",
+    )
+    policy: Path | None = Field(
+        default=None,
+        description="A tier policy YAML on the host, mounted in and passed as --policy; "
+        "unset runs agentdag's shipped tier table.",
     )
     settings: dict[str, JsonValue] = Field(
         default_factory=dict,
@@ -266,6 +187,7 @@ class AgentdagAgent(Agent):
         credential: ProviderCredential,
         settings: dict[str, JsonValue],
         timeout: int | None,
+        policy: Path | None,
     ) -> None:
         super().__init__(
             agent_name="agentdag",
@@ -277,6 +199,7 @@ class AgentdagAgent(Agent):
         self.credential = credential
         self.settings = settings
         self.timeout = timeout
+        self.policy = policy
         self._image = image
         self._session: Session | None = None
         self._environment: EnvironmentSpec | None = None
@@ -312,7 +235,8 @@ class AgentdagAgent(Agent):
             )
         if thinking_preset is not None or thinking_max_tokens is not None:
             # Stated rather than silently dropped: agentdag resolves a node's effort from its
-            # own tier policy, so the run config's thinking preset reaches nothing here.
+            # own tier policy, so the run config's thinking preset reaches nothing here. The
+            # policy field is the lever for that axis.
             log.info(
                 "agent.agentdag.thinking_not_forwarded",
                 thinking=thinking_preset,
@@ -327,6 +251,7 @@ class AgentdagAgent(Agent):
             credential=credential,
             settings=dict(config.settings),
             timeout=config.timeout,
+            policy=_resolved_policy(config.policy),
         )
 
     @property
@@ -366,9 +291,10 @@ class AgentdagAgent(Agent):
         self._environment = session.spec
         self._workspace = session.working_dir
         self._tmp_dir = tempfile.TemporaryDirectory()
-        mounts: dict[str, dict[str, str] | str] = {}
-        if isinstance(session.spec, DockerEnvironmentSpec):
-            mounts = self._prepare_mounts()
+        under_docker = isinstance(session.spec, DockerEnvironmentSpec)
+        if self.policy is not None and not under_docker:
+            raise AgentError("the arm's tier policy is delivered by a bind mount, which needs a Docker environment")
+        mounts: dict[str, dict[str, str] | str] = self._prepare_mounts() if under_docker else {}
         self._runtime = session.spawn(
             mounts=mounts,
             env_vars={"HOME": HOME_PATH},
@@ -383,13 +309,16 @@ class AgentdagAgent(Agent):
             environment_type=self.spec.type,
             image=self._image,
             runs_dir=RUNS_DIR,
+            policy=str(self.policy) if self.policy is not None else None,
         )
 
     def _prepare_mounts(self) -> dict[str, dict[str, str] | str]:
-        """Bind a host temporary directory in as the run store.
+        """Bind a host temporary directory in as the run store, and the tier policy beside it.
 
-        World-writable for the same reason the control's settings mount is: the container
-        writes as uid 1000 whatever uid the harness itself runs as.
+        The run store is world-writable for the same reason the control's settings mount is:
+        the container writes as uid 1000 whatever uid the harness itself runs as. The policy
+        goes in read-only, because nothing in the run may rewrite what the arm was configured
+        with.
         """
         if self._tmp_dir is None:
             raise AgentError("AgentdagAgent has not been set up with a tmp dir")
@@ -397,7 +326,10 @@ class AgentdagAgent(Agent):
         runs_host.mkdir(parents=True, exist_ok=True)
         runs_host.chmod(0o777)
         self._runs_host = runs_host
-        return {str(runs_host): {"bind": RUNS_DIR, "mode": "rw"}}
+        mounts: dict[str, dict[str, str] | str] = {str(runs_host): {"bind": RUNS_DIR, "mode": "rw"}}
+        if self.policy is not None:
+            mounts[str(self.policy)] = {"bind": POLICY_FILE, "mode": "ro"}
+        return mounts
 
     def _write_keyfile(self) -> None:
         """Write the OAuth token where the coordinator reads it, taking it from the environment.
@@ -432,11 +364,12 @@ class AgentdagAgent(Agent):
         """
         self.suspended_at = None
         self.log.info("agent.agentdag.start", workspace=str(self.workspace), prompt_chars=len(task))
+        before = self._run_directories()
         result = self._stream(self._launch_command(task), env={}, timeout=self._timeout_s())
         self.final_result = result
         if result.timed_out:
             self._kill_launched_group()
-            raise AgentError(f"agentdag run timed out after {self.timeout}s")
+            raise AgentError(f"agentdag run timed out after {self.timeout}s; {self._harvest_abandoned(before)}")
         run_id, outcome = self._terminal_line(result)
         self._run_ids.append(run_id)
         if outcome.startswith(SUSPENDED_PREFIX):
@@ -456,54 +389,53 @@ class AgentdagAgent(Agent):
         return float(self.timeout) if self.timeout is not None else None
 
     def _launch_command(self, task: str) -> str:
-        """Build the shell command that launches one coordinator run in its own process group.
-
-        ``setsid`` is what makes the kill on timeout possible: killing the host-side exec
-        client only orphans what is inside the container, so the wall-clock ceiling has to be
-        held by signalling a process group, and the group has to exist and be known. The
-        launcher goes to a file rather than into a nested ``sh -c`` so that the coordinator's
-        own quoted arguments do not have to survive a second round of shell quoting - and the
-        file is also the record of exactly what this checkpoint ran.
-        """
-        launched = " ".join(shlex.quote(part) for part in self._launch_argv(task))
-        body = f"echo $$ > {shlex.quote(PGID_FILE)}\nexec {launched}\n"
-        if HEREDOC_MARKER in body:
-            raise AgentError(f"refusing to launch: the prompt contains {HEREDOC_MARKER}")
-        return (
-            "set -eu\n"
-            f"mkdir -p {shlex.quote(RUNS_DIR)}\n"
-            f"cat > {shlex.quote(LAUNCH_SCRIPT)} <<'{HEREDOC_MARKER}'\n"
-            f"{body}"
-            f"{HEREDOC_MARKER}\n"
-            f"exec setsid /bin/sh {shlex.quote(LAUNCH_SCRIPT)}\n"
+        """The shell command that launches this checkpoint's coordinator run."""
+        spec = LaunchSpec(
+            goal=task,
+            workflow=WORKFLOW,
+            workspace=CONTAINER_WORKSPACE,
+            runs_dir=RUNS_DIR,
+            keyfile=KEYFILE,
+            settings=self.settings,
+            policy=POLICY_FILE if self.policy is not None else None,
         )
-
-    def _launch_argv(self, task: str) -> list[str]:
-        """The coordinator's own argv for this checkpoint.
-
-        Every agentdag setting comes from the arm's config file, so the two arms' configs can
-        be read side by side; the two this agent adds are the ones only it knows - where it
-        put the keyfile, and where it mounted the run store.
-        """
-        argv = ["agentdag"]
-        for key, value in self.settings.items():
-            argv.extend(["--set", f"{key}={setting_argument(value)}"])
-        argv.extend(["--set", f"credentials.claude_oauth_token_file={KEYFILE}"])
-        argv.extend(["run", "start", WORKFLOW])
-        argv.extend(["--arg", f"goal={task}"])
-        argv.extend(["--arg", f"workspace={CONTAINER_WORKSPACE}"])
-        argv.extend(["--runs", RUNS_DIR])
-        argv.append("--foreground")
-        return argv
+        try:
+            return launch_command(spec)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
 
     def _terminal_line(self, result: RuntimeResult) -> tuple[str, str]:
-        """Read the run id and terminal status off the coordinator's own last matching line."""
-        for line in reversed((result.stdout or "").splitlines()):
-            matched = RUN_OUTCOME.match(line.strip())
-            if matched is not None:
-                return matched.group("run_id"), matched.group("outcome")
+        """The run id and terminal status, or a refusal naming what came back instead."""
+        read = terminal_line(result.stdout or "")
+        if read is not None:
+            return read
         tail = "\n".join((result.stderr or "").splitlines()[-20:])
         raise AgentError(f"agentdag printed no terminal line (exit {result.exit_code}); stderr tail:\n{tail}")
+
+    def _run_directories(self) -> set[str]:
+        """The run directories in the store now, so a stop can name the one a launch created."""
+        if self._runs_host is None or not self._runs_host.is_dir():
+            return set()
+        return {entry.name for entry in self._runs_host.iterdir() if entry.is_dir()}
+
+    def _harvest_abandoned(self, before: set[str]) -> str:
+        """Harvest a killed run's spend, and report what was recovered.
+
+        A run stopped at the wall clock never printed its terminal line, so its id cannot come
+        from stdout; it is the single directory the launch added to the run store, which is a
+        set difference over a directory this agent owns rather than a guess at the newest one.
+        Real spend recorded as zero would corrupt exactly the measurement this arm exists for.
+        """
+        appeared = sorted(self._run_directories() - before)
+        if len(appeared) != 1:
+            return f"{len(appeared)} run directories appeared, so this checkpoint's spend is unaccounted"
+        run_id = appeared[0]
+        self._run_ids.append(run_id)
+        try:
+            self._harvest(run_id)
+        except AgentError as exc:
+            return f"run {run_id} was left behind and its spend could not be read: {exc}"
+        return f"run {run_id}'s spend was harvested before this stop"
 
     def _kill_launched_group(self) -> None:
         """Signal the launched process group, so a timeout stops the nodes and not just the client."""
@@ -518,7 +450,7 @@ class AgentdagAgent(Agent):
         """The launcher's recorded process-group id, or ``None`` when it never wrote one."""
         if self._runs_host is None:
             return None
-        recorded = self._runs_host / Path(PGID_FILE).name
+        recorded = self._runs_host / PGID_FILE_NAME
         if not recorded.is_file():
             return None
         text = recorded.read_text(encoding="utf-8", errors="replace").strip()
@@ -599,6 +531,30 @@ class AgentdagAgent(Agent):
             self._tmp_dir = None
         self._runs_host = None
         self.log.debug("agent.agentdag.cleanup")
+
+
+def _resolved_policy(policy: Path | None) -> Path | None:
+    """Resolve the arm's tier policy, refusing one that is not a readable file.
+
+    Refused here rather than at launch: this runs before an image is built, so a mistyped
+    path costs nothing, while the same mistake reaching the mount would fail every checkpoint
+    of the arm one container at a time.
+
+    Args:
+        policy: What the arm config named, or ``None`` for the shipped tier table.
+
+    Returns:
+        The absolute path to mount, or ``None``.
+
+    Raises:
+        AgentError: The named path is not a file.
+    """
+    if policy is None:
+        return None
+    resolved = policy.expanduser().resolve()
+    if not resolved.is_file():
+        raise AgentError(f"the arm config names a tier policy that is not a readable file: {resolved}")
+    return resolved
 
 
 def _parsed_record_list(line: str) -> list[dict[str, tp.Any]] | None:

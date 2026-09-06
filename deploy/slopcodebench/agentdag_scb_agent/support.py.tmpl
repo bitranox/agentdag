@@ -1,0 +1,350 @@
+"""Pure helpers for the agentdag SlopCodeBench agent type.
+
+Installed into a harness clone by ``scripts/scb_install_agentdag.py`` in the agentdag repo.
+Edit the template there; this copy is overwritten by the next install.
+
+Everything here is decided by its arguments alone and imports nothing from ``slop_code``.
+That is what the split is for: the agent module beside this one cannot be imported in the
+agentdag repo, because importing it would drag the harness package into pyright's walk and
+into pytest's collection, while this module can be executed and exercised directly - which
+is what ``tests/test_scb_agent_support.py`` does. So the launch command text, the token and
+cost arithmetic, the terminal-line reader and the artifact filter are covered by tests
+rather than by reading.
+
+The rule for what belongs here: anything that needs one of the harness's own types stays in
+``agent.py``; everything else lives here.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from pydantic import JsonValue
+
+__all__ = [
+    "DONE_OUTCOME",
+    "HEREDOC_MARKER",
+    "LAUNCH_SCRIPT_NAME",
+    "PGID_FILE_NAME",
+    "RUN_OUTCOME",
+    "SUSPENDED_PREFIX",
+    "LaunchSpec",
+    "Spend",
+    "Tokens",
+    "count_steps",
+    "launch_argv",
+    "launch_command",
+    "setting_argument",
+    "skip_node_homes",
+    "spend_of",
+    "terminal_line",
+    "tokens_of",
+]
+
+RUN_OUTCOME = re.compile(r"^run (?P<run_id>[^\s:]+) (?P<outcome>.+)$")
+"""The coordinator's own terminal line under ``--foreground``: ``run <id> done``,
+``run <id> suspended at <node>``, or ``run <id> <status>``. The run id is what every later
+reading is keyed on, so it is read from the run's own output rather than guessed from the
+newest directory. The ``[^\\s:]+`` is what keeps a ``run <id>: <advisory>`` line out."""
+
+SUSPENDED_PREFIX = "suspended at "
+DONE_OUTCOME = "done"
+
+HEREDOC_MARKER = "AGENTDAG_LAUNCH_EOF"
+"""Delimiter of the heredoc carrying the launcher. Refused if it occurs in the body."""
+
+PGID_FILE_NAME = ".launch.pgid"
+"""Basename, inside the run store, of the file the launcher records its process-group id in."""
+
+LAUNCH_SCRIPT_NAME = ".launch.sh"
+"""Basename, inside the run store, of the launcher itself: both a way to dodge a layer of
+shell quoting and the record of exactly what a checkpoint ran."""
+
+_ASSISTANT_RECORD = "AssistantMessage"
+_NODE_ATTEMPT_DEPTH = 3
+_NODES_DIRECTORY = "nodes"
+_NODE_HOME = "home"
+
+
+@dataclass(frozen=True, slots=True)
+class Tokens:
+    """One dispatch's token counts in the harness's own five buckets."""
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    reasoning: int = 0
+
+    def __add__(self, other: Tokens) -> Tokens:
+        """Total two token counts bucket by bucket."""
+        return Tokens(
+            input=self.input + other.input,
+            output=self.output + other.output,
+            cache_read=self.cache_read + other.cache_read,
+            cache_write=self.cache_write + other.cache_write,
+            reasoning=self.reasoning + other.reasoning,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Spend:
+    """What a coordinator run's result records add up to.
+
+    ``costed_records`` is carried beside the cost because a zero from records that reported
+    no cost and a zero from a run that spent nothing are the same number and very different
+    facts. The caller refuses the first rather than reporting a free checkpoint.
+    """
+
+    cost_usd: float = 0.0
+    costed_records: int = 0
+    tokens: Tokens = Tokens()
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchSpec:
+    """Everything one coordinator launch is decided by.
+
+    Bundled rather than passed one by one so the argv and the shell text around it are built
+    from the same values, and so a test can pin both against a single input.
+    """
+
+    goal: str
+    workflow: str
+    workspace: str
+    runs_dir: str
+    keyfile: str
+    settings: dict[str, JsonValue] = field(default_factory=dict)
+    policy: str | None = None
+    """Where the arm's tier policy is readable inside the container, or ``None`` to let the
+    run take agentdag's shipped tier table."""
+
+
+def setting_argument(value: JsonValue) -> str:
+    """Render one agentdag ``--set`` value.
+
+    A string is passed through, because agentdag coerces a ``--set`` value with a JSON parse
+    and falls back to the raw string; anything else is written as JSON, which is how a list
+    reaches it at all (``kernel.deny_tools=[]`` is an explicit empty list and is honoured,
+    while a blank value is refused by name).
+
+    Args:
+        value: The value as the arm's config states it.
+
+    Returns:
+        The text to place after ``=`` in a ``--set SECTION.KEY=VALUE`` argument.
+    """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"))
+
+
+def launch_argv(spec: LaunchSpec) -> list[str]:
+    """Build the coordinator's own argv for one checkpoint.
+
+    Every agentdag setting comes from the arm's config file, so the two arms' configs can be
+    read side by side. The ones added here are those only the agent knows: where it put the
+    keyfile, where it mounted the run store, and where it mounted the tier policy when the
+    arm names one.
+
+    Args:
+        spec: What this launch runs.
+
+    Returns:
+        The argv, ready to be shell-quoted.
+    """
+    argv = ["agentdag"]
+    for key, value in spec.settings.items():
+        argv.extend(["--set", f"{key}={setting_argument(value)}"])
+    argv.extend(["--set", f"credentials.claude_oauth_token_file={spec.keyfile}"])
+    argv.extend(["run", "start", spec.workflow])
+    argv.extend(["--arg", f"goal={spec.goal}"])
+    argv.extend(["--arg", f"workspace={spec.workspace}"])
+    argv.extend(["--runs", spec.runs_dir])
+    if spec.policy is not None:
+        argv.extend(["--policy", spec.policy])
+    argv.append("--foreground")
+    return argv
+
+
+def launch_command(spec: LaunchSpec) -> str:
+    """Build the shell command that launches one coordinator run in its own process group.
+
+    ``setsid`` is what makes the wall-clock ceiling possible: killing the host-side exec
+    client only orphans what is inside the container, so the ceiling has to be held by
+    signalling a process group, and that group has to exist and be known.
+
+    ``--wait`` is load-bearing, not decoration. Under ``docker exec`` the shell running this
+    is already a process-group leader, so ``setsid`` forks; without ``--wait`` the parent
+    returns at once with an empty stdout while the coordinator runs on, detached and
+    unharvested, and the empty stdout is read as "printed no terminal line", which the
+    harness answers by retrying. ``--wait`` blocks for the child and hands back its exit
+    status, and is a no-op in the case where ``setsid`` does not fork.
+
+    The launcher goes to a file rather than into a nested ``sh -c`` so the coordinator's own
+    quoted arguments do not have to survive a second round of shell quoting - and the file is
+    also the record of exactly what this checkpoint ran.
+
+    Args:
+        spec: What this launch runs.
+
+    Returns:
+        The command to hand to one container exec.
+
+    Raises:
+        ValueError: The rendered launcher contains the heredoc delimiter, so the heredoc
+            would end early and the rest would run as the outer shell's own commands.
+    """
+    launched = " ".join(shlex.quote(part) for part in launch_argv(spec))
+    pgid_file = shlex.quote(f"{spec.runs_dir}/{PGID_FILE_NAME}")
+    script = shlex.quote(f"{spec.runs_dir}/{LAUNCH_SCRIPT_NAME}")
+    body = f"echo $$ > {pgid_file}\nexec {launched}\n"
+    if HEREDOC_MARKER in body:
+        raise ValueError(f"refusing to launch: the prompt contains {HEREDOC_MARKER}")
+    return (
+        "set -eu\n"
+        f"mkdir -p {shlex.quote(spec.runs_dir)}\n"
+        f"cat > {script} <<'{HEREDOC_MARKER}'\n"
+        f"{body}"
+        f"{HEREDOC_MARKER}\n"
+        f"exec setsid --wait /bin/sh {script}\n"
+    )
+
+
+def terminal_line(stdout: str) -> tuple[str, str] | None:
+    """Read the run id and terminal status off the coordinator's own last matching line.
+
+    Last rather than first: a run whose state file predates a settings block prints a
+    ``run <id>: ...`` advisory before it starts, and that must not be read as an outcome.
+
+    Args:
+        stdout: Everything the launch printed.
+
+    Returns:
+        The run id and its outcome text, or ``None`` when no terminal line was printed.
+    """
+    for line in reversed(stdout.splitlines()):
+        matched = RUN_OUTCOME.match(line.strip())
+        if matched is not None:
+            return matched.group("run_id"), matched.group("outcome")
+    return None
+
+
+def tokens_of(block: dict[str, Any]) -> Tokens:
+    """Convert one result record's ``tokens`` block into the harness's five buckets.
+
+    ``in`` is agentdag's input TOTAL - uncached input plus cache creation plus cache read -
+    while the harness reports those three separately, so the uncached part is what is left
+    once the two cache components are taken out.
+
+    Args:
+        block: One record's ``tokens`` mapping.
+
+    Returns:
+        The same counts in the harness's shape.
+    """
+    cache_read = _count(block, "cache_read")
+    cache_write = _count(block, "cache_write")
+    return Tokens(
+        input=max(_count(block, "in") - cache_read - cache_write, 0),
+        output=_count(block, "out"),
+        cache_read=cache_read,
+        cache_write=cache_write,
+        reasoning=_count(block, "reasoning"),
+    )
+
+
+def spend_of(records: list[dict[str, Any]]) -> Spend:
+    """Total a coordinator run's cost and tokens from its own result records.
+
+    ``charged_tokens`` is deliberately not read: it excludes cache reads, and adding it to a
+    cost that includes them would be two different units in one row.
+
+    Args:
+        records: What ``agentdag run records <id> --json`` printed.
+
+    Returns:
+        The run's cost, how many records carried one, and its token totals.
+    """
+    cost = 0.0
+    costed = 0
+    tokens = Tokens()
+    for record in records:
+        reported = record.get("cost_usd")
+        if reported is not None:
+            cost += float(reported)
+            costed += 1
+        block = record.get("tokens")
+        if isinstance(block, dict):
+            tokens = tokens + tokens_of(block)
+    return Spend(cost_usd=cost, costed_records=costed, tokens=tokens)
+
+
+def count_steps(run_dir: Path) -> int:
+    """Count distinct assistant messages across every node transcript of one run.
+
+    This is the control's own step rule - distinct assistant ``message_id`` - applied across
+    the nodes a coordinator run dispatched instead of across one CLI session, so the two arms'
+    step counts mean the same thing.
+
+    Args:
+        run_dir: A coordinator run's directory on the host side of the mount.
+
+    Returns:
+        How many distinct assistant messages the run's nodes produced.
+    """
+    seen: set[str] = set()
+    for transcript in sorted(run_dir.glob("nodes/*/*/transcript.jsonl")):
+        for line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+            _collect_message_id(line, seen)
+    return len(seen)
+
+
+def skip_node_homes(root: Path) -> Callable[[str, list[str]], set[str]]:
+    """Build a ``copytree`` filter dropping every node's home directory.
+
+    A node home is the config directory its Claude CLI child ran with. It is bookkeeping
+    rather than evidence, it is the one place under a run directory a credential can land,
+    and it is by far the largest thing there.
+
+    Args:
+        root: The run directory being copied, so the depth test is relative to it.
+
+    Returns:
+        An ``ignore`` callable for :func:`shutil.copytree`.
+    """
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        relative = Path(directory).relative_to(root).parts
+        if len(relative) == _NODE_ATTEMPT_DEPTH and relative[0] == _NODES_DIRECTORY:
+            return {name for name in names if name == _NODE_HOME}
+        return set()
+
+    return ignore
+
+
+def _count(block: dict[str, Any], key: str) -> int:
+    """One ``tokens`` entry as an integer, reading a missing or null entry as zero."""
+    return int(block.get(key) or 0)
+
+
+def _collect_message_id(line: str, seen: set[str]) -> None:
+    """Add one transcript line's assistant message id to ``seen``, ignoring anything else."""
+    stripped = line.strip()
+    if not stripped:
+        return
+    try:
+        record = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(record, dict) or record.get("type") != _ASSISTANT_RECORD:
+        return
+    message_id = record.get("message_id")
+    if isinstance(message_id, str) and message_id:
+        seen.add(message_id)

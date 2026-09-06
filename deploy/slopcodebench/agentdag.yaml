@@ -57,5 +57,16 @@ settings:
 
 # timeout: the wall-clock ceiling for ONE checkpoint's coordinator run, in seconds. Left
 # unset here because the value is a launch decision, not a property of the arm; setting it
-# arms the process-group kill the agent holds the ceiling with.
+# arms the process-group kill the agent holds the ceiling with. A run stopped that way never
+# prints its terminal line, so the agent takes its id from the single run directory the
+# launch added to the run store and harvests that run's cost before it raises - the
+# checkpoint still fails, but its real spend is counted rather than recorded as zero.
 # timeout: 0
+
+# policy: a tier policy YAML on the HOST, mounted read-only into the container and passed to
+# the coordinator as --policy. Unset means the run takes agentdag's own shipped tier table,
+# which is what decides each node's model and reasoning effort. That is the axis the
+# control's `thinking: high` sits on: `thinking` is not forwarded (agentdag resolves effort
+# per node, not per run), so if the pair has to be matched on effort, it is matched here.
+# Which policy the arm runs is a pre-registration decision, so no value is committed.
+# policy: /abs/path/to/tier-policy.yaml
