@@ -1,151 +1,135 @@
-# STALE - read 2026-09-06, work continued
+# Handover, written 2026-09-06 19:10 CEST
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
-where the last session stopped and what it decided.
+where this session stopped and what it decided.
 
 ## The next action
 
-**Start Task 11 of `PLANS/2026-09-04-corrected-pair-plan.md`: the harness agent type under
-`deploy/slopcodebench/`.** Extract the brief with the subagent-driven-development skill's
-`task_brief.py`, read `.bitranox/sdd/progress.md` first (Tasks 8, 9 and 10 are all complete there),
-and re-arm the model gate (`skill_receipt.py start plan-execution`) before dispatching, so no
-dispatch can omit `model`.
+**Start Task 12 of `PLANS/2026-09-04-corrected-pair-plan.md`: the plumbing dry run and
+one-checkpoint parity.** It is the top-ranked open item (rank 05) and it is the CONTROLLER's own
+work, not an implementer's - it drives the harness against a real checkpoint.
 
-This is a lower-ranked item than `OPEN-WORK.md` rank 05's own top line only in the sense that it IS
-rank 05: Task 11 is the next step of the corrected-pair work that rank 05 tracks. Nothing above it
-is live.
+Three checks are recorded on rank 05 rather than resolved, and each one is cheap now and expensive
+later:
 
-**Read the arm-fairness note now in the plan, directly above Task 12** - it is Task 11's business,
-because Task 11 writes the coordinator arm's config, and all three settings there confound the pair
-if they are missed.
+- **Does the harness tally `agent.usage` for a checkpoint whose `run()` raised?** Force a short
+  `timeout` in the arm config and read the recorded cost. The whole timeout-harvest fix rests on
+  this, and nothing in the repo or in any probe exercises that path.
+- **Does `kernel.deny_bash` need `curl --data` opened** for the `dynamic_config_service_api`
+  checkpoint? It is an HTTP service and the shipped default closes that command. One line in the
+  config's `settings` map, no code change.
+- **Read a COORDINATOR node's own transcript** for `data.claude_code_version` and the permission
+  mode, proving both took rather than assuming the config did. The control was checked this way;
+  the coordinator arm has not been.
 
 ## In flight
 
-Nothing. No agent of mine is alive. The last dispatch (a verification of Task 10's second fix round)
-reported before this was written, and its one Critical is filed as `OPEN-WORK.md` rank 62 rather
-than fixed, because the tree was already green and pushed.
+Nothing. No agent of mine is alive; every backstop and monitor was stopped.
 
 ## Committed, or not
 
-Everything is committed and pushed; `origin/main` is at `3df1a00` (or at this handover's commit on
-top of it), CI and CodeQL green on that sha. Verify with `git status --porcelain` and `git status -sb`.
+Everything is committed and pushed. `origin/main` is at `b171fc8`, and CI plus CodeQL are green on
+both `77df509` (the Task 11 work) and `b171fc8` (the staleness marker on the previous handover),
+read through `ci_wait` wrapped in `gate.py`.
 
-**Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72). Its index entry is blob
-`a2a5b9cfcaf0471f877025ecbd35da74bdd78e9b` mode `100644` - a fix agent amended it into a commit by
-accident this session, caught it, and restored it, and that blob and mode were checked against the
-value recorded before the session started. Keep a pathspec on every commit; it has now nearly
-shipped once.
+Task 11 shipped as `c14ebf5` (agent type and installer), `f5050a8` (fix round 1), `101c6be` (fix
+round 2), `4e6f452` (the vacuous-test fix), plus `ed35fe5` (backlog rank 63) and `77df509` (a
+`types-pyyaml` floor bmk raised during the gate run).
 
-Gitignored, so not in git: `EXECUTION-USER-REVIEW.md` (this session's three entries on top),
-`.bitranox/sdd/progress.md` (the ledger), and the per-task briefs, reports and review diffs beside it.
+**Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72), blob
+`a2a5b9cfcaf0471f877025ecbd35da74bdd78e9b` mode `100644`, unchanged through five commits this
+session. Every commit used a pathspec and was checked with `git show --name-only`.
+
+Gitignored, so not in git: `EXECUTION-USER-REVIEW.md`, `.bitranox/sdd/progress.md` (the ledger) and
+the per-task briefs, reports and review diffs beside it. Note that `handover.md` and `OPEN-WORK.md`
+ARE tracked here, whatever the context-watcher's generic warning says.
 
 ## Decided this session, with the reason
 
-- **Task 8's `gate_command` joins `RunSettings` and is tested on the BACKGROUND relaunch path**
-  (own): kernel settings resolve once at `run start` and are read back by every later launch, so an
-  unpersisted value binds only the process that typed it.
-- **The op name stays `gate:make-test`** (own): the brief allowed a rename only if
-  `plan.schema.json` enumerated op names; it enumerates node KINDS, so the condition is false.
-- **`gate_command = []` is refused, `deny_tools = []` is honoured** (own): there is no runnable
-  empty argv, but denying nothing is meaningful. Decided per key, not carried across.
-- **Task 9's brief was WRONG about `FsRunDir.read_text`** (own, after the reviewer verified at
-  source): of the seven `read_text` call sites only the planner's takes an executor-produced ref,
-  and the plan ref is composed from `node_dir.relative_to(run_dir.root)`, so no ref reaching that
-  port can be absolute. Widening it would have made the run-dir port an arbitrary-file reader.
-- **The scan's workspace exclusion goes in `key_facts`, not a new journal line** (own): adding
-  `unwatched_roots` to `scan`'s `output_contract` AND `facts_if_no_work` puts it on the `ResultLine`
-  a fold reads. A new line type is not warranted for one field.
-- **Task 10 exposes only `dontAsk` and `bypassPermissions`** (implementer, ratified): not on the
-  safety axis - PreToolUse deny hooks fire under every mode and a hook deny short-circuits before
-  the mode is evaluated, read at source - but because the other four need a person or a model
-  classifier, which an unattended run has neither of.
-- **The `.env` JSON-string refusal widening beyond Task 8's scope** (own): it changed what
-  `deny_bash` and `deny_tools` accept, so a config shape accepted at `1d043bb` is now refused. The
-  old behaviour failed OPEN on a safety boundary - `KERNEL__DENY_BASH=["git push"]` built a denylist
-  matching that literal, not `git push`.
-- **Task 10's Critical was filed, not fixed** (own): the verification landed after the push, the
-  finding is a documentation contradiction rather than a functional defect, and the user had asked
-  for the handover next.
+- **Task 11's harness-side code ships as `.tmpl` DATA, with the installer as a normal gated module**
+  (USER, from three options): no `.py` here may import the harness's `slop_code`, because pyright is
+  strict with no `include` and walks `deploy/`, and pytest has no `testpaths` while `addopts` carries
+  `--doctest-modules`, so collection imports what it finds. Both halves measured with a probe before
+  the question was put. The rejected options were carving `deploy/` out of both tools, and pinning
+  the harness as a dev dependency.
+- **Build the `--policy` lever rather than document its absence** (own): the design names
+  `--policy <arm tier policy>` and nothing could supply it, since the flag takes a file and has no
+  `kernel.*` key. It is also the only path to the fourth fairness axis nobody had named - the control
+  ran `thinking: high` while agentdag resolves effort from its own tier policy.
+- **The coverage split goes into a second `.tmpl` module, not stubbed `slop_code` in `sys.modules`**
+  (own): stubbing would hand-build a third-party API surface that drifts. My enumeration of what to
+  move was INCOMPLETE and the fixer corrected it, which was right.
+- **The timeout harvest snapshots the run store instead of parsing stdout** (fixer, ratified by the
+  re-review at source): under `--foreground` no run id reaches stdout before the terminal line, so
+  the instruction I gave would have harvested nothing. `FsRunDir.create` makes exactly one directory
+  per run and `--runs` is validated but never created, so the set difference is sound.
+- **The credential-copy fallback is an open question, not a defect** (own, rank 63): a keyfile path
+  naming no file selects the credential copy BY DESIGN and says so; the refusal one function below
+  governs a relaunch whose persisted keyfile has gone. The Task 11 report reads that refusal as
+  covering `run start` and is wrong about it.
+- **One Minor deferred to the final whole-branch review** (own): `usage_from_records` computes
+  `spend_of` twice per checkpoint. Fixing it means touching `agent.py.tmpl` again and reopening a
+  verification cycle for redundant arithmetic.
 
 ## Decided against, and why
 
-- Fixing rank 62 in a fifth round tonight: gate and CI are green, it is prose, and a fifth attempt
-  at 01:20 by a tired controller is how the previous four went wrong.
-- Running Task 10's live verification probe: it is a real dispatch against the operator's
-  subscription and belongs with the controller, not an unattended implementer. Still owed.
-- Letting an implementer run that probe: same reason, decided before Task 10 was dispatched.
+- Fixing rank 62 (the tool-omission contradiction) in this session: it is prose in a green tree, and
+  it belongs with the final whole-branch review where the whole claim family can be enumerated by
+  MEANING in one pass.
+- A fifth review agent for the last fix: it was a test-only change of a shape I specified exactly,
+  and a verifier had already independently confirmed the production branch correct by mutation.
+- Running Task 10's live probe or letting an implementer run it: real spend, controller's job. Now
+  filed as rank 64 so it stops living only in a handover.
 
 ## Open, untouched
 
 One line each; `OPEN-WORK.md` holds the detail.
 
-- Ranks 05 (its Tasks 11-13 remain), 32, 37, 39, 40 as before.
-- Ranks 56, 57, 61 and 62 are NEW this session, all found by the Task 8-10 reviews.
-- 59 and 73 as the previous handover left them; everything from 50 down was otherwise untouched.
+- Ranks 32, 37, 39, 40, 50, 55 through 62, 65, 68, 70, 72, 73, 75, 77, 80, 85, 87 as before.
+- Ranks 63, 64 and 66 are NEW this session: the credential-copy question, Task 10's unrun live
+  probe, and three known gaps in the shipped coordinator arm.
 
 ## Lessons for the next nap
 
-Carried forward un-napped from the outgoing handover (no nap has run since):
+Three were captured to the store already this session (the dispatch-constraint rule, the gate
+walking `deploy/`, and gate.py's verdict stream). These are not:
 
-- When a pre-registration states a bound on an arm, read the harness's retry and continuation path
-  at source before freezing it: SlopCodeBench retries a max-turns error with `--continue` up to
-  `max_retries` (default 2) more times.
-- When a harness retries a process, expect the retry to REPLACE the stream and the cost record, so a
-  retried checkpoint is unmeasurable from the record alone; void it on that ground too.
-- tooling: `backstop.py --done-file` needs a NON-EMPTY file; a `touch`ed sentinel is empty, so the
-  backstop never sees it as done. Write a byte into the sentinel.
-- When a CI cell dies inside a third-party action's own setup before any project step ran, rerun the
-  failed job before reading code.
-- When a fix agent's report lives in a gitignored file, any artifact a committed note cites must be
-  committed or inlined in the same change, or the note is unreproducible.
-
-New this session:
-
-- When a claim lives in PROSE (a docstring, a comment, a config note), it needs the same
-  verification as code: one claim family was shipped wrong in five consecutive rounds of one task,
-  because a mutation battery asks whether an arm can FAIL, never whether a sentence is TRUE.
-- When you verify that a wrong claim was removed, enumerate by MEANING and not by the previous
-  round's literal wording - each of those five rounds grepped for the last round's string and missed
-  the re-worded instance sitting a few lines away.
-- When a measured row and a source reading disagree, look for a code path that makes BOTH true
-  before choosing: `dontAsk`'s fallback denies an undecided call AND a read-only Bash command is
-  auto-allowed by its own classifier before the mode is consulted, so the 8-of-24 measurement was
-  never a contradiction.
-- When a subagent reports that it recovered from a mistake, verify the recovery from GROUND TRUTH -
-  here the index blob and mode plus the file list of every commit - because a plausible recovery
-  report is not a recovery.
-- When a brief tells you to record something in an external config, check the target EXISTS before
-  treating the item as owed: Task 10's `kernel.deny_tools = []` line had nowhere to go, because
-  every config under the eval tree drives the single-agent control.
-- When comparing two arms, ask which settings an arm cannot even EXPRESS yet: the coordinator arm
-  had no way to set the control's `permission_mode` until Task 10 made it configurable, so the pair
-  would have been confounded by a value one side could not state.
-- An implementer that commissions its OWN adversarial reviewer before reporting caught real defects
-  twice this session that its own mutation battery could not - both times a false statement in
-  prose.
-- When judging whether a dispatched subagent is still alive, do NOT read its transcript file's size
-  or mtime: the harness does not flush it, so a working agent's file sat at 160 bytes unchanged for
-  15 minutes. An implementer nearly wrote off a reviewer on that reading, and that reviewer then
-  returned a real defect. (Found by a subagent; it is not in the controller's transcript.)
+- When a review closes a finding by ADDING tests, check the new tests are not vacuous: three rounds
+  here, and the last found a case whose input could never reach the branch it was named for.
+- When a fixer deviates from your instruction and gives a reason, judge the reason on merit - one
+  deviation this session was better than the instruction it replaced, and shipping my version would
+  have harvested nothing.
+- When you enumerate what to extract for testability, expect the enumeration itself to be wrong: my
+  list would have left exactly the ranges the review named as uncovered still uncovered.
+- When a defect survives a careful self-review, look for the probe that STUBBED the component whose
+  real behaviour is the defect - that is how a launch that detached every run passed its own test.
+- tooling: the ci-watch Stop gate is satisfied by READING the verdict, not by arming a watcher, so a
+  backgrounded `ci_wait` still needs its output read before the turn ends.
 
 ## Files that matter
 
-- `PLANS/2026-09-04-corrected-pair-plan.md` - Tasks 11, 12, 13 pending; the arm-fairness note sits
-  directly above Task 12 and binds Task 11.
-- `.bitranox/sdd/progress.md` - the ledger; `.bitranox/sdd/task-{8,9,10}-report.md` for the detail,
-  and Task 10's report section 5 holds the unrun verification probe's config, command and read points.
-- `src/agentdag/adapters/cli/commands/run.py`, `src/agentdag/adapters/kernel/executor_claude.py` -
-  the two files Tasks 8, 9 and 10 all landed in; both carry standing size concerns.
-- `src/agentdag/domain/models.py` - `RunSettings` now carries `gate_command`, `tools` and
-  `permission_mode`; `PermissionMode` lives here too.
+- `PLANS/2026-09-04-corrected-pair-plan.md` - Tasks 12 and 13 pending; the arm-fairness note sits
+  directly above Task 12.
+- `.bitranox/sdd/progress.md` - the ledger, and the only record of the carried Minors the final
+  whole-branch review should triage. Gitignored, so `git clean -fdx` destroys it.
+- `.bitranox/sdd/task-10-report.md` section 5 - the unrun live probe's config, command and both read
+  points (rank 64).
+- `deploy/slopcodebench/` - the arm: `agentdag.yaml` (the three fairness settings, compared against
+  `~/agentdag-eval/slopcodebench/agent-claude-code-oauth.yaml`), `agentdag_scb_agent/agent.py.tmpl`,
+  `support.py.tmpl`, `docker.j2`.
+- `scripts/scb_install_agentdag.py` and `tests/test_scb_install_agentdag.py`,
+  `tests/test_scb_agent_support.py` - the installer and the only automated coverage of the arm.
+- `~/agentdag-eval/slopcodebench/slop-code-bench` - the harness clone, commit `06b5c06`, READ-ONLY
+  until Task 12 runs the installer against it.
 
 ## How to verify
 
-- `git log --oneline 1d043bb..HEAD` shows this session's work: Task 8 (`a184595..64f329a`), Task 9
-  (`5c122b3..ea842b2`), Task 10 (`c93f5c1..8b5369d`), plus three backlog and plan commits.
-- The gate is `make test` through `gate.py`, and it read `[PASS] make test (rc=0)` at `8b5369d`.
-- CI and CodeQL were green on `3df1a00`
-  (`ci_wait.py --sha 3df1a004533b7961b620e89d7213db3fff74bf86`).
+- `git log --oneline 4c28829..HEAD` shows this session's work.
+- The gate is `make test` through `gate.py`, and it read `[PASS] make test (rc=0)` at `4e6f452`.
+- CI and CodeQL were green on `77df509` and `b171fc8`
+  (`ci_wait.py --sha 77df5098b481538e97ee6d37eb80ab61733fb840`).
+- The arm's own tests: `.venv/bin/python -m pytest tests/test_scb_agent_support.py
+  tests/test_scb_install_agentdag.py -q` reads 85 passed.
 
 Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 delete it - if this session ends badly it is the only record of where things stood.
