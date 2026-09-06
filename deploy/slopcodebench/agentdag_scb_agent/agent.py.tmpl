@@ -1,0 +1,618 @@
+"""SlopCodeBench agent type that runs one agentdag coordinator run per checkpoint.
+
+Installed into a harness clone by ``scripts/scb_install_agentdag.py`` in the agentdag repo.
+Edit the template there; this copy is overwritten by the next install.
+
+The arm this agent exists to run is paired against ``ClaudeCodeAgent``, the single-agent
+control. Everything that decides how a checkpoint is run is mirrored from that agent, so the
+pair differs in the coordinator and in nothing else: the same container user, the same
+workspace mount, the same credential key, and the same Claude Code CLI version, which the
+image pins and every node's own transcript records. What differs is what runs inside the
+container - one ``agentdag run start plan-goal`` per checkpoint rather than one
+``claude --print``.
+
+Two things are deliberately NOT mirrored:
+
+* The ``~/.claude`` mount. Coordinator nodes are dispatched with ``setting_sources=[]`` and a
+  per-node ``CLAUDE_CONFIG_DIR``, so a shared settings directory would reach nothing and a
+  shared trace directory would mix every node's transcript into one tree. The run directory
+  is where a coordinator run's own record lives, and it is mounted instead.
+* The credential. The control hands the token to the CLI through the environment on every
+  invocation; the coordinator needs it on disk, because it dispatches its own children. One
+  bootstrap command writes it to a keyfile, taking the value from the environment so that it
+  never appears in a command string.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import shutil
+import tempfile
+import typing as tp
+from pathlib import Path
+
+from jinja2 import Template
+from pydantic import Field
+from pydantic import JsonValue
+
+from slop_code.agent_runner.agent import Agent
+from slop_code.agent_runner.agent import AgentConfigBase
+from slop_code.agent_runner.agents.utils import HOME_PATH
+from slop_code.agent_runner.credentials import ProviderCredential
+from slop_code.agent_runner.models import AgentCostLimits
+from slop_code.agent_runner.models import AgentError
+from slop_code.agent_runner.registry import register_agent
+from slop_code.common.llms import APIPricing
+from slop_code.common.llms import ModelDefinition
+from slop_code.common.llms import ThinkingPreset
+from slop_code.common.llms import TokenUsage
+from slop_code.execution import DockerEnvironmentSpec
+from slop_code.execution import EnvironmentSpec
+from slop_code.execution import Session
+from slop_code.execution import StreamingRuntime
+from slop_code.execution.runtime import RuntimeResult
+from slop_code.logging import get_logger
+
+log = get_logger(__name__)
+
+OAUTH_CREDENTIAL_KEY = "CLAUDE_CODE_OAUTH_TOKEN"
+"""The only credential this agent accepts. Anything else is refused before an image is built."""
+
+WORKFLOW = "plan-goal"
+"""The shipped agentdag workflow this arm runs: a planner decomposes the goal, and the plan
+it emits is what the coordinator dispatches."""
+
+CONTAINER_WORKSPACE = "/workspace"
+"""Where the harness mounts the problem. It is the environment config's ``docker.workdir``
+and the second isolation root every dispatched node is bounded by."""
+
+RUNS_DIR = f"{HOME_PATH}/agentdag-runs"
+"""Where a coordinator run's own directory is created, inside a host bind mount.
+
+Inside the container overlay it would be lost with the container and would count against the
+overlay's size; on a bind mount it survives, and ``save_artifacts`` can harvest it."""
+
+KEYFILE = f"{HOME_PATH}/.agentdag/oauth-token"
+"""Where the bootstrap command writes the OAuth token for the coordinator to read."""
+
+PGID_FILE = f"{RUNS_DIR}/.launch.pgid"
+"""Where the launcher records its own process-group id, for the wall-clock kill to aim at."""
+
+LAUNCH_SCRIPT = f"{RUNS_DIR}/.launch.sh"
+"""The exact command a checkpoint launched, on disk, both to dodge a layer of shell quoting
+and because it is the record of what ran."""
+
+HEREDOC_MARKER = "AGENTDAG_LAUNCH_EOF"
+"""Delimiter of the heredoc carrying the launcher. Refused if it occurs in the body."""
+
+RUN_OUTCOME = re.compile(r"^run (?P<run_id>[^\s:]+) (?P<outcome>.+)$")
+"""The coordinator's own terminal line under ``--foreground``: ``run <id> done``,
+``run <id> suspended at <node>``, or ``run <id> <status>``. The run id is what every later
+reading is keyed on, so it is read from the run's own output rather than guessed from the
+newest directory."""
+
+SUSPENDED_PREFIX = "suspended at "
+DONE_OUTCOME = "done"
+
+
+def setting_argument(value: JsonValue) -> str:
+    """Render one agentdag ``--set`` value.
+
+    A string is passed through, because agentdag coerces a ``--set`` value with a JSON
+    parse and falls back to the raw string; anything else is written as JSON, which is how
+    a list reaches it at all (``kernel.deny_tools=[]`` is an explicit empty list and is
+    honoured, while a blank value is refused by name).
+
+    Args:
+        value: The value as the arm's config states it.
+
+    Returns:
+        The text to place after ``=`` in a ``--set SECTION.KEY=VALUE`` argument.
+    """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"))
+
+
+def usage_from_records(records: list[dict[str, tp.Any]]) -> tuple[float, TokenUsage]:
+    """Total a coordinator run's cost and tokens from its own result records.
+
+    ``tokens.in`` is agentdag's input TOTAL - uncached input plus cache creation plus cache
+    read - while the harness reports those three separately, so the uncached part is what is
+    left after the two cache components are taken out. ``charged_tokens`` is deliberately not
+    read: it excludes cache reads, and adding it to a cost that includes them would be two
+    different units in one row.
+
+    Args:
+        records: What ``agentdag run records <id> --json`` printed.
+
+    Returns:
+        The run's total cost in dollars and its token usage in the harness's own shape.
+    """
+    cost = 0.0
+    tokens = TokenUsage()
+    for record in records:
+        reported = record.get("cost_usd")
+        if reported is not None:
+            cost += float(reported)
+        block = record.get("tokens")
+        if isinstance(block, dict):
+            tokens += _tokens_of(tp.cast("dict[str, tp.Any]", block))
+    return cost, tokens
+
+
+def _tokens_of(block: dict[str, tp.Any]) -> TokenUsage:
+    """Convert one record's ``tokens`` block into the harness's ``TokenUsage``."""
+    cache_read = int(block.get("cache_read") or 0)
+    cache_write = int(block.get("cache_write") or 0)
+    total_input = int(block.get("in") or 0)
+    return TokenUsage(
+        input=max(total_input - cache_read - cache_write, 0),
+        output=int(block.get("out") or 0),
+        cache_read=cache_read,
+        cache_write=cache_write,
+        reasoning=int(block.get("reasoning") or 0),
+    )
+
+
+def count_steps(run_dir: Path) -> int:
+    """Count distinct assistant messages across every node transcript of one run.
+
+    This is the control's own step rule - distinct assistant ``message_id`` - applied across
+    the nodes a coordinator run dispatched instead of across one CLI session, so the two arms'
+    step counts mean the same thing.
+
+    Args:
+        run_dir: A coordinator run's directory on the host side of the mount.
+
+    Returns:
+        How many distinct assistant messages the run's nodes produced.
+    """
+    seen: set[str] = set()
+    for transcript in sorted(run_dir.glob("nodes/*/*/transcript.jsonl")):
+        for line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+            _collect_message_id(line, seen)
+    return len(seen)
+
+
+def _collect_message_id(line: str, seen: set[str]) -> None:
+    """Add one transcript line's assistant message id to ``seen``, ignoring anything else."""
+    stripped = line.strip()
+    if not stripped:
+        return
+    try:
+        record = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(record, dict) or record.get("type") != "AssistantMessage":
+        return
+    message_id = record.get("message_id")
+    if isinstance(message_id, str) and message_id:
+        seen.add(message_id)
+
+
+def skip_node_homes(root: Path) -> tp.Callable[[str, list[str]], set[str]]:
+    """Build a ``copytree`` filter dropping every node's home directory.
+
+    A node home is the config directory its Claude CLI child ran with. It is bookkeeping
+    rather than evidence, it is the one place under a run directory a credential can land,
+    and it is by far the largest thing there.
+
+    Args:
+        root: The run directory being copied, so the depth test is relative to it.
+
+    Returns:
+        An ``ignore`` callable for :func:`shutil.copytree`.
+    """
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        relative = Path(directory).relative_to(root).parts
+        if len(relative) == 3 and relative[0] == "nodes":
+            return {name for name in names if name == "home"}
+        return set()
+
+    return ignore
+
+
+class AgentdagConfig(AgentConfigBase):
+    """Configuration for :class:`AgentdagAgent`.
+
+    Three version fields rather than one, because three separate things are pinned: which
+    coordinator runs (``version``), which Claude Code CLI its nodes run (``cli_version``, the
+    arm-fairness axis), and which SDK drives that CLI (``sdk_version``).
+    """
+
+    type: tp.Literal["agentdag"] = "agentdag"
+    version: str
+    """The agentdag git ref the image installs. Also the image tag, via ``get_image``."""
+    cli_version: str
+    """The Claude Code CLI version the image installs on PATH."""
+    sdk_version: str
+    """The ``claude-agent-sdk`` version the coordinator drives that CLI with."""
+    timeout: int | None = Field(
+        default=None,
+        description="Wall-clock ceiling in seconds for one checkpoint's coordinator run.",
+    )
+    settings: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="agentdag configuration, rendered one --set SECTION.KEY=VALUE each.",
+    )
+    docker_template: Path = Path(__file__).parent / "docker.j2"
+
+    def get_docker_file(self, base_image: str) -> str | None:
+        """Render the image, giving the template all three pins rather than only ``version``."""
+        if self.docker_template is None:
+            return None
+        return Template(self.docker_template.read_text()).render(
+            base_image=base_image,
+            version=self.version,
+            cli_version=self.cli_version,
+            sdk_version=self.sdk_version,
+        )
+
+
+class AgentdagAgent(Agent):
+    """Runs one agentdag coordinator run per checkpoint inside the harness's container."""
+
+    def __init__(
+        self,
+        problem_name: str,
+        image: str,
+        verbose: bool,  # noqa: FBT001
+        cost_limits: AgentCostLimits,
+        pricing: APIPricing | None,
+        credential: ProviderCredential,
+        settings: dict[str, JsonValue],
+        timeout: int | None,
+    ) -> None:
+        super().__init__(
+            agent_name="agentdag",
+            problem_name=problem_name,
+            cost_limits=cost_limits,
+            pricing=pricing,
+            verbose=verbose,
+        )
+        self.credential = credential
+        self.settings = settings
+        self.timeout = timeout
+        self._image = image
+        self._session: Session | None = None
+        self._environment: EnvironmentSpec | None = None
+        self._workspace: Path | None = None
+        self._runtime: StreamingRuntime | None = None
+        self._tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._runs_host: Path | None = None
+        self._run_ids: list[str] = []
+        self.suspended_at: str | None = None
+        self.final_result: RuntimeResult | None = None
+
+    @classmethod
+    def _from_config(
+        cls,
+        config: AgentConfigBase,
+        model: ModelDefinition,
+        credential: ProviderCredential,
+        problem_name: str,
+        verbose: bool,  # noqa: FBT001
+        image: str | None,
+        thinking_preset: ThinkingPreset | None = None,
+        thinking_max_tokens: int | None = None,
+    ) -> Agent:
+        """Build an agent from its config, refusing anything this arm cannot run faithfully."""
+        if not isinstance(config, AgentdagConfig):
+            raise TypeError(f"Expected AgentdagConfig, got {type(config).__name__}")
+        if image is None:
+            raise ValueError("AgentdagAgent requires an image")
+        if credential.destination_key != OAUTH_CREDENTIAL_KEY:
+            raise AgentError(
+                f"AgentdagAgent runs on a {OAUTH_CREDENTIAL_KEY} credential only; "
+                f"this run resolved {credential.destination_key!r}"
+            )
+        if thinking_preset is not None or thinking_max_tokens is not None:
+            # Stated rather than silently dropped: agentdag resolves a node's effort from its
+            # own tier policy, so the run config's thinking preset reaches nothing here.
+            log.info(
+                "agent.agentdag.thinking_not_forwarded",
+                thinking=thinking_preset,
+                max_thinking_tokens=thinking_max_tokens,
+            )
+        return cls(
+            problem_name=problem_name,
+            image=image,
+            verbose=verbose,
+            cost_limits=config.cost_limits,
+            pricing=model.pricing,
+            credential=credential,
+            settings=dict(config.settings),
+            timeout=config.timeout,
+        )
+
+    @property
+    def session(self) -> Session:
+        if self._session is None:
+            raise AgentError("AgentdagAgent has not been set up with a session")
+        return self._session
+
+    @property
+    def spec(self) -> EnvironmentSpec:
+        if self._environment is None:
+            raise AgentError("AgentdagAgent has not been set up with a session")
+        return self._environment
+
+    @property
+    def workspace(self) -> Path:
+        if self._workspace is None:
+            raise AgentError("AgentdagAgent has not been set up with a session")
+        return self._workspace
+
+    @property
+    def runtime(self) -> StreamingRuntime:
+        if self._runtime is None:
+            raise AgentError("AgentdagAgent has not been set up with a runtime")
+        return self._runtime
+
+    @property
+    def runs_host(self) -> Path:
+        """The host side of the run mount, where a finished run can be read and copied."""
+        if self._runs_host is None:
+            raise AgentError("AgentdagAgent has no run mount; it was not set up under Docker")
+        return self._runs_host
+
+    def setup(self, session: Session) -> None:
+        """Spawn the container and put the coordinator's credential on disk inside it."""
+        self._session = session
+        self._environment = session.spec
+        self._workspace = session.working_dir
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        mounts: dict[str, dict[str, str] | str] = {}
+        if isinstance(session.spec, DockerEnvironmentSpec):
+            mounts = self._prepare_mounts()
+        self._runtime = session.spawn(
+            mounts=mounts,
+            env_vars={"HOME": HOME_PATH},
+            image=self._image,
+            user="1000:1000",
+            disable_setup=True,
+        )
+        self._write_keyfile()
+        self.log.debug(
+            "agent.agentdag.setup",
+            workspace=str(self._workspace),
+            environment_type=self.spec.type,
+            image=self._image,
+            runs_dir=RUNS_DIR,
+        )
+
+    def _prepare_mounts(self) -> dict[str, dict[str, str] | str]:
+        """Bind a host temporary directory in as the run store.
+
+        World-writable for the same reason the control's settings mount is: the container
+        writes as uid 1000 whatever uid the harness itself runs as.
+        """
+        if self._tmp_dir is None:
+            raise AgentError("AgentdagAgent has not been set up with a tmp dir")
+        runs_host = Path(self._tmp_dir.name) / "agentdag_runs"
+        runs_host.mkdir(parents=True, exist_ok=True)
+        runs_host.chmod(0o777)
+        self._runs_host = runs_host
+        return {str(runs_host): {"bind": RUNS_DIR, "mode": "rw"}}
+
+    def _write_keyfile(self) -> None:
+        """Write the OAuth token where the coordinator reads it, taking it from the environment.
+
+        The token is passed as an environment variable and referenced by name, so it is not
+        part of any command string this agent builds. ``umask`` before the ``mkdir`` so the
+        directory is private too, not only the file.
+        """
+        directory = shlex.quote(str(Path(KEYFILE).parent))
+        keyfile = shlex.quote(KEYFILE)
+        command = (
+            f"set -eu; umask 077; mkdir -p {directory}; "
+            f'printf %s "${OAUTH_CREDENTIAL_KEY}" > {keyfile}; chmod 600 {keyfile}'
+        )
+        result = self._stream(command, env={OAUTH_CREDENTIAL_KEY: self.credential.value}, timeout=60.0)
+        if result.exit_code != 0:
+            raise AgentError(f"could not write the coordinator's keyfile (exit {result.exit_code})")
+
+    def run(self, task: str) -> None:
+        """Run one coordinator run for this checkpoint and read what it spent.
+
+        A run that SUSPENDS is a normal end: the coordinator asked a question nobody was there
+        to answer, whatever landed in the workspace is what the checkpoint is scored on, and
+        the node it suspended at is recorded.
+
+        Args:
+            task: The checkpoint prompt, which becomes the root planner's goal.
+
+        Raises:
+            AgentError: The launch produced no result, timed out, printed no terminal line, or
+                ended in a status that is neither done nor suspended.
+        """
+        self.suspended_at = None
+        self.log.info("agent.agentdag.start", workspace=str(self.workspace), prompt_chars=len(task))
+        result = self._stream(self._launch_command(task), env={}, timeout=self._timeout_s())
+        self.final_result = result
+        if result.timed_out:
+            self._kill_launched_group()
+            raise AgentError(f"agentdag run timed out after {self.timeout}s")
+        run_id, outcome = self._terminal_line(result)
+        self._run_ids.append(run_id)
+        if outcome.startswith(SUSPENDED_PREFIX):
+            self.suspended_at = outcome[len(SUSPENDED_PREFIX) :]
+        self._harvest(run_id)
+        self.log.info(
+            "agent.agentdag.finished",
+            run_id=run_id,
+            outcome=outcome,
+            cost=self.usage.cost,
+            steps=self.usage.steps,
+        )
+        if outcome != DONE_OUTCOME and self.suspended_at is None:
+            raise AgentError(f"agentdag run {run_id} ended {outcome!r}")
+
+    def _timeout_s(self) -> float | None:
+        return float(self.timeout) if self.timeout is not None else None
+
+    def _launch_command(self, task: str) -> str:
+        """Build the shell command that launches one coordinator run in its own process group.
+
+        ``setsid`` is what makes the kill on timeout possible: killing the host-side exec
+        client only orphans what is inside the container, so the wall-clock ceiling has to be
+        held by signalling a process group, and the group has to exist and be known. The
+        launcher goes to a file rather than into a nested ``sh -c`` so that the coordinator's
+        own quoted arguments do not have to survive a second round of shell quoting - and the
+        file is also the record of exactly what this checkpoint ran.
+        """
+        launched = " ".join(shlex.quote(part) for part in self._launch_argv(task))
+        body = f"echo $$ > {shlex.quote(PGID_FILE)}\nexec {launched}\n"
+        if HEREDOC_MARKER in body:
+            raise AgentError(f"refusing to launch: the prompt contains {HEREDOC_MARKER}")
+        return (
+            "set -eu\n"
+            f"mkdir -p {shlex.quote(RUNS_DIR)}\n"
+            f"cat > {shlex.quote(LAUNCH_SCRIPT)} <<'{HEREDOC_MARKER}'\n"
+            f"{body}"
+            f"{HEREDOC_MARKER}\n"
+            f"exec setsid /bin/sh {shlex.quote(LAUNCH_SCRIPT)}\n"
+        )
+
+    def _launch_argv(self, task: str) -> list[str]:
+        """The coordinator's own argv for this checkpoint.
+
+        Every agentdag setting comes from the arm's config file, so the two arms' configs can
+        be read side by side; the two this agent adds are the ones only it knows - where it
+        put the keyfile, and where it mounted the run store.
+        """
+        argv = ["agentdag"]
+        for key, value in self.settings.items():
+            argv.extend(["--set", f"{key}={setting_argument(value)}"])
+        argv.extend(["--set", f"credentials.claude_oauth_token_file={KEYFILE}"])
+        argv.extend(["run", "start", WORKFLOW])
+        argv.extend(["--arg", f"goal={task}"])
+        argv.extend(["--arg", f"workspace={CONTAINER_WORKSPACE}"])
+        argv.extend(["--runs", RUNS_DIR])
+        argv.append("--foreground")
+        return argv
+
+    def _terminal_line(self, result: RuntimeResult) -> tuple[str, str]:
+        """Read the run id and terminal status off the coordinator's own last matching line."""
+        for line in reversed((result.stdout or "").splitlines()):
+            matched = RUN_OUTCOME.match(line.strip())
+            if matched is not None:
+                return matched.group("run_id"), matched.group("outcome")
+        tail = "\n".join((result.stderr or "").splitlines()[-20:])
+        raise AgentError(f"agentdag printed no terminal line (exit {result.exit_code}); stderr tail:\n{tail}")
+
+    def _kill_launched_group(self) -> None:
+        """Signal the launched process group, so a timeout stops the nodes and not just the client."""
+        pgid = self._launched_pgid()
+        if pgid is None:
+            self.log.error("agent.agentdag.kill.no_pgid", pgid_file=PGID_FILE)
+            return
+        self._stream(f"kill -TERM -{pgid} 2>/dev/null || true", env={}, timeout=30.0)
+        self.log.info("agent.agentdag.killed", pgid=pgid)
+
+    def _launched_pgid(self) -> int | None:
+        """The launcher's recorded process-group id, or ``None`` when it never wrote one."""
+        if self._runs_host is None:
+            return None
+        recorded = self._runs_host / Path(PGID_FILE).name
+        if not recorded.is_file():
+            return None
+        text = recorded.read_text(encoding="utf-8", errors="replace").strip()
+        # Validated rather than interpolated as read: it becomes part of a shell command.
+        if not text.isdigit() or int(text) <= 0:
+            return None
+        return int(text)
+
+    def _harvest(self, run_id: str) -> None:
+        """Add one run's cost, tokens and steps to this checkpoint's usage."""
+        cost, tokens = usage_from_records(self._records(run_id))
+        self.usage.cost += cost
+        self.usage.net_tokens += tokens
+        self.usage.current_tokens = tokens
+        if self._runs_host is not None:
+            self.usage.steps += count_steps(self._runs_host / run_id)
+
+    def _records(self, run_id: str) -> list[dict[str, tp.Any]]:
+        """Read one run's result records through the coordinator's own reporting command.
+
+        Raised rather than defaulted to nothing on failure: a checkpoint silently costed at
+        zero is worse than a checkpoint that stops and says why.
+        """
+        command = " ".join(
+            shlex.quote(part) for part in ["agentdag", "run", "records", run_id, "--runs", RUNS_DIR, "--json"]
+        )
+        result = self._stream(command, env={}, timeout=300.0)
+        if result.exit_code != 0:
+            raise AgentError(f"could not read records for run {run_id} (exit {result.exit_code})")
+        for line in reversed((result.stdout or "").splitlines()):
+            parsed = _parsed_record_list(line)
+            if parsed is not None:
+                return parsed
+        raise AgentError(f"records for run {run_id} were not a JSON array")
+
+    def _stream(self, command: str, *, env: dict[str, str], timeout: float | None) -> RuntimeResult:
+        """Run one command in the container and return its result."""
+        for event in self.runtime.stream(command=command, env=env, timeout=timeout):
+            if event.kind == "finished" and event.result is not None:
+                return event.result
+        raise AgentError("the container produced no result for a command")
+
+    def reset(self) -> None:
+        """Forget the previous checkpoint's runs; its artifacts have already been saved."""
+        self._run_ids = []
+        self.suspended_at = None
+        self.final_result = None
+
+    def save_artifacts(self, path: Path) -> None:
+        """Save the launch output and every run directory this checkpoint produced."""
+        path.mkdir(parents=True, exist_ok=True)
+        if self.final_result is not None:
+            (path / "stdout.log").write_text(self.final_result.stdout or "", encoding="utf-8")
+            (path / "stderr.log").write_text(self.final_result.stderr or "", encoding="utf-8")
+        if self.suspended_at is not None:
+            (path / "suspended_at.txt").write_text(f"{self.suspended_at}\n", encoding="utf-8")
+        saved = 0
+        for run_id in self._run_ids:
+            saved += self._save_run(run_id, path / "runs" / run_id)
+        self.log.debug("agent.agentdag.artifacts.saved", output_dir=str(path), runs=saved)
+
+    def _save_run(self, run_id: str, destination: Path) -> int:
+        """Copy one run directory minus its node homes; 0 when there was nothing to copy."""
+        if self._runs_host is None:
+            return 0
+        source = self._runs_host / run_id
+        if not source.is_dir():
+            self.log.error("agent.agentdag.artifacts.missing_run", run_id=run_id)
+            return 0
+        shutil.copytree(source, destination, ignore=skip_node_homes(source), dirs_exist_ok=True)
+        return 1
+
+    def cleanup(self) -> None:
+        """Release the session and the host-side run mount."""
+        self._session = None
+        if self._tmp_dir is not None:
+            self._tmp_dir.cleanup()
+            self._tmp_dir = None
+        self._runs_host = None
+        self.log.debug("agent.agentdag.cleanup")
+
+
+def _parsed_record_list(line: str) -> list[dict[str, tp.Any]] | None:
+    """One stdout line as a list of records, or ``None`` when it is not one."""
+    stripped = line.strip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [item for item in tp.cast("list[tp.Any]", parsed) if isinstance(item, dict)]
+
+
+register_agent("agentdag", AgentdagAgent)

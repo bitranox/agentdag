@@ -1,0 +1,61 @@
+# The coordinator arm's harness agent config. Its pair is agent-claude-code-oauth.yaml, the
+# single-agent control that has already run; the two are meant to be read side by side.
+#
+# ARM FAIRNESS. Three settings differed between the arms while this was being built, and each
+# one on its own would confound the pair. All three are stated here, because this file is the
+# only place the coordinator arm gets configured.
+#
+#   1. Permission mode. The control runs permission_mode: bypassPermissions. Coordinator nodes
+#      could only run the hard-coded dontAsk until [kernel] permission_mode became selectable,
+#      so the axis could not be matched at all; kernel.permission_mode below matches it. Note
+#      the mode does not reach agentdag's own deny hooks either way - the CLI consults a
+#      PreToolUse hook before it evaluates permission rules - so write confinement, the Bash
+#      denylist and read confinement refuse exactly the same calls under either value.
+#   2. CLI version. cli_version below is the version the control arm ACTUALLY RAN, read from
+#      claude_code_version on the system/init record of every counted checkpoint's own
+#      agent/stdout.jsonl - not from its config, and not from an image tag. It is pinned here
+#      because claude-agent-sdk spawns the binary it BUNDLES before anything on PATH, so
+#      installing a version in the image does not by itself decide what a node runs; docker.j2
+#      deletes the bundled binary and asserts the PATH one at build time. Prove the match after
+#      the fact the same way, from this arm's own node transcripts.
+#   3. kernel.deny_tools. The shipped default closes WebFetch, WebSearch and Task. The
+#      pre-registered decision is that coordinator nodes get the full CLI tool set, so the
+#      empty list below is stated explicitly - an explicit empty list is honoured, while a
+#      blank value is refused by name.
+#
+# version is written by scripts/scb_install_agentdag.py from its --agentdag-version argument.
+# It cannot be committed here: it names the coordinator commit the arm runs, which is chosen
+# when the arm is launched.
+type: agentdag
+version: "REPLACED-BY-INSTALLER"
+cli_version: "2.1.260"
+sdk_version: "0.2.152"
+
+# cost_limits mirrors the control's, verbatim. cost_limit and net_cost_limit at 0 disable
+# those ceilings on both arms; step_limit is what the control passes as --max-turns, and its
+# coordinator counterpart is kernel.max_turns below.
+cost_limits:
+  cost_limit: 0
+  step_limit: 100
+  net_cost_limit: 0
+
+# agentdag configuration. Each pair is rendered as one --set SECTION.KEY=VALUE on the
+# coordinator's command line; a list is passed as JSON, which is how an explicit empty list
+# reaches agentdag at all.
+settings:
+  # (1) matched to the control.
+  kernel.permission_mode: bypassPermissions
+  # (3) the pre-registered full tool set: close nothing.
+  kernel.deny_tools: []
+  # The control's step_limit as agentdag's per-node turn ceiling.
+  kernel.max_turns: 100
+  # The mechanical gate every gate node runs, in /workspace. pytest's exit 5 on no tests is a
+  # real failure here ("you wrote no tests"), which is the point of gating on something the
+  # agent cannot satisfy by asserting it did the work. The planner is told this argv, so the
+  # nodes know which virtual environment the checkpoint has to end up with.
+  kernel.gate_command: [".venv/bin/python", "-m", "pytest", "-q"]
+
+# timeout: the wall-clock ceiling for ONE checkpoint's coordinator run, in seconds. Left
+# unset here because the value is a launch decision, not a property of the arm; setting it
+# arms the process-group kill the agent holds the ceiling with.
+# timeout: 0

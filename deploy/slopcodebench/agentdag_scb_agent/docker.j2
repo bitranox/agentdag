@@ -1,0 +1,38 @@
+FROM {{ base_image }}
+
+# --- Switch to non-root, exactly as the control arm's image does -------------
+USER agent
+WORKDIR /workspace
+
+ENV NPM_CONFIG_PREFIX="$HOME/.npm-global"
+ENV UV_TOOL_DIR="$HOME/.local/share/uv/tools"
+ENV UV_TOOL_BIN_DIR="$HOME/.local/bin"
+ENV PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+ENV XDG_CONFIG_HOME="$HOME/.config"
+ENV XDG_DATA_HOME="$HOME/.local/share"
+
+# --- The Claude Code CLI every coordinator node runs -------------------------
+# Pinned to the version the control arm's own transcripts record, so the pair differs in
+# the coordinator and not in the CLI.
+RUN npm install -g @anthropic-ai/claude-code@{{ cli_version }}
+
+# --- The coordinator ---------------------------------------------------------
+RUN uv tool install --python 3.12 \
+        "agentdag @ git+https://github.com/bitranox/agentdag@{{ version }}" \
+        --with claude-agent-sdk=={{ sdk_version }}
+
+# claude-agent-sdk spawns the binary it BUNDLES before anything on PATH, so with that
+# binary in place a node runs the SDK's version rather than the one installed above and
+# the two arms differ in the CLI. Removing it leaves the PATH binary the only candidate.
+# The assertion states the OUTCOME - no bundled binary under the tool environment - so an
+# SDK release that stops bundling one passes here rather than failing the build.
+RUN find "$UV_TOOL_DIR/agentdag" -path '*/claude_agent_sdk/_bundled/claude' -delete \
+    && test -z "$(find "$UV_TOOL_DIR/agentdag" -path '*/claude_agent_sdk/_bundled/claude' -print -quit)"
+
+# Fail the BUILD, not the arm, when any of the three promises above does not hold.
+# setsid is what puts the coordinator and its nodes in one killable process group.
+RUN command -v setsid \
+    && agentdag --version \
+    && claude --version | grep -qF '{{ cli_version }}'
+
+CMD ["agentdag"]
