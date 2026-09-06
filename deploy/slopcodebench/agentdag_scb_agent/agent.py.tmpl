@@ -29,7 +29,6 @@ Two things are deliberately NOT mirrored:
 
 from __future__ import annotations
 
-import json
 import shlex
 import shutil
 import tempfile
@@ -64,9 +63,11 @@ from .support import SUSPENDED_PREFIX
 from .support import LaunchSpec
 from .support import count_steps
 from .support import launch_command
+from .support import parsed_record_list
 from .support import skip_node_homes
 from .support import spend_of
 from .support import terminal_line
+from .support import uncosted_refusal
 
 log = get_logger(__name__)
 
@@ -106,7 +107,8 @@ def usage_from_records(records: list[dict[str, tp.Any]]) -> tuple[float, TokenUs
     A run whose records report no cost at all is refused rather than costed at zero. Some
     records legitimately carry none - a gate node runs pytest and spends nothing - but a run
     always dispatches at least its planner, so none at all means the cost was not reported
-    rather than not incurred, and this arm exists to be counted against a control.
+    (or, when there are no records whatsoever, that the planner never dispatched) rather than
+    not incurred, and this arm exists to be counted against a control.
 
     Args:
         records: What ``agentdag run records <id> --json`` printed.
@@ -117,12 +119,10 @@ def usage_from_records(records: list[dict[str, tp.Any]]) -> tuple[float, TokenUs
     Raises:
         AgentError: Not one record reported a cost.
     """
+    refusal = uncosted_refusal(records)
+    if refusal is not None:
+        raise AgentError(refusal)
     spend = spend_of(records)
-    if spend.costed_records == 0:
-        raise AgentError(
-            f"none of this run's {len(records)} result records reported a cost; "
-            "recording the checkpoint at zero would corrupt the arm's own measurement"
-        )
     return spend.cost_usd, TokenUsage(
         input=spend.tokens.input,
         output=spend.tokens.output,
@@ -481,7 +481,7 @@ class AgentdagAgent(Agent):
         if result.exit_code != 0:
             raise AgentError(f"could not read records for run {run_id} (exit {result.exit_code})")
         for line in reversed((result.stdout or "").splitlines()):
-            parsed = _parsed_record_list(line)
+            parsed = parsed_record_list(line)
             if parsed is not None:
                 return parsed
         raise AgentError(f"records for run {run_id} were not a JSON array")
@@ -555,20 +555,6 @@ def _resolved_policy(policy: Path | None) -> Path | None:
     if not resolved.is_file():
         raise AgentError(f"the arm config names a tier policy that is not a readable file: {resolved}")
     return resolved
-
-
-def _parsed_record_list(line: str) -> list[dict[str, tp.Any]] | None:
-    """One stdout line as a list of records, or ``None`` when it is not one."""
-    stripped = line.strip()
-    if not stripped.startswith("["):
-        return None
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, list):
-        return None
-    return [item for item in tp.cast("list[tp.Any]", parsed) if isinstance(item, dict)]
 
 
 register_agent("agentdag", AgentdagAgent)

@@ -59,8 +59,11 @@ settings:
 # unset here because the value is a launch decision, not a property of the arm; setting it
 # arms the process-group kill the agent holds the ceiling with. A run stopped that way never
 # prints its terminal line, so the agent takes its id from the single run directory the
-# launch added to the run store and harvests that run's cost before it raises - the
-# checkpoint still fails, but its real spend is counted rather than recorded as zero.
+# launch added to the run store. The kill only sends TERM and is not awaited past that, so a
+# node still in flight at that moment has not necessarily reported yet: when exactly one run
+# directory appeared, what agentdag had already recorded to it by the time records are read
+# back is counted; when it could not be read, or zero or several directories appeared, the
+# timeout's own AgentError names that instead. The checkpoint fails either way.
 # timeout: 0
 
 # policy: a tier policy YAML on the HOST, mounted read-only into the container and passed to

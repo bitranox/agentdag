@@ -12,11 +12,12 @@ the harness commit it patched, so a result can be traced back to the harness it 
 Two things about it are deliberate.
 
 * **The agent body ships as data.** ``deploy/slopcodebench/agentdag_scb_agent/`` holds
-  ``agent.py.tmpl`` and ``__init__.py.tmpl`` rather than ``.py`` files, because this repo's
-  own gate walks every directory: pyright follows ``deploy/`` and reports the ``slop_code``
-  imports as missing, and pytest's ``--doctest-modules`` IMPORTS what it collects there and
-  fails the whole run at collection. Naming them ``.tmpl`` needs no exclusion in either tool,
-  which is the point - an exclusion would blind both to whatever lands there next.
+  ``agent.py.tmpl``, ``support.py.tmpl`` and ``__init__.py.tmpl`` rather than ``.py`` files,
+  because this repo's own gate walks every directory: pyright follows ``deploy/`` and reports
+  the ``slop_code`` imports as missing, and pytest's ``--doctest-modules`` IMPORTS what it
+  collects there and fails the whole run at collection. Naming them ``.tmpl`` needs no
+  exclusion in either tool, which is the point - an exclusion would blind both to whatever
+  lands there next.
 * **Nothing type-checks the agent body, so this compiles it.** Every rendered ``.py`` is put
   through ``py_compile`` in a staging directory before anything is written, and a template
   that does not compile refuses the install whole, rather than leaving a half-installed

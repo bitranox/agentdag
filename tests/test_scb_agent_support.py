@@ -70,7 +70,7 @@ def a_spec(support: ModuleType, **overrides: object) -> object:
     return support.LaunchSpec(**fields)
 
 
-def heredoc_body(command: str, marker: str) -> str:
+def heredoc_body(command: str, *, marker: str) -> str:
     """The launcher the command writes, taken back out of its heredoc."""
     after_opener = command.split(f"<<'{marker}'\n", 1)[1]
     return after_opener.rsplit(f"\n{marker}\n", 1)[0]
@@ -194,13 +194,13 @@ def test_launch_command_waits_for_the_process_it_launched(support: ModuleType) -
 def test_launch_command_delivers_the_argv_verbatim_through_the_heredoc(support: ModuleType) -> None:
     """A goal is a checkpoint prompt: newlines, quotes, dollars and backticks all occur."""
     spec = a_spec(support, goal='line one\nit\'s "quoted" $HOME `date` \\ end')
-    body = heredoc_body(support.launch_command(spec), support.HEREDOC_MARKER)
+    body = heredoc_body(support.launch_command(spec), marker=support.HEREDOC_MARKER)
     _, _, launched = body.partition("\nexec ")
     assert shlex.split(launched) == support.launch_argv(spec)
 
 
 def test_launch_command_records_the_process_group_it_is_killed_by(support: ModuleType) -> None:
-    body = heredoc_body(support.launch_command(a_spec(support)), support.HEREDOC_MARKER)
+    body = heredoc_body(support.launch_command(a_spec(support)), marker=support.HEREDOC_MARKER)
     assert body.splitlines()[0] == f"echo $$ > {RUNS_DIR}/{support.PGID_FILE_NAME}"
 
 
@@ -297,10 +297,77 @@ def test_spend_of_ignores_a_tokens_field_that_is_not_a_mapping(support: ModuleTy
     assert spend.costed_records == 2
 
 
+# --- parsed_record_list ------------------------------------------------------------------
+
+
+def test_parsed_record_list_reads_a_json_array_of_dicts(support: ModuleType) -> None:
+    records = [{"cost_usd": 1.0}, {"cost_usd": 2.0}]
+    assert support.parsed_record_list(json.dumps(records)) == records
+
+
+def test_parsed_record_list_returns_none_for_a_non_array_line(support: ModuleType) -> None:
+    """A JSON object, not a JSON array, is what a non-array line looks like on the wire."""
+    assert support.parsed_record_list(json.dumps({"cost_usd": 1.0})) is None
+
+
+def test_parsed_record_list_returns_none_for_a_non_json_line(support: ModuleType) -> None:
+    assert support.parsed_record_list("credential: keyfile") is None
+
+
+def test_parsed_record_list_drops_array_entries_that_are_not_objects(support: ModuleType) -> None:
+    mixed = [1, "x", None, {"cost_usd": 1.0}, [1, 2], {"cost_usd": 2.0}]
+    assert support.parsed_record_list(json.dumps(mixed)) == [{"cost_usd": 1.0}, {"cost_usd": 2.0}]
+
+
+def test_parsed_record_list_strips_surrounding_whitespace(support: ModuleType) -> None:
+    assert support.parsed_record_list(f"  {json.dumps([{'cost_usd': 1.0}])}  \n") == [{"cost_usd": 1.0}]
+
+
+def test_parsed_record_list_supports_the_reversed_scan_records_relies_on(support: ModuleType) -> None:
+    """``_records`` scans a run's stdout in reverse and takes the first line that parses, so a
+    non-JSON or non-array line has to return ``None`` rather than raise - otherwise a stray log
+    line would break the scan before it reaches the run's own, later array."""
+    lines = [
+        json.dumps([{"cost_usd": 1.0}]),
+        "a stray log line printed after the first array",
+        json.dumps([{"cost_usd": 2.0}]),
+    ]
+    found = None
+    for line in reversed(lines):
+        found = support.parsed_record_list(line)
+        if found is not None:
+            break
+    assert found == [{"cost_usd": 2.0}]
+
+
+# --- uncosted_refusal --------------------------------------------------------------------
+
+
+def test_uncosted_refusal_is_none_when_a_record_costed(support: ModuleType) -> None:
+    records = [{"cost_usd": None}, {"cost_usd": 1.0}]
+    assert support.uncosted_refusal(records) is None
+
+
+def test_uncosted_refusal_names_a_run_that_never_dispatched(support: ModuleType) -> None:
+    """No records at all is what a planner that never dispatched a node leaves behind, not a
+    node that ran and reported no cost - the message must say which one this is."""
+    message = support.uncosted_refusal([])
+    assert message is not None
+    assert "dispatch" in message
+
+
+def test_uncosted_refusal_names_the_uncosted_record_count_when_records_exist(support: ModuleType) -> None:
+    records = [{"cost_usd": None}, {"tokens": {"in": 5}}]
+    message = support.uncosted_refusal(records)
+    assert message is not None
+    assert "2" in message
+    assert "dispatch" not in message
+
+
 # --- count_steps ------------------------------------------------------------------------
 
 
-def write_transcript(root: Path, node: str, attempt: str, lines: list[str]) -> None:
+def write_transcript(root: Path, *, node: str, attempt: str, lines: list[str]) -> None:
     """Write one node attempt's transcript where ``count_steps`` looks for it."""
     path = root / "nodes" / node / attempt / "transcript.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,18 +380,18 @@ def assistant(message_id: str) -> str:
 
 
 def test_count_steps_counts_distinct_assistant_messages_across_nodes(tmp_path: Path, support: ModuleType) -> None:
-    write_transcript(tmp_path, "planner", "1", [assistant("m1"), assistant("m2"), assistant("m1")])
-    write_transcript(tmp_path, "worker", "1", [assistant("m3")])
-    write_transcript(tmp_path, "worker", "2", [assistant("m3"), assistant("m4")])
+    write_transcript(tmp_path, node="planner", attempt="1", lines=[assistant("m1"), assistant("m2"), assistant("m1")])
+    write_transcript(tmp_path, node="worker", attempt="1", lines=[assistant("m3")])
+    write_transcript(tmp_path, node="worker", attempt="2", lines=[assistant("m3"), assistant("m4")])
     assert support.count_steps(tmp_path) == 4
 
 
 def test_count_steps_ignores_everything_that_is_not_an_assistant_message(tmp_path: Path, support: ModuleType) -> None:
     write_transcript(
         tmp_path,
-        "planner",
-        "1",
-        [
+        node="planner",
+        attempt="1",
+        lines=[
             "",
             "   ",
             "not json at all",

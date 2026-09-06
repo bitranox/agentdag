@@ -8,8 +8,8 @@ That is what the split is for: the agent module beside this one cannot be import
 agentdag repo, because importing it would drag the harness package into pyright's walk and
 into pytest's collection, while this module can be executed and exercised directly - which
 is what ``tests/test_scb_agent_support.py`` does. So the launch command text, the token and
-cost arithmetic, the terminal-line reader and the artifact filter are covered by tests
-rather than by reading.
+cost arithmetic, the terminal-line reader, the run-records reader and the artifact filter
+are covered by tests rather than by reading.
 
 The rule for what belongs here: anything that needs one of the harness's own types stays in
 ``agent.py``; everything else lives here.
@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from typing import cast
 
 from pydantic import JsonValue
 
@@ -40,11 +41,13 @@ __all__ = [
     "count_steps",
     "launch_argv",
     "launch_command",
+    "parsed_record_list",
     "setting_argument",
     "skip_node_homes",
     "spend_of",
     "terminal_line",
     "tokens_of",
+    "uncosted_refusal",
 ]
 
 RUN_OUTCOME = re.compile(r"^run (?P<run_id>[^\s:]+) (?P<outcome>.+)$")
@@ -249,14 +252,70 @@ def tokens_of(block: dict[str, Any]) -> Tokens:
     Returns:
         The same counts in the harness's shape.
     """
-    cache_read = _count(block, "cache_read")
-    cache_write = _count(block, "cache_write")
+    cache_read = _count(block, key="cache_read")
+    cache_write = _count(block, key="cache_write")
     return Tokens(
-        input=max(_count(block, "in") - cache_read - cache_write, 0),
-        output=_count(block, "out"),
+        input=max(_count(block, key="in") - cache_read - cache_write, 0),
+        output=_count(block, key="out"),
         cache_read=cache_read,
         cache_write=cache_write,
-        reasoning=_count(block, "reasoning"),
+        reasoning=_count(block, key="reasoning"),
+    )
+
+
+def parsed_record_list(line: str) -> list[dict[str, Any]] | None:
+    """One stdout line as a list of result records, or ``None`` when it is not one.
+
+    The reader of ``agentdag run records <id> --json`` output scans a run's stdout in
+    reverse and takes the first line this parses, because a state-file advisory or other log
+    text can precede the JSON array. Returning ``None`` rather than raising on anything else
+    is what lets that scan skip past such lines instead of stopping on the first one.
+
+    Args:
+        line: One line of the reporting command's stdout.
+
+    Returns:
+        The records that parsed as JSON objects, dropping anything else the array held;
+        ``None`` when the line is not a JSON array at all.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [item for item in cast("list[Any]", parsed) if isinstance(item, dict)]
+
+
+def uncosted_refusal(records: list[dict[str, Any]]) -> str | None:
+    """The message to refuse an uncosted run with, or ``None`` when it costed.
+
+    ``costed_records == 0`` has two distinct causes and the refusal should not read the same
+    for both. No records at all is what a ``plan-goal`` run leaves behind when its planner
+    never dispatched a node - typically a configuration refusal that stopped the run before
+    the first node, not a spend that went unreported. Records that dispatched but reported no
+    cost are the case this check exists for.
+
+    Args:
+        records: What ``agentdag run records <id> --json`` printed.
+
+    Returns:
+        The message to raise as an ``AgentError``, or ``None`` when at least one record
+        reported a cost.
+    """
+    if spend_of(records).costed_records > 0:
+        return None
+    if not records:
+        return (
+            "this run printed no result records at all, which is what a planner that never "
+            "dispatched a node leaves behind rather than a node that ran and reported no cost"
+        )
+    return (
+        f"none of this run's {len(records)} result records reported a cost; "
+        "recording the checkpoint at zero would corrupt the arm's own measurement"
     )
 
 
@@ -329,7 +388,7 @@ def skip_node_homes(root: Path) -> Callable[[str, list[str]], set[str]]:
     return ignore
 
 
-def _count(block: dict[str, Any], key: str) -> int:
+def _count(block: dict[str, Any], *, key: str) -> int:
     """One ``tokens`` entry as an integer, reading a missing or null entry as zero."""
     return int(block.get(key) or 0)
 
