@@ -22,6 +22,16 @@
 #      pre-registered decision is that coordinator nodes get the full CLI tool set, so the
 #      empty list below is stated explicitly - an explicit empty list is honoured, while a
 #      blank value is refused by name.
+#   4. kernel.deny_bash. The shipped default also closes `curl -X POST`, `curl --data` and
+#      `wget --post`. The calibration control ran exactly those four times on
+#      dynamic_config_service_api to exercise the HTTP API it was building, so a coordinator
+#      node that cannot would lose a checkpoint for a reason unrelated to decomposition. The
+#      pre-registration's decision 3 therefore cuts the list to the three git/gh entries, and
+#      that list is stated below rather than left to a default that closes more.
+#   5. Effort. `thinking: high` reaches the control as MAX_THINKING_TOKENS=31999; it cannot
+#      reach a coordinator node, whose dispatch env is true-allowlisted down to the
+#      credential. agentdag resolves effort per node from its tier policy, so the axis is
+#      matched in `policy` below, not here - and the two levers are not proven equivalent.
 #
 # version is written by scripts/scb_install_agentdag.py from its --agentdag-version argument.
 # It cannot be committed here: it names the coordinator commit the arm runs, which is chosen
@@ -47,8 +57,15 @@ settings:
   kernel.permission_mode: bypassPermissions
   # (3) the pre-registered full tool set: close nothing.
   kernel.deny_tools: []
+  # (4) the pre-registered denylist: publishing actions only, nothing that would stop a node
+  # exercising a local HTTP service it is building.
+  kernel.deny_bash: ["git push", "gh pr", "gh release"]
   # The control's step_limit as agentdag's per-node turn ceiling.
   kernel.max_turns: 100
+  # Pre-registered decision 4, stated rather than inherited: this is also the shipped default,
+  # and an arm that reads its concurrency off a default cannot say what it ran when the default
+  # moves. plan-goal works in one shared directory, so concurrent work nodes can collide there.
+  kernel.parallel: 8
   # The mechanical gate every gate node runs, in /workspace. pytest's exit 5 on no tests is a
   # real failure here ("you wrote no tests"), which is the point of gating on something the
   # agent cannot satisfy by asserting it did the work. The planner is told this argv, so the
@@ -67,9 +84,15 @@ settings:
 # timeout: 0
 
 # policy: a tier policy YAML on the HOST, mounted read-only into the container and passed to
-# the coordinator as --policy. Unset means the run takes agentdag's own shipped tier table,
-# which is what decides each node's model and reasoning effort. That is the axis the
-# control's `thinking: high` sits on: `thinking` is not forwarded (agentdag resolves effort
-# per node, not per run), so if the pair has to be matched on effort, it is matched here.
-# Which policy the arm runs is a pre-registration decision, so no value is committed.
+# the coordinator as --policy. Unset means the run takes agentdag's own shipped tier table -
+# which for this arm would be WRONG in two pre-registered ways at once: it puts every `work`
+# node on sonnet, where the held-fixed table reads "opus-5 for the control and for EVERY
+# coordinator node; no cheaper tier anywhere", and it caps the opus row at 8,000,000 tokens
+# where decision 1 pre-registers 1,200,000 per checkpoint run. It is also the only lever this
+# arm has on effort (note 5 above).
+#
+# The arm's own table is committed beside this file as arm-tier-policy.yaml, and every line it
+# changes is quoted from the pre-registration in its own header. Only the PATH is a launch
+# fact, so scripts/scb_install_agentdag.py --policy writes it over the line below, exactly as
+# --agentdag-version fills the version in. Leave the line commented to run the shipped table.
 # policy: /abs/path/to/tier-policy.yaml

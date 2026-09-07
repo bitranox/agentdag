@@ -52,6 +52,7 @@ __all__ = [
     "main",
     "patch_agents_init",
     "render_agent_config",
+    "validate_policy",
     "validate_ref",
 ]
 
@@ -80,6 +81,14 @@ keyfile and where it mounted the run store. A config naming one of them would pu
 VERSION_PLACEHOLDER = "REPLACED-BY-INSTALLER"
 VERSION_LINE = f'version: "{VERSION_PLACEHOLDER}"'
 
+POLICY_COMMENT_LINE = "# policy: /abs/path/to/tier-policy.yaml"
+"""The commented example the arm config carries where a tier policy path would go.
+
+``--policy`` replaces this exact line with a real ``policy:`` key, for the same reason
+``--agentdag-version`` fills the version in: the path names a file on the host the arm is
+launched from, so it cannot be committed. Without ``--policy`` the line stays a comment and
+the run takes agentdag's own shipped tier table."""
+
 GIT_EXECUTABLE = shutil.which("git") or "git"
 """Git resolved from PATH once, the same idiom the rest of this repo uses: a bare name
 is searched in the PARENT environment by CreateProcess on Windows, which is not the
@@ -105,6 +114,7 @@ class InstallReport:
     package_dir: Path
     config_path: Path
     registry_changed: bool
+    policy: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +126,7 @@ class _Plan:
     harness_commit: str
     package_files: dict[str, str]
     config_text: str
+    policy: Path | None
     registry_text: str
     registry_changed: bool
 
@@ -143,6 +154,29 @@ def validate_ref(ref: str) -> str:
             "digit or underscore then at most 127 more of letter, digit, dot, dash, underscore"
         )
     return ref
+
+
+def validate_policy(policy: Path) -> Path:
+    """Return ``policy`` resolved, when it names a readable file.
+
+    Resolved here rather than at launch so a path that does not exist is a refusal before
+    anything is written, and so the config carries an absolute path whatever directory the
+    installer ran from. ``expanduser`` first, because the launcher's own notes write this
+    path with a leading ``~``.
+
+    Args:
+        policy: The tier policy YAML the arm runs, as given on the command line.
+
+    Returns:
+        The same file, expanded and resolved.
+
+    Raises:
+        InstallError: The path names no readable file.
+    """
+    resolved = policy.expanduser().resolve()
+    if not resolved.is_file():
+        raise InstallError(f"--policy names no readable file: {resolved}")
+    return resolved
 
 
 def patch_agents_init(source: str) -> str:
@@ -243,8 +277,8 @@ def _agentdag_imports(tree: ast.Module) -> set[str]:
     }
 
 
-def render_agent_config(source: str, *, agentdag_version: str) -> str:
-    """Fill the arm config's version placeholder in.
+def render_agent_config(source: str, *, agentdag_version: str, policy: Path | None = None) -> str:
+    """Fill the arm config's version placeholder in, and its tier policy path when one is given.
 
     The substitution is on the placeholder's exact line and the result is parsed back, so a
     config whose placeholder was renamed or already filled refuses rather than being written
@@ -253,13 +287,16 @@ def render_agent_config(source: str, *, agentdag_version: str) -> str:
     Args:
         source: The shipped arm config's text.
         agentdag_version: The coordinator ref this arm runs.
+        policy: An already-validated tier policy path to write in as ``policy:``, or ``None``
+            to leave the commented example alone and let the run take the shipped table.
 
     Returns:
         The config text to write into the harness.
 
     Raises:
         InstallError: The placeholder line is absent or repeated, the placeholder survives,
-            or the result is not the agentdag arm config.
+            the policy comment line is absent or repeated, or the result is not the agentdag
+            arm config.
     """
     ref = validate_ref(agentdag_version)
     found = source.count(VERSION_LINE)
@@ -268,12 +305,25 @@ def render_agent_config(source: str, *, agentdag_version: str) -> str:
     rendered = source.replace(VERSION_LINE, f'version: "{ref}"')
     if VERSION_PLACEHOLDER in rendered:
         raise InstallError(f"{VERSION_PLACEHOLDER} still occurs after rendering; the config carries a second copy")
-    _require_arm_config(rendered, ref)
+    rendered = _with_policy(rendered, policy)
+    _require_arm_config(rendered, ref, policy)
     return rendered
 
 
-def _require_arm_config(rendered: str, ref: str) -> None:
-    """Refuse a rendered config that is not this arm's, or does not carry the ref."""
+def _with_policy(rendered: str, policy: Path | None) -> str:
+    """Turn the arm config's commented policy example into a real key, when one was asked for."""
+    if policy is None:
+        return rendered
+    found = rendered.count(POLICY_COMMENT_LINE)
+    if found != 1:
+        raise InstallError(
+            f"the arm config must carry exactly one {POLICY_COMMENT_LINE!r} line for --policy to fill in; found {found}"
+        )
+    return rendered.replace(POLICY_COMMENT_LINE, f"policy: {policy}")
+
+
+def _require_arm_config(rendered: str, ref: str, policy: Path | None = None) -> None:
+    """Refuse a rendered config that is not this arm's, or does not carry the ref and policy."""
     try:
         parsed = yaml.safe_load(rendered)
     except yaml.YAMLError as exc:
@@ -285,6 +335,9 @@ def _require_arm_config(rendered: str, ref: str) -> None:
         raise InstallError(f"the arm config declares type {document.get('type')!r}, not 'agentdag'")
     if document.get("version") != ref:
         raise InstallError(f"the rendered arm config carries version {document.get('version')!r}, not {ref!r}")
+    wanted = None if policy is None else str(policy)
+    if document.get("policy") != wanted:
+        raise InstallError(f"the rendered arm config carries policy {document.get('policy')!r}, not {wanted!r}")
     _require_no_agent_owned_settings(document.get("settings"))
 
 
@@ -325,13 +378,17 @@ def harness_commit(harness: Path) -> str:
     return done.stdout.strip()
 
 
-def install(*, harness: Path, agentdag_version: str, source: Path | None = None) -> InstallReport:
+def install(
+    *, harness: Path, agentdag_version: str, source: Path | None = None, policy: Path | None = None
+) -> InstallReport:
     """Install the agent package, the arm config and the registration into ``harness``.
 
     Args:
         harness: Root of the slop-code-bench clone.
         agentdag_version: The coordinator ref the arm's image installs.
         source: Where to read the package and arm config from; the shipped ones by default.
+        policy: A tier policy YAML on this host for the arm to run under, or ``None`` to leave
+            the config's commented example alone and take agentdag's shipped table.
 
     Returns:
         What was written, and the harness commit it was written onto.
@@ -341,19 +398,20 @@ def install(*, harness: Path, agentdag_version: str, source: Path | None = None)
             Nothing is written when this is raised.
     """
     root = SOURCE_ROOT if source is None else source
-    plan = _planned(harness=harness, agentdag_version=agentdag_version, root=root)
+    plan = _planned(harness=harness, agentdag_version=agentdag_version, root=root, policy=policy)
     return _write(plan)
 
 
-def _planned(*, harness: Path, agentdag_version: str, root: Path) -> _Plan:
+def _planned(*, harness: Path, agentdag_version: str, root: Path, policy: Path | None) -> _Plan:
     """Validate everything an install needs, writing nothing."""
     ref = validate_ref(agentdag_version)
+    resolved_policy = None if policy is None else validate_policy(policy)
     registry = harness / REGISTRY_RELATIVE
     if not registry.is_file():
         raise InstallError(f"{registry} is not a file; --harness must name a slop-code-bench clone")
     package_files = _package_files(root / PACKAGE_SOURCE_NAME)
     _require_compilable(package_files)
-    config_text = render_agent_config(_read(root / CONFIG_SOURCE_NAME), agentdag_version=ref)
+    config_text = render_agent_config(_read(root / CONFIG_SOURCE_NAME), agentdag_version=ref, policy=resolved_policy)
     original = _read(registry)
     patched = patch_agents_init(original)
     return _Plan(
@@ -362,6 +420,7 @@ def _planned(*, harness: Path, agentdag_version: str, root: Path) -> _Plan:
         harness_commit=harness_commit(harness),
         package_files=package_files,
         config_text=config_text,
+        policy=resolved_policy,
         registry_text=patched,
         registry_changed=patched != original,
     )
@@ -428,6 +487,7 @@ def _write(plan: _Plan) -> InstallReport:
         package_dir=package_dir,
         config_path=config_path,
         registry_changed=plan.registry_changed,
+        policy=plan.policy,
     )
 
 
@@ -443,6 +503,7 @@ def _print_report(report: InstallReport, *, as_json: bool) -> None:
                     "package_dir": str(report.package_dir),
                     "config_path": str(report.config_path),
                     "registry_changed": report.registry_changed,
+                    "policy": None if report.policy is None else str(report.policy),
                 }
             )
         )
@@ -452,6 +513,7 @@ def _print_report(report: InstallReport, *, as_json: bool) -> None:
     print(f"package: {report.package_dir}")  # noqa: T201 - this IS the report
     print(f"config: {report.config_path}")  # noqa: T201 - this IS the report
     print(f"registry: {'patched' if report.registry_changed else 'already patched'}")  # noqa: T201
+    print(f"policy: {report.policy or 'agentdag shipped tier table'}")  # noqa: T201 - this IS the report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -460,15 +522,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--harness", required=True, type=Path, help="root of the slop-code-bench clone")
     parser.add_argument("--agentdag-version", required=True, help="agentdag git ref the arm's image installs")
     parser.add_argument("--source", type=Path, default=None, help=f"package source (default: {SOURCE_ROOT})")
+    parser.add_argument(
+        "--policy", type=Path, default=None, help="tier policy YAML on this host for the arm to run under"
+    )
     parser.add_argument("--json", action="store_true", help="print a JSON envelope instead of lines")
     args = parser.parse_args(argv)
     as_json = bool(cast("bool", args.json))
     raw_source = cast("Path | None", args.source)
+    raw_policy = cast("Path | None", args.policy)
     try:
         report = install(
             harness=Path(str(args.harness)),
             agentdag_version=str(args.agentdag_version),
             source=None if raw_source is None else Path(str(raw_source)),
+            policy=None if raw_policy is None else Path(str(raw_policy)),
         )
     except InstallError as exc:
         print(f"scb_install_agentdag: {exc}", file=sys.stderr)  # noqa: T201 - the refusal must be seen

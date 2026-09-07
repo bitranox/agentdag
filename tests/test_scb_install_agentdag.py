@@ -25,6 +25,7 @@ from scb_install_agentdag import (
     install,
     patch_agents_init,
     render_agent_config,
+    validate_policy,
     validate_ref,
 )
 
@@ -338,3 +339,68 @@ def broken_source(root: Path, *, broken: str = "agent.py.tmpl") -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def a_policy_file(tmp_path: Path) -> Path:
+    """Any readable file: --policy validates that it is one, and agentdag parses it later."""
+    policy = tmp_path / "arm-tier-policy.yaml"
+    policy.write_text("models: []\n", encoding="utf-8")
+    return policy
+
+
+def test_install_without_a_policy_leaves_the_commented_example_alone(tmp_path: Path) -> None:
+    """The default is the shipped tier table, and the committed line stays a comment."""
+    harness = make_harness(tmp_path)
+    report = install(harness=harness, agentdag_version=SHA)
+    text = (harness / CONFIG_RELATIVE).read_text(encoding="utf-8")
+    assert report.policy is None
+    assert yaml.safe_load(text).get("policy") is None
+    assert "# policy: /abs/path/to/tier-policy.yaml" in text
+
+
+def test_install_with_a_policy_writes_the_resolved_path_over_the_comment(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    policy = a_policy_file(tmp_path)
+    report = install(harness=harness, agentdag_version=SHA, policy=policy)
+    text = (harness / CONFIG_RELATIVE).read_text(encoding="utf-8")
+    assert report.policy == policy.resolve()
+    assert yaml.safe_load(text)["policy"] == str(policy.resolve())
+    assert "# policy: /abs/path/to/tier-policy.yaml" not in text
+
+
+def test_install_writes_an_absolute_policy_path_whatever_was_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative path names a different file from another directory; the container gets one path."""
+    harness = make_harness(tmp_path)
+    a_policy_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    report = install(harness=harness, agentdag_version=SHA, policy=Path("arm-tier-policy.yaml"))
+    assert report.policy is not None
+    assert report.policy.is_absolute()
+    assert yaml.safe_load((harness / CONFIG_RELATIVE).read_text(encoding="utf-8"))["policy"] == str(report.policy)
+
+
+@pytest.mark.parametrize("missing", ["no-such-file.yaml", "a-directory"])
+def test_install_refuses_a_policy_that_is_not_a_readable_file_and_writes_nothing(tmp_path: Path, missing: str) -> None:
+    harness = make_harness(tmp_path)
+    (tmp_path / "a-directory").mkdir()
+    before = tree_of(harness)
+    with pytest.raises(InstallError, match="names no readable file"):
+        install(harness=harness, agentdag_version=SHA, policy=tmp_path / missing)
+    assert tree_of(harness) == before
+
+
+def test_validate_policy_expands_a_leading_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The launcher's own notes write this path with a ~, and an unexpanded one names nothing."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    policy = a_policy_file(tmp_path)
+    assert validate_policy(Path("~") / policy.name) == policy.resolve()
+
+
+def test_render_refuses_a_source_carrying_no_policy_comment_when_one_is_asked_for(tmp_path: Path) -> None:
+    source = (SOURCE_ROOT / "agentdag.yaml").read_text(encoding="utf-8")
+    stripped = source.replace("# policy: /abs/path/to/tier-policy.yaml", "# policy: elsewhere")
+    with pytest.raises(InstallError, match="exactly one"):
+        render_agent_config(stripped, agentdag_version=SHA, policy=tmp_path / "p.yaml")
