@@ -58,6 +58,7 @@ from slop_code.execution.runtime import RuntimeResult
 from slop_code.logging import get_logger
 
 from .support import DONE_OUTCOME
+from .support import LAUNCH_SCRIPT_NAME
 from .support import PGID_FILE_NAME
 from .support import SUSPENDED_PREFIX
 from .support import LaunchSpec
@@ -507,10 +508,31 @@ class AgentdagAgent(Agent):
             (path / "stderr.log").write_text(self.final_result.stderr or "", encoding="utf-8")
         if self.suspended_at is not None:
             (path / "suspended_at.txt").write_text(f"{self.suspended_at}\n", encoding="utf-8")
+        self._save_launch_script(path)
         saved = 0
         for run_id in self._run_ids:
             saved += self._save_run(run_id, path / "runs" / run_id)
         self.log.debug("agent.agentdag.artifacts.saved", output_dir=str(path), runs=saved)
+
+    def _save_launch_script(self, path: Path) -> None:
+        """Copy the exact command this checkpoint launched into its artifacts.
+
+        It lives in the run store's ROOT, beside the run directories rather than inside one, so
+        :meth:`_save_run` never reaches it - measured 2026-09-08, and the argv is recoverable
+        from nothing else afterwards. It carries every ``--set``, the policy path and the goal,
+        which is what lets a result be traced back to the configuration that produced it. Saved
+        without the leading dot so it is visible in a listing of the artifacts.
+
+        Best effort on purpose: a checkpoint's result must not be lost because a provenance copy
+        failed, and a missing script is reported rather than raised.
+        """
+        if self._runs_host is None:
+            return
+        source = self._runs_host / LAUNCH_SCRIPT_NAME
+        if not source.is_file():
+            self.log.error("agent.agentdag.artifacts.missing_launch_script", expected=str(source))
+            return
+        shutil.copy2(source, path / LAUNCH_SCRIPT_NAME.lstrip("."))
 
     def _save_run(self, run_id: str, destination: Path) -> int:
         """Copy one run directory minus its node homes; 0 when there was nothing to copy."""
