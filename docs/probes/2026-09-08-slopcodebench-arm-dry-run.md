@@ -131,17 +131,41 @@ arm produced a complete, green-looking run of zeros:
   the harness printed a Run Summary, and every exit code in the chain was 0, including the
   launcher's `END dynamic_config_service_api rc=0` and `ARM COMPLETE`.
 
-So `escalation.on_auth_failure: fail_run` never fires on this path: the auth failure is
-laundered into "the planner wrote no plan.json" one layer up, and nothing downstream can tell
-a credential failure from a coordinator that legitimately scored zero. This matters directly
-to the counted arm, because the Claude CLI reports an exhausted subscription quota as
-`authentication_failed` with no field distinguishing it - so a quota exhaustion partway through
-Task 13 would produce an arm of zeros that reads as a real result, with rc 0 everywhere.
+This matters directly to the counted arm, because the Claude CLI reports an exhausted
+subscription quota as `authentication_failed` with no field distinguishing it, so a quota
+exhaustion partway through Task 13 would produce an arm of zeros that reads as a real result,
+with rc 0 everywhere.
 
-`tokens_by_row` is the signal that separates them: a checkpoint whose coordinator suspended
-having charged zero tokens cannot have done any work. Whether that becomes a void rule for
-Task 13, and whether agentdag should refuse to re-plan past an auth failure at all, are both
-open (`OPEN-WORK.md`).
+### Two causes, on one path
+
+The first was found by reading down from the journal and is fixed. The second was found by
+re-running the rehearsal against the fix and watching nothing change.
+
+**Cause 1: the executor did not recognise the message.** `_classify_error` matched exactly one
+string, `"Not logged in"`, which is the CLI's own login failure. The SDK reports a rejected
+token as `Failed to authenticate. API Error: 401 OAuth access token is invalid.`, so the error
+was typed `EXECUTOR_ERROR`, transient. That type is the GATE on the whole credential design:
+`separated_refusal` only asks the credential probe about an error already typed `AUTH_FAILURE`,
+and `_PROVIDER_REFUSALS` only consults `on_auth_failure` for that type. Neither ran. There is
+nothing structured to key on instead - in the real `ResultMessage`, `subtype` reads `"success"`
+while `is_error` is true. Fixed at `5733663`, and proved on the rebuilt image: the record now
+reads `type: auth_failure`, `transient: false`, message
+`Failed to authenticate. API Error: 401 OAuth access token is invalid. [probe: http 401]`, so
+the out-of-band probe runs and correctly separates a 401 from a 429. **[measured]**
+
+**Cause 2, still open: the planner path never reads the record's error.** With cause 1 fixed
+the run behaves identically - four planner dispatches, four `plan_invalidated`, suspended at
+`a_planning`, `tokens_by_row {"opus": 0}`. `_plan_or_reasons` returns
+`NotPlanned("the planner node wrote no plan.json")` on a missing plan ref without looking at
+`record.error`, so the re-plan loop swallows a refusal that policy has already declared
+un-retryable, and spends three more planner dispatches doing it. In a real run those are paid.
+**[measured]**
+
+The fix does buy Task 13 something even with cause 2 open: the journal now records
+`auth_failure` per record, which is a specific detector a readings rule can key on. It is
+better than `tokens_by_row == 0`, which says only that nothing was charged. Whether cause 2 is
+fixed, and whether Task 13 gets a void rule pre-registered before its first counted checkpoint,
+are open (`OPEN-WORK.md` rank 06).
 
 ## Still owed by Task 12
 
