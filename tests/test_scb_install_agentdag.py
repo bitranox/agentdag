@@ -404,3 +404,21 @@ def test_render_refuses_a_source_carrying_no_policy_comment_when_one_is_asked_fo
     stripped = source.replace("# policy: /abs/path/to/tier-policy.yaml", "# policy: elsewhere")
     with pytest.raises(InstallError, match="exactly one"):
         render_agent_config(stripped, agentdag_version=SHA, policy=tmp_path / "p.yaml")
+
+
+def test_the_image_builds_under_the_shell_the_arm_actually_runs_under() -> None:
+    """A SHELL instruction has to precede the first RUN, or the build asserts the wrong thing.
+
+    The base image declares ``SHELL ["/bin/bash", "-lc"]``. A login bash sources /etc/profile,
+    which ASSIGNS PATH rather than extending it, so the template's own ``ENV PATH`` is gone
+    inside every RUN - measured in the base image, ``bash -lc`` resolves neither ``claude`` nor
+    ``agentdag`` while ``sh -c`` resolves both. The agent spawns its runtime with
+    ``disable_setup=True``, so the harness execs ``/bin/sh -c``; matching the build shell to it
+    is what makes the template's closing version assertions test the promise the arm depends on.
+    Removing the ENV PATH line then fails the build 127, which is how that was checked.
+    """
+    lines = (SOURCE_ROOT / "agentdag_scb_agent" / "docker.j2").read_text(encoding="utf-8").splitlines()
+    directives = [line.split()[0] for line in lines if line[:1] not in {"", "#", " "}]
+    assert "SHELL" in directives, "no SHELL instruction; every RUN takes the base image's login bash"
+    assert "RUN" in directives, "a template with no RUN would satisfy the ordering vacuously"
+    assert directives.index("SHELL") < directives.index("RUN")

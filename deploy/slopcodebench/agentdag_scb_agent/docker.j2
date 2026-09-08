@@ -11,6 +11,17 @@ ENV PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 ENV XDG_CONFIG_HOME="$HOME/.config"
 ENV XDG_DATA_HOME="$HOME/.local/share"
 
+# The base image declares SHELL ["/bin/bash", "-lc"], and a LOGIN bash sources /etc/profile,
+# which assigns PATH outright rather than extending it - so every ENV PATH above is discarded
+# inside every RUN below. That is not just an inconvenience for the assertions: it means the
+# build would otherwise run under an environment this arm never uses. The agent spawns its
+# runtime with disable_setup=True, so the harness execs `/bin/sh -c <command>` and the command
+# gets the image's own PATH, exactly as declared here. Matching the build shell to the runtime
+# shell is what lets the assertion at the end of this file test the promise the arm depends on
+# instead of testing a login shell's profile. Measured in the base image: `bash -lc` resolves
+# neither `claude` nor `agentdag`, `sh -c` resolves both.
+SHELL ["/bin/sh", "-c"]
+
 # --- The Claude Code CLI every coordinator node runs -------------------------
 # Pinned to the version the control arm's own transcripts record, so the pair differs in
 # the coordinator and not in the CLI.
