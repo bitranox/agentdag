@@ -425,6 +425,47 @@ def test_result_translation_sums_the_three_input_fields_and_names_auth_failure()
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The CLI's own login failure, and what an exhausted subscription quota looks like.
+        "Not logged in - Please run /login",
+        # The SDK's shape for a rejected OAuth token, copied from the ResultMessage of a real
+        # dispatch: agentdag-eval run REHEARSAL-agentdag_20260908T031423, node p_root. Its
+        # `subtype` read "success" while `is_error` was true, so the text is the only signal
+        # there is, and this exact string classified as a generic executor error until now.
+        "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+        # Case is not a promise the CLI makes anywhere, and the two costs are not symmetric: a
+        # missed auth failure produced a whole arm of zero-score checkpoints that read as a
+        # real result, while a false one suspends a resumable run and says so.
+        "failed to authenticate. api error: 401 oauth access token is invalid.",
+    ],
+)
+def test_every_observed_authentication_failure_is_named_as_one(text: str) -> None:
+    """AUTH_FAILURE is the gate on the whole credential path, so a missed shape disables it.
+
+    `separated_refusal` only asks the credential probe about an error already typed
+    AUTH_FAILURE, and `_PROVIDER_REFUSALS` only consults `on_auth_failure` for that type. A
+    text this classifier does not recognise therefore becomes a transient executor error, and
+    measured 2026-09-08 the planner's re-plan loop then reports it as "the planner node wrote
+    no plan.json" and the run suspends looking like a coordinator that scored zero.
+    """
+    outcome = outcome_from_usage(
+        model="sonnet",
+        num_turns=0,
+        is_error=True,
+        text=text,
+        usage={},
+        first_turn_input=0,
+        cwd_rel="wt/r",
+        cost_usd=None,
+    )
+    assert outcome.error is not None
+    assert outcome.error.type == "auth_failure"
+    assert outcome.error.transient is False
+
+
+@pytest.mark.os_agnostic
 def test_result_translation_names_a_non_auth_error_as_executor_error_and_transient() -> None:
     o = outcome_from_usage(
         model="sonnet",
@@ -440,6 +481,22 @@ def test_result_translation_names_a_non_auth_error_as_executor_error_and_transie
     assert o.error is not None
     assert o.error.type == "executor_error"
     assert o.error.transient is True
+
+    # A failure that merely MENTIONS authentication is not one. Without a case like this the
+    # widening has no stated upper bound, and the markers could be broadened to "auth" or "401"
+    # with every test still green.
+    near = outcome_from_usage(
+        model="sonnet",
+        num_turns=1,
+        is_error=True,
+        text="the authentication middleware raised on line 401 while running the test suite",
+        usage={},
+        first_turn_input=0,
+        cwd_rel="wt/r",
+        cost_usd=None,
+    )
+    assert near.error is not None
+    assert near.error.type == "executor_error"
 
 
 @pytest.mark.os_agnostic

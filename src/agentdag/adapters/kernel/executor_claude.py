@@ -176,7 +176,27 @@ _ALLOWLIST_KEYS = (
     "HOMEPATH",
 )
 
-_AUTH_FAILURE_TEXT = "Not logged in"
+_AUTH_FAILURE_MARKERS = ("not logged in", "failed to authenticate")
+"""Lower-cased substrings of a failed dispatch's result text that name a credential refusal.
+
+One marker per SHAPE actually observed, because there is nothing else to go on: measured
+2026-09-08 on a rejected OAuth token, ``ResultMessage.subtype`` read ``"success"`` while
+``is_error`` was true, so no structured field distinguishes this from any other failure.
+
+* ``not logged in`` is the CLI's own login failure, and is also what an exhausted
+  subscription quota looks like - which is why :func:`separated_refusal` asks a credential
+  probe out of band before the classification stands.
+* ``failed to authenticate`` is the SDK's shape for a rejected token
+  (``Failed to authenticate. API Error: 401 OAuth access token is invalid.``). It classified
+  as a generic executor error until 2026-09-08, and because this type is the GATE on the whole
+  credential path - :func:`separated_refusal` only probes an AUTH_FAILURE, and
+  ``_PROVIDER_REFUSALS`` only consults ``on_auth_failure`` for one - the run instead re-planned
+  until its allowance was spent and suspended, which the harness above it recorded as a normal
+  zero-score checkpoint.
+
+Matched case-insensitively. The CLI promises no casing, and the two costs are not symmetric: a
+missed refusal produced a whole arm of zeros that reads as a real result, while a false one
+suspends a run that stays resumable and names its reason."""
 
 _EFFORT_LEVELS: tuple[EffortLevel, ...] = ("low", "medium", "high", "xhigh", "max")
 """Every value ``claude_agent_sdk.types.EffortLevel`` allows, read from source (0.2.139)."""
@@ -440,7 +460,10 @@ def _copy_credential(source: Path, destination: Path) -> None:
 
 
 def _classify_error(text: str) -> NodeError:
-    """Classify a failed dispatch's result text: the CLI's own login failure, or a generic executor error.
+    """Classify a failed dispatch's result text: a credential refusal, or a generic executor error.
+
+    The markers are :data:`_AUTH_FAILURE_MARKERS`; that is where the shapes and the reasoning
+    for matching on text at all live.
 
     ``text`` is scrubbed (:func:`~agentdag.domain.scrub.scrub`'s VALUE pass) before it
     becomes ``NodeError.message`` - the model's own final text is exactly the kind of
@@ -449,7 +472,8 @@ def _classify_error(text: str) -> NodeError:
     anything else in that path.
     """
     scrubbed = cast("str", scrub(text))
-    if _AUTH_FAILURE_TEXT in text:
+    lowered = text.lower()
+    if any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
         return NodeError(type=ErrorType.AUTH_FAILURE, message=scrubbed, transient=False)
     return NodeError(type=ErrorType.EXECUTOR_ERROR, message=scrubbed, transient=True)
 
@@ -617,7 +641,7 @@ def outcome_from_usage(
     Returns:
         ``status=NEEDS_CONTINUATION`` when the turn ceiling was reached;
         ``status=DONE`` unless ``is_error``; on error, ``error.type=AUTH_FAILURE``
-        (not transient) when ``text`` names the CLI's login failure, else
+        (not transient) when ``text`` carries one of :data:`_AUTH_FAILURE_MARKERS`, else
         ``EXECUTOR_ERROR`` (transient).
 
     Example:
