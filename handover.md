@@ -10,10 +10,11 @@ top-ranked open item and the three decisions that were blocking it - ranks 71, 6
 made, shipped and pushed. Its `next:` now reads: a clean single-checkpoint parity reading, which
 costs another paid checkpoint.
 
-**Before any further checkpoint, paid or free, re-run `scripts/scb_install_agentdag.py` at the
-current commit.** The harness clone under `~/agentdag-eval/slopcodebench/` still holds the adapter
-as installed at `cf3138c`, so a launch today would run the OLD agent: without the harvest fix, and
-with the arm config that still has retries on. Nothing in the launcher checks this.
+The harness clone was REINSTALLED at `3c01315` after the pushes, so it no longer holds the old
+adapter, and it was verified through the harness's own code rather than the installer's report.
+What is NOT done is the container image at that sha: the image tag carries the version
+(`agentdag-<sha>-<env>`), so a stale image cannot be silently reused, but the first checkpoint
+pays the build. Build it before a paid run rather than inside one.
 
 ## In flight
 
@@ -130,8 +131,8 @@ New this session:
   `tests/test_scb_agent_harvest.py` (shape) and `tests/test_scb_arm_preregistration.py` (settings).
 - `.bitranox/sdd/progress.md` - gitignored, and the only record of the carried Minors the final
   whole-branch review should triage.
-- Outside the repo: `~/agentdag-eval/slopcodebench/` holds the harness clone (STALE, see above), the
-  catalogs, the rehearsal directory and `task12-dryrun/`.
+- Outside the repo: `~/agentdag-eval/slopcodebench/` holds the harness clone (current, see above),
+  the catalogs, the rehearsal directory and `task12-dryrun/`.
 
 ## How to verify
 
