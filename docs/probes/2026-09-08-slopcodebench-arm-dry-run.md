@@ -227,6 +227,10 @@ What the run DID establish, cleanly:
 
 - A parity reading. The run above is void as one, for the two reasons in its own section, so a
   clean single-checkpoint comparison is still owed and would cost another paid checkpoint.
+  **DELIVERED 2026-09-10** once the three defects were fixed, in
+  `2026-09-10-slopcodebench-parity-reading.md`. That reading is valid on all six void conditions,
+  and it found a further blocker: the readings script voids every COORDINATOR checkpoint through a
+  condition-3 detector written for the control's stream shape.
 - The two defects that run exposed: an unharvested attempt's spend, and a retry that cannot see
   the task. Both are in `OPEN-WORK.md`.
 - The one-checkpoint catalog it used is at
