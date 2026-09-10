@@ -9,7 +9,9 @@ puts every ``work`` node on sonnet, which reads as ordinary agentdag behaviour a
 the held-fixed table forbids.
 
 Each assertion below names the pre-registered line it enforces. A deliberate change to the arm
-has to change this file too, which is the point: the frozen table is not a comment.
+has to change this file too, which is the point: the frozen table is not a comment. The same
+holds for the document's addendum, pre-registered below its divider on 2026-09-10 because the
+text above it cannot be edited: a decision recorded only in prose is one nothing checks.
 """
 
 from __future__ import annotations
@@ -45,6 +47,12 @@ def arm_document() -> dict[str, object]:
     return cast("dict[str, object]", parsed)
 
 
+def arm_cost_limits() -> dict[str, object]:
+    limits = arm_document()["cost_limits"]
+    assert isinstance(limits, dict)
+    return cast("dict[str, object]", limits)
+
+
 def arm_settings() -> dict[str, object]:
     settings = arm_document()["settings"]
     assert isinstance(settings, dict)
@@ -58,6 +66,24 @@ def test_the_arm_denies_publishing_only_so_a_node_can_exercise_its_own_http_serv
 def test_the_arm_states_its_own_concurrency_rather_than_inheriting_a_default() -> None:
     """Decision 4: parallel 8. Stated, so the arm still says what it ran if the default moves."""
     assert arm_settings()["kernel.parallel"] == 8
+
+
+def test_the_arm_makes_one_attempt_per_checkpoint_so_cost_and_score_describe_the_same_one() -> None:
+    """Addendum, 2026-09-10: the harness base class's ``retry()`` re-dispatches ``plan-goal``
+    with "Continue from where you left off." and none of the specification, so the planner
+    re-plans a task it cannot see. The harness runs ``max_retries + 1`` attempts, so 0 is one
+    attempt: a checkpoint's cost and its score then describe the same attempt, which the paid
+    dry run's did not."""
+    assert arm_cost_limits()["max_retries"] == 0
+
+
+def test_the_other_cost_limits_still_mirror_the_control_the_config_says_they_mirror() -> None:
+    """The arm config claims to mirror the control's ``cost_limits`` verbatim except
+    ``max_retries``. The control's file lives outside this repo
+    (``agent-claude-code-oauth.yaml`` beside the harness clone), so the claim is checked
+    against its values rather than against the file: 0 disables the two cost ceilings on both
+    arms, and 100 is what the control passes as ``--max-turns``."""
+    assert arm_cost_limits() == {"cost_limit": 0, "step_limit": 100, "net_cost_limit": 0, "max_retries": 0}
 
 
 def test_the_arm_names_a_tier_policy_place_the_installer_can_fill() -> None:

@@ -1,9 +1,10 @@
 # The coordinator arm's harness agent config. Its pair is agent-claude-code-oauth.yaml, the
 # single-agent control that has already run; the two are meant to be read side by side.
 #
-# ARM FAIRNESS. Three settings differed between the arms while this was being built, and each
-# one on its own would confound the pair. All three are stated here, because this file is the
-# only place the coordinator arm gets configured.
+# ARM FAIRNESS. Every axis on which the arms differ, or could differ silently through a
+# default, is stated below - each one on its own would confound the pair. Items 1 to 5 are
+# axes MATCHED to the control; item 6, under cost_limits, is a deliberate DIFFERENCE. They are
+# stated here because this file is the only place the coordinator arm gets configured.
 #
 #   1. Permission mode. The control runs permission_mode: bypassPermissions. Coordinator nodes
 #      could only run the hard-coded dontAsk until [kernel] permission_mode became selectable,
@@ -41,13 +42,26 @@ version: "REPLACED-BY-INSTALLER"
 cli_version: "2.1.260"
 sdk_version: "0.2.152"
 
-# cost_limits mirrors the control's, verbatim. cost_limit and net_cost_limit at 0 disable
-# those ceilings on both arms; step_limit is what the control passes as --max-turns, and its
-# coordinator counterpart is kernel.max_turns below.
+# cost_limits mirrors the control's, verbatim EXCEPT max_retries. cost_limit and net_cost_limit
+# at 0 disable those ceilings on both arms; step_limit is what the control passes as
+# --max-turns, and its coordinator counterpart is kernel.max_turns below.
+#
+#   6. max_retries. The control leaves this at the default 2, and its retry is a `--continue`
+#      that keeps the whole context. The coordinator has no such retry: the harness base
+#      class re-dispatches `plan-goal` with the goal "Continue from where you left off." and
+#      NONE of the specification, so the planner re-plans a task it cannot see, from whatever
+#      the killed attempt left in /workspace. That fired for real in Task 12's dry run and is
+#      half of why its parity number is void: the score included attempt 0's edits while the
+#      cost was the retry's alone. 0 gives exactly one attempt per checkpoint, so a
+#      checkpoint's cost and its score describe the SAME attempt. The asymmetry with the
+#      control is recorded rather than hidden, and the addendum to the pre-registration
+#      (docs/probes/2026-09-05-slopcodebench-corrected-pair.md) carries the void rule that
+#      replaces the retry: a coordinator that never printed a terminal line voids its problem.
 cost_limits:
   cost_limit: 0
   step_limit: 100
   net_cost_limit: 0
+  max_retries: 0
 
 # agentdag configuration. Each pair is rendered as one --set SECTION.KEY=VALUE on the
 # coordinator's command line; a list is passed as JSON, which is how an explicit empty list

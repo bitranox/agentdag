@@ -203,6 +203,54 @@ Hard-problem arm, and does not decide replication. Those follow the pair's resul
 
 ---
 
+## Addendum, pre-registered 2026-09-10
+
+It sits below the divider because nothing above it may be edited once a counted run has begun.
+It binds the COORDINATOR arm only, no checkpoint of which has counted. The corrected control's
+results below were read under the five void conditions above, and nothing here changes them or
+how they were read.
+
+**Decided by the user, 2026-09-10: `cost_limits.max_retries: 0` on the coordinator arm.**
+
+Why. The harness retries a checkpoint whose agent raised, and for the control that retry is a
+`--continue` which keeps the whole context. The coordinator has no such retry: `retry()` is the
+harness base class's, so it re-dispatches `plan-goal` with the goal "Continue from where you
+left off." and none of the specification, and the planner re-plans a task it cannot see from
+whatever the killed attempt left in `/workspace`. It fired for real in Task 12's paid dry run
+(`docs/probes/2026-09-08-slopcodebench-arm-dry-run.md`) and is half of why that checkpoint's
+parity number is void: the score, 41 of 47, includes attempt 0's edits, while the recorded
+9.29 USD and 393,329 tokens are the retry's alone. At 0 the harness makes exactly one attempt
+per checkpoint (`max_attempts = max_retries + 1`), so a checkpoint's cost and its score
+describe the SAME attempt.
+
+Consequences, recorded rather than worked around:
+
+- **An asymmetry with the control, which ran at the default 2 and used one retry** (on
+  `circuit_eval` checkpoint 8, which void condition 3 then voided). The two retries are not the
+  same mechanism, so matching the number would not have matched the treatment; the arm gives up
+  a retry it could not use well rather than keeping one that re-plans blind.
+- **A killed attempt now costs the checkpoint**, where before it cost a blind re-plan. Void
+  condition 6 below is what replaces the retry.
+- It does not fix the unharvested-spend defect a killed attempt has anyway (an attempt that
+  prints no terminal line is never harvested at all); with one attempt per checkpoint, that
+  lost figure now voids the problem instead of silently understating a counted one.
+
+**Void condition 6, coordinator arm only.** A checkpoint whose coordinator never reported a
+terminal outcome - the harness records `had_error: true` for it AND the agent logged no
+`agent.agentdag.finished` event for that checkpoint - is VOID for the affected problem, on the
+same terms as conditions 1 to 5: not tallied, not reported as a null result, re-run whole after
+the cause is fixed. The unit is the problem and not the checkpoint because the workspace carries
+forward, so a void checkpoint contaminates the ones after it.
+
+Both halves of that signal are mechanical and already recorded. What it deliberately does NOT
+cover is a run that DID print a terminal line and ended in a status that is neither `done` nor a
+suspension: the agent logs `agent.agentdag.finished` and harvests the run's spend before it
+raises, so that is a coordinator RESULT and it is scored, not voided.
+
+The arm's config states the setting with this reasoning beside it
+(`deploy/slopcodebench/agentdag.yaml`), and `tests/test_scb_arm_preregistration.py` fails if it
+moves.
+
 ## Results
 
 ### Corrected control
