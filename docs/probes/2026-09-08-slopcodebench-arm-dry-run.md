@@ -167,14 +167,69 @@ better than `tokens_by_row == 0`, which says only that nothing was charged. Whet
 fixed, and whether Task 13 gets a void rule pre-registered before its first counted checkpoint,
 are open (`OPEN-WORK.md` rank 06).
 
+## The paid one-checkpoint run, and why its number is not a parity reading
+
+Ran 2026-09-08 03:35:29 to 04:17:31 CEST, 42 minutes end to end, run directory
+`~/agentdag-eval/slopcodebench/task12-dryrun/runs/TASK12-DRYRUN-agentdag_20260908T033530`. It is
+a dry run on a one-checkpoint catalog and its readings must never join a Task 13 tally.
+**[measured]**
+
+|                  | control, checkpoint_1 | coordinator, this run |
+|------------------|-----------------------|-----------------------|
+| strict           | 47 of 47, 1.000       | 41 of 47, 0.872       |
+| core             | 1.000                 | 1.000 (6 of 6)        |
+| recorded cost    | 2.32 USD              | 9.29 USD              |
+| charged tokens   | 116,901               | 393,329 (opus row)    |
+| steps            | 14                    | 121                   |
+| inference window | 526 s                 | 2,487 s               |
+
+**The comparison is VOID, and the run is a finding about the arm rather than a reading of it.**
+The harness dispatched the coordinator TWICE:
+
+- Attempt 0, run `20260908T013531Z-6adc00`, started 01:35:31Z. Watched live at five minutes: a
+  5-entry plan accepted, first work node running. It died about thirteen minutes in with
+  `agentdag printed no terminal line (exit 15); stderr tail: setsid: child 24 did not exit
+  normally`. The child took a signal. **What sent it is undetermined** - there is no OOM record
+  in the journal, and the only thing known to coincide is this session suspending at about the
+  same minute. It is recorded as undetermined rather than guessed at.
+- Attempt 1, run `20260908T014858Z-c1336c`, started 01:48:58Z, ended `done` with
+  `tokens_by_row {"opus": 393329}`, 13 dispatches, 3 plans accepted, 11 nodes.
+
+Two consequences, and both are defects rather than context:
+
+- **Attempt 0's spend is gone, and its WORK is in the score.** `run()` appends the run id and
+  harvests only after `_terminal_line` succeeds, so an attempt that never printed one is never
+  harvested. Its `/workspace` edits survived into attempt 1, which is why 41 of 47 passed. So
+  the cost column above undercounts by a whole 13-minute coordinator run while the score column
+  includes its output. The run store was a temporary directory that `cleanup()` removed, so the
+  figure is not recoverable now, and would not be recoverable in a counted arm either.
+- **The retry's goal was 33 characters.** `retry()` is the harness base class's, so attempt 1
+  ran `plan-goal` with the goal `Continue from where you left off.` and none of the
+  specification. It is the same defect as rank 67, one step worse than that entry describes: not
+  merely a fresh run with a fresh token budget, but a fresh run that cannot see the task.
+
+And once more nothing in the chain said so: `END dynamic_config_service_api rc=0`,
+`ARM COMPLETE`, `LAUNCHER_RC=0`, `state: ran`, `had_error=False`, `passed_policy=True`. The
+retry is visible only in `infer.log`, in a `retry_attempt` field, and in the run ids differing
+between the artifacts and what was watched live.
+
+What the run DID establish, cleanly:
+
+- Check (c), from the nodes' own init records rather than from any config: every node ran
+  `claude_code_version 2.1.260`, `permissionMode bypassPermissions` and `model claude-opus-5`,
+  planner and work node alike. All three fairness axes proven at source. **[measured]**
+- The healthy path works end to end: a planner that produces an accepted plan first try, work
+  nodes, a gate, two further plans, `subtree_done`, `run_summary`, terminal status `done`.
+- `tokens_by_row` is the detector rank 06 needs. This run reads `{"opus": 393329}`; the
+  auth-failure rehearsals read `{"opus": 0}` with the identical outer shape.
+
 ## Still owed by Task 12
 
-- The paid one-checkpoint parity run. The comparator is on disk: the corrected control's
-  `dynamic_config_service_api` `checkpoint_1` took 526 s, 2.32 USD, 14 steps, 116,901 charged
-  tokens (3,270 input + 66,860 cache write + 46,771 output), and scored 47 of 47 strict.
-  **[measured, from the control's own `checkpoint_results.jsonl`]**
-- Check (c), which that run supplies.
-- A one-checkpoint catalog is derived for it at
+- A parity reading. The run above is void as one, for the two reasons in its own section, so a
+  clean single-checkpoint comparison is still owed and would cost another paid checkpoint.
+- The two defects that run exposed: an unharvested attempt's spend, and a retry that cannot see
+  the task. Both are in `OPEN-WORK.md`.
+- The one-checkpoint catalog it used is at
   `~/agentdag-eval/slopcodebench/scb-problems-cumulative-cp1`, because the harness runs every
   checkpoint a problem's `config.yaml` declares; it differs from the control's catalog only in
   the three dropped checkpoint entries, verified by diff, and `checkpoint_1.md` is byte
