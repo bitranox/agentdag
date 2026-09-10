@@ -5,31 +5,47 @@ where this session stopped and what it decided.
 
 ## The next action
 
-**Fix rank 07, then Task 13.** The parity reading is TAKEN (see below) and it found a blocker that
-sits in front of the counted arm: `scripts/slopcodebench_readings.py` voids every COORDINATOR
-checkpoint and reports its `new tokens` and `peak prompt` as 0, so a counted Task 13 arm today
-would void every checkpoint AND report zero on the axis the pre-registered score curve is plotted
-on. Rank 07 carries the diagnosis and the fix direction; the figures it needs already exist in the
-harness's own `inference_result.json`, which for a coordinator equals the journal's
-`tokens_by_row` exactly.
+**A PAID COUNTED RUN IS IN FLIGHT. Do not start another; do not run `make test` expecting a quiet
+box.** Task 13's first problem, `database_migration`, started 2026-09-11 00:53:37 in
+`~/agentdag-eval/slopcodebench/task13/`. Judge it by the `END` and `LAUNCHER_RC` lines in
+`logs/arm.log`, never by a task notification. Disarm by killing the pid in `logs/launcher.pid`;
+stop a running container with `docker stop` on the `slop-code:agentdag-*` one.
 
-Task 13 is the counted arm and the only thing here that can carry a thesis claim. Choose its
-checkpoints so the CONTROL does not saturate them: the parity checkpoint is one the control solves
-47 of 47, where a coordinator can at best tie.
+When it ends, the launcher AUTOMATICALLY re-checks the token and attempts
+`dynamic_config_service_api` next. That is intended. If the token no longer covers it the launcher
+exits 3 having started nothing, which is not a failure - relaunch when a window opens.
 
-The harness clone was REINSTALLED at `3c01315` and its container image BUILT at that sha, both
-verified from ground truth rather than from a tool's own report: the clone through the harness's
-own import of the agent and its config, the image from inside itself - `direct_url.json` records
-the commit, and the installed `planner.py` carries the rank 06 fix. `agentdag` and `claude` resolve
-to 0.0.1 and 2.1.260. Probe the image with `bash -c`, never `bash -lc`: a login shell's
-`/etc/profile` discards the image's own `ENV PATH` and reports installed tools as not found.
+Then, in order:
+
+1. Read the arm with `scripts/scb_arm_report.py <run dir>` and apply EVERY void condition,
+   including the addendum's condition 6. Read `tokens_by_row` before believing any score: a
+   suspended checkpoint that charged zero is an auth failure, not a result.
+2. Decide `circuit_eval` with the REAL ratio in hand rather than my extrapolation. It needs about
+   10.5 h of token on that extrapolation, against lifetimes of 7 to 8, so it may need its catalog
+   split by checkpoint. The measured ratio below suggests the time half of that estimate was too
+   pessimistic.
+3. The results go BELOW the divider of `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`,
+   and the order deviation (short problems first) is recorded there.
 
 ## In flight
 
-Nothing running except the CI watch on the tip. Every push this session was preceded by a
-`make test` through `gate.py`, read from its `[PASS] make test (rc=0)` line rather than from a task
-notification. The paid parity run finished 18:15:31 with `END ... rc=0`, `ARM COMPLETE` and
-`LAUNCHER_RC=0`; no container of ours is left running.
+`database_migration` is RUNNING as above, in its own detached process group, into a token valid to
+08:52. Two of its five checkpoints were evaluated in the first 43 minutes.
+
+**Provisional readings, which are NOT an outcome** - a later checkpoint can repair what an earlier
+one broke, and that is what `repaired` measures:
+
+| ck | arm         | strict | core  | cost USD | seconds | steps | peak    | new tokens |
+|----|-------------|--------|-------|----------|---------|-------|---------|------------|
+| 1  | control     | 1.000  | 1.000 | 1.04     | 253     | 8     | 58,973  | 29,982     |
+| 1  | coordinator | 1.000  | 1.000 | 2.53     | 472     | 13    | 79,151  | 127,436    |
+| 2  | control     | 0.984  | 1.000 | 1.36     | 291     | 14    | 73,154  | 46,090     |
+| 2  | coordinator | 0.903  | 0.667 | 10.59    | 2,108   | 56    | 142,208 | 495,666    |
+
+**My sizing extrapolation is already wrong on time.** It scaled everything by 4.43x wall clock from
+one checkpoint of the easiest kind. Two checkpoints in 43 minutes puts this problem near the
+control's own pace rather than 4.4x it, so the 17 h figure for the whole arm is too pessimistic.
+The COST side is holding or worse: checkpoint 2 alone cost 10.59 against the control's 1.36.
 
 ## Committed, or not
 
@@ -78,9 +94,18 @@ Mine, the ones that outlive the commits:
   do is fire on a tree of nodes where no single process terminated.
 - **The sub-plan path was left alone.** It already stops on a `NotPlanned` rather than looping, so a
   refusal there costs at most one further planner dispatch.
-- **The parity run was launched DETACHED** (`setsid nohup`), because a session-tied background task
-  dies with its session and would leave a coordinator spending inside an orphaned container. Judge
-  such a run by the `END` and `LAUNCHER_RC` lines in its `arm.log`, never by a task notification.
+- **Paid runs are launched DETACHED** (`setsid nohup`), because a session-tied background task dies
+  with its session and would leave a coordinator spending inside an orphaned container. Judge such a
+  run by the `END` and `LAUNCHER_RC` lines in its `arm.log`, never by a task notification.
+- **Task 13 waits for the token rather than racing it.** The harness FREEZES the token into the
+  container at launch and nothing inside refreshes it, so a problem that outlives it dies mid-run
+  and is VOID under condition 4. `launch_when_token_allows.sh` polls the credential and starts only
+  when the window covers the problem. It worked: the token sat at 0.14 h, rolled to 7.98 h at
+  00:53, and the launcher caught it within five minutes.
+- **The launch condition was checked in BOTH directions before arming** (3.99 waits, 5.20 launches),
+  because the dangerous direction is a false "fits" that spends money. The script writes its own PID
+  to a pidfile: the launch command contains the script's name, so a `pgrep -f` liveness check would
+  match the launching shell, and the guard caught exactly that.
 - **The launcher's expected duration was raised from 1800 s to 3000 s.** It gates only the
   token-coverage refusal, and 1800 contradicted this host's own measurement - the void run's
   surviving attempt alone took 2,487 s.
@@ -130,6 +155,9 @@ die here if they are not carried again:
 
 New this session:
 
+- An extrapolation from ONE measurement can be wrong in one dimension and right in the other. The
+  4.43x wall-clock ratio from a single easy checkpoint over-predicted Task 13's duration badly while
+  the cost ratio held or worsened. Say which dimension a scaled estimate was measured on.
 - A measurement instrument written for one arm's SHAPE can void every run of the other arm and look
   like a finding. Adjudicate a void against its SOURCE with a control from each arm before believing
   it; here the control-arm run answered differently and settled it in one pass.
