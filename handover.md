@@ -18,19 +18,23 @@ pays the build. Build it before a paid run rather than inside one.
 
 ## In flight
 
-Nothing running except the CI watch on the tip. Three gates ran green this session, each read from
-a `gate.py` `[PASS] make test (rc=0)` line.
+Nothing running except the CI watch on the tip. Every push this session was preceded by a
+`make test` through `gate.py`, read from its `[PASS] make test (rc=0)` line rather than from a task
+notification.
 
 ## Committed, or not
 
-Everything is committed and pushed. This session's work is `git log --oneline 6fe5ed5..origin/main`:
-four commits, one per decision plus the dependency floor bmk raised. No sha for the end is written
-here, because the commit that adds this file moves it.
+Everything is committed and pushed. This session's work is `git log --oneline 6fe5ed5..origin/main`
+- run it rather than trusting a count here, which the commit adding this file and every correction
+to it would move. It is one commit per decision, plus the dependency floor bmk raised, plus this
+file and its corrections.
 
-CI and CodeQL are green on `126eb46`, `b3a13c4` and `38a8eba`, each read from a `ci_wait` verdict
-rather than a task notification. `9c02e5a` was pushed together with `38a8eba` and a push builds the
-HEAD sha only, so it has no run of its own - checked against `gh run list`, not assumed. The commit
-that adds THIS file is not covered by any of that and carries no code.
+CI and CodeQL are green on every commit carrying code - `126eb46`, `b3a13c4` and `38a8eba` - each
+read from a `ci_wait` verdict rather than a task notification, and the doc-only commits after them
+were watched the same way. `9c02e5a` was pushed together with `38a8eba`, and a push builds the HEAD
+sha only, so it has no run of its own: checked against `gh run list`, not assumed. Whatever commit
+adds the LAST version of this file cannot be covered here; check it with
+`uv run <compuse-toolbox>/scripts/ci_wait.py --sha $(git rev-parse HEAD)`.
 
 **Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72), untouched again this session.
 Every commit used a pathspec.
