@@ -7,14 +7,16 @@ where this session stopped and what it decided.
 
 **Put the parity reading to the user, or take it if they have already said go.** Rank 05 is the
 top-ranked open item and the three decisions that were blocking it - ranks 71, 69 and 06 - are all
-made, shipped and pushed. Its `next:` now reads: a clean single-checkpoint parity reading, which
-costs another paid checkpoint.
+made, shipped and pushed, and the clone and image are current. Its `next:` now reads: a clean
+single-checkpoint parity reading, which costs another paid checkpoint. Nothing mechanical stands
+in front of it.
 
-The harness clone was REINSTALLED at `3c01315` after the pushes, so it no longer holds the old
-adapter, and it was verified through the harness's own code rather than the installer's report.
-What is NOT done is the container image at that sha: the image tag carries the version
-(`agentdag-<sha>-<env>`), so a stale image cannot be silently reused, but the first checkpoint
-pays the build. Build it before a paid run rather than inside one.
+The harness clone was REINSTALLED at `3c01315` and its container image BUILT at that sha, both
+verified from ground truth rather than from a tool's own report: the clone through the harness's
+own import of the agent and its config, the image from inside itself - `direct_url.json` records
+the commit, and the installed `planner.py` carries the rank 06 fix. `agentdag` and `claude` resolve
+to 0.0.1 and 2.1.260. Probe the image with `bash -c`, never `bash -lc`: a login shell's
+`/etc/profile` discards the image's own `ENV PATH` and reports installed tools as not found.
 
 ## In flight
 
