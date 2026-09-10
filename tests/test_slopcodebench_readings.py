@@ -455,3 +455,180 @@ def test_steps_missing_from_the_stream_mark_the_turn_bound_hit(tmp_path: Path) -
     assert reading is not None
     assert reading.steps_missing_from_stream == 165
     assert reading.bound_hit is True
+
+
+# --- Coordinator checkpoints -------------------------------------------------------------
+#
+# A coordinator checkpoint has no `agent/stdout.jsonl`: it saves `agent/stdout.log` plus one
+# `agent/runs/<run id>/` holding the coordinator's journal and a `transcript.jsonl` per node
+# DISPATCH. Those transcripts are the Agent SDK's own message objects (`AssistantMessage`,
+# `ResultMessage`), not the CLI's stream, so the control's fold mis-parses them: it excludes a
+# cumulative result by `type == "result"` and the SDK writes `"ResultMessage"`, which fed a
+# whole dispatch's total into a PER-REQUEST peak. Measured on the real parity run before this
+# was fixed: peak 1,874,489 against a 200,000 context window, and every coordinator checkpoint
+# reported VOID because `steps_missing_from_stream` equalled its entire step count.
+
+
+def _sdk_assistant(msg_id: str, *, input_tokens: int, cache_read: int, cache_write: int) -> dict[str, object]:
+    """One Agent SDK `AssistantMessage`, whose usage is that REQUEST's own."""
+    return {
+        "type": "AssistantMessage",
+        "message_id": msg_id,
+        "model": "claude-opus-5",
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_write,
+            "output_tokens": 11,
+        },
+    }
+
+
+def _sdk_result(*, input_tokens: int, cache_read: int, cache_write: int) -> dict[str, object]:
+    """One Agent SDK `ResultMessage`, whose usage is the whole DISPATCH's cumulative total."""
+    return {
+        "type": "ResultMessage",
+        "subtype": "success",
+        "num_turns": 3,
+        "total_cost_usd": 0.5,
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_write,
+            "output_tokens": 22,
+        },
+    }
+
+
+def _write_coordinator(
+    checkpoint: Path,
+    *,
+    dispatches: Mapping[str, Sequence[Mapping[str, object]]],
+    records: Sequence[Mapping[str, object]] = (),
+) -> None:
+    """Give a checkpoint the artifacts a coordinator run leaves, replacing any control stream."""
+    stdout = checkpoint / "agent" / "stdout.jsonl"
+    if stdout.exists():
+        stdout.unlink()
+    (checkpoint / "agent" / "stdout.log").write_text("run 20260910T000000Z-aaaaaa done\n")
+    run = checkpoint / "agent" / "runs" / "20260910T000000Z-aaaaaa"
+    run.mkdir(parents=True)
+    journal = [{"event": "run_started"}, *records]
+    (run / "journal.jsonl").write_text("\n".join(json.dumps(line) for line in journal))
+    for node_dispatch, lines in dispatches.items():
+        node, dispatch = node_dispatch.split("/")
+        transcript = run / "nodes" / node / dispatch
+        transcript.mkdir(parents=True)
+        (transcript / "transcript.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+
+
+def _record(node_id: str, *, error_type: str | None = None) -> dict[str, object]:
+    """One journal `result` line, optionally carrying a node error."""
+    record: dict[str, object] = {"node_id": node_id, "status": "done"}
+    if error_type is not None:
+        record["error"] = {"type": error_type, "message": "x", "transient": False}
+        record["status"] = "refused"
+    return {"event": "result", "record": record}
+
+
+def test_a_coordinator_checkpoint_is_not_void_merely_for_having_no_cli_stream(tmp_path: Path) -> None:
+    """The defect this closes: EVERY coordinator checkpoint read VOID, so no arm could be tallied.
+
+    `steps_missing_from_stream` compares harness steps against messages left in the agent's CLI
+    stream, and a coordinator has none - its steps are counted from its NODES' transcripts - so
+    the difference was the whole step count on every coordinator run.
+    """
+    checkpoint = _write_checkpoint(
+        tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2}, steps=173
+    )
+    _write_coordinator(
+        checkpoint,
+        dispatches={
+            "p_root/aaaa": [
+                _sdk_assistant("m1", input_tokens=5, cache_read=100, cache_write=50),
+                _sdk_result(input_tokens=5, cache_read=100, cache_write=50),
+            ]
+        },
+        records=[_record("p_root")],
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.bound_hit is False
+
+
+def test_a_coordinator_node_whose_continuation_chain_is_exhausted_is_void(tmp_path: Path) -> None:
+    """The carve-out the pre-registration DOES name: handing over is normal, running out is not."""
+    checkpoint = _write_checkpoint(tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2})
+    _write_coordinator(
+        checkpoint,
+        dispatches={"p_root/aaaa": [_sdk_result(input_tokens=5, cache_read=100, cache_write=50)]},
+        records=[_record("p_root"), _record("n-0001", error_type="continuation_limit")],
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.bound_hit is True
+
+
+def test_a_coordinator_s_new_tokens_come_from_each_dispatch_s_cumulative_result(tmp_path: Path) -> None:
+    """Summed per DISPATCH from its `ResultMessage`, which is that dispatch's own total.
+
+    Proved against the real parity run: this fold reproduces the harness's independently recorded
+    input + cache_write to the token (366,711).
+    """
+    checkpoint = _write_checkpoint(tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2})
+    _write_coordinator(
+        checkpoint,
+        dispatches={
+            "p_root/aaaa": [
+                _sdk_assistant("m1", input_tokens=1, cache_read=9, cache_write=2),
+                _sdk_result(input_tokens=3, cache_read=900, cache_write=7),
+            ],
+            "n-0001/bbbb": [_sdk_result(input_tokens=10, cache_read=900, cache_write=20)],
+        },
+        records=[_record("p_root")],
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.new_tokens == 3 + 7 + 10 + 20
+
+
+def test_a_coordinator_s_peak_is_a_single_request_not_a_dispatch_total(tmp_path: Path) -> None:
+    """The cumulative `ResultMessage` must never enter the peak.
+
+    Before the fix it did - the exclusion tested `type == "result"` and the SDK writes
+    `ResultMessage` - which reported a peak of 1,874,489 against a 200,000 context window.
+    """
+    checkpoint = _write_checkpoint(tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2})
+    _write_coordinator(
+        checkpoint,
+        dispatches={
+            "n-0001/bbbb": [
+                _sdk_assistant("m1", input_tokens=1, cache_read=50, cache_write=9),
+                _sdk_assistant("m2", input_tokens=2, cache_read=80, cache_write=8),
+                _sdk_result(input_tokens=3, cache_read=999_999, cache_write=99),
+            ]
+        },
+        records=[_record("n-0001")],
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.peak_prompt_tokens == 2 + 80 + 8
+
+
+def test_a_repeated_sdk_message_id_does_not_raise_the_coordinator_peak(tmp_path: Path) -> None:
+    """The SDK repeats a message per content block, exactly as the CLI stream does."""
+    checkpoint = _write_checkpoint(tmp_path, "checkpoint_1", pass_counts={"Core": 2}, total_counts={"Core": 2})
+    _write_coordinator(
+        checkpoint,
+        dispatches={
+            "n-0001/bbbb": [
+                _sdk_assistant("m1", input_tokens=1, cache_read=50, cache_write=9),
+                _sdk_assistant("m1", input_tokens=1, cache_read=50, cache_write=9),
+                _sdk_result(input_tokens=1, cache_read=50, cache_write=9),
+            ]
+        },
+        records=[_record("n-0001")],
+    )
+    reading = read_checkpoint(checkpoint, problem="p")
+    assert reading is not None
+    assert reading.distinct_agent_messages == 1

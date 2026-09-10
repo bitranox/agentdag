@@ -66,9 +66,20 @@ So the detector works exactly where it was designed to and fails on the coordina
 
 The same gap costs the pair its headline quantity: `new tokens` and `peak prompt` also read 0 for
 a coordinator, and the pre-registration's measured quantity is the score curve against CUMULATIVE
-NEW TOKENS. Read with this script as it stands, a counted coordinator arm would void every
-checkpoint AND report zero for the axis the curve is plotted on. Both halves must be fixed before
-Task 13 can be read at all. Filed in `OPEN-WORK.md`. **[inferred]**
+NEW TOKENS. Read with this script as it stood, a counted coordinator arm would void every
+checkpoint AND report zero for the axis the curve is plotted on. **[inferred]**
+
+**FIXED the same day** (rank 07, closed). The cause under the cause: a node's `transcript.jsonl`
+is the Agent SDK's own message objects, not the CLI's event stream, and the control's fold
+excludes a cumulative result by `type == "result"` while the SDK writes `"ResultMessage"` - so a
+whole dispatch's total was being fed into a PER-REQUEST peak. The first attempt at aggregating
+them reported a peak of 1,874,489 against a 200,000 context window, which is what indicted the
+fold rather than the data. The reading now takes new tokens from each dispatch's cumulative
+`ResultMessage` and the peak from per-request `AssistantMessage` usage, and judges void condition
+3 for a coordinator on an EXHAUSTED continuation chain, per the pre-registration's own carve-out.
+Verified two ways: summing the dispatches reproduces the harness's independently recorded
+`input + cache_write` to the token, and a control-arm run's rows and verdicts are byte-identical
+to before the change. **[measured]**
 
 The figures below therefore come from each run's own `inference_result.json`, whose coordinator
 totals equal the journal's `tokens_by_row` exactly (244 + 366,467 + 161,591 = 528,302), not from
@@ -81,17 +92,26 @@ each. Tokens are given in two units because the two documents use both: `charged
 input + cache-write + output, the unit the dry run's table used and the one agentdag charges;
 `new` is input + cache-write, the pre-registration's unit, which excludes output.
 
-|                  | control          | coordinator, this run | ratio |
-|------------------|------------------|-----------------------|-------|
-| strict           | 1.000 (47 of 47) | 0.957 (45 of 47)      | worse |
-| core             | 1.000            | 1.000                 | tie   |
-| cost USD         | 2.32             | 14.45                 | 6.2x  |
-| charged tokens   | 116,901          | 528,302               | 4.5x  |
-| new tokens       | 70,130           | 366,711               | 5.2x  |
-| cache read       | 918,938          | 6,100,560             | 6.6x  |
-| steps            | 14               | 173                   | 12.4x |
-| inference window | 526 s            | 2,331 s               | 4.4x  |
+|                            | control          | coordinator, this run | ratio |
+|----------------------------|------------------|-----------------------|-------|
+| strict                     | 1.000 (47 of 47) | 0.957 (45 of 47)      | worse |
+| core                       | 1.000            | 1.000                 | tie   |
+| cost USD                   | 2.32             | 14.45                 | 6.2x  |
+| charged tokens             | 116,901          | 528,302               | 4.5x  |
+| new tokens                 | 70,130           | 366,711               | 5.2x  |
+| cache read                 | 918,938          | 6,100,560             | 6.6x  |
+| steps                      | 14               | 173                   | 12.4x |
+| inference window           | 526 s            | 2,331 s               | 4.4x  |
+| peak single-request prompt | 94,987           | 105,211               | 1.1x  |
 
+**[measured]**
+
+The last row is the one the thesis cares about, and it is the flattest. Decomposition is supposed
+to relieve context pressure, and on this checkpoint the coordinator's busiest single node request
+held about what the control's busiest request held: 105,211 against 94,987, both around half of a
+200,000 window. So the coordinator paid 4.5x the tokens without ever being under the pressure the
+split exists to relieve. That is consistent with this being a checkpoint the control finds easy,
+and it is the reading to repeat where the control's occupancy actually approaches the window.
 **[measured]**
 
 For reference, the VOID dry run recorded 0.872, 9.29 USD, 393,329 charged and 121 steps. The clean
@@ -124,5 +144,6 @@ which ran four links. **[read]**
 
 ## Still owed
 
-* The readings script's two coordinator gaps above, which block Task 13's tally outright.
-* Task 13 itself, the counted arm.
+* Task 13 itself, the counted arm. The readings script's two coordinator gaps were fixed the same
+  day; what remains is choosing checkpoints the control does NOT saturate, since this one cannot
+  show decomposition helping at all.

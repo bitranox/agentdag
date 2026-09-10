@@ -64,12 +64,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CheckpointReading",
+    "CoordinatorReading",
     "ProblemReading",
     "StreamReading",
     "collect_problem",
     "collect_run",
     "peak_prompt_tokens",
     "read_checkpoint",
+    "read_coordinator",
+    "read_sdk_transcript",
     "read_stream",
 ]
 
@@ -111,7 +114,27 @@ class CheckpointReading:
     max_turns_results: int
     """``error_max_turns`` results, present only where a bound-hit process's stream survived."""
     steps_missing_from_stream: int
-    """Harness steps beyond the messages left in the stream: a retry replaced the stream."""
+    """Harness steps beyond the messages left in the stream: a retry replaced the stream.
+
+    Reported for a coordinator too, because it is a real number there, but it is NOT a void
+    signal for one: see :attr:`coordinator`.
+    """
+    coordinator: bool = False
+    """Whether this checkpoint was run by the agentdag coordinator rather than one CLI process.
+
+    It changes which evidence void condition 3 is read from. A coordinator has no single CLI
+    stream: its steps come from its NODES' transcripts, so ``steps_missing_from_stream`` equals
+    the whole step count on every coordinator run and cannot mean what it means for a control.
+    """
+    chain_exhausted: int = 0
+    """Nodes whose CONTINUATION CHAIN ran out, which is void condition 3 for a coordinator.
+
+    The pre-registration's own carve-out: "a node that hands over at 100 turns is NOT this; a node
+    whose continuation chain is exhausted is recorded as such". Handing over is ordinary agentdag
+    structure, so an ``error_max_turns`` in a node's transcript must never void a checkpoint.
+    """
+    distinct_agent_messages: int = 0
+    """Distinct assistant message ids seen across the evidence, whichever shape it took."""
     repaired: int | None = None
     """Inherited failures cleared since the previous checkpoint, or None where not measurable.
 
@@ -121,7 +144,16 @@ class CheckpointReading:
 
     @property
     def bound_hit(self) -> bool:
-        """Whether a CLI process hit its turn bound with work in flight (void condition 3)."""
+        """Whether void condition 3 fired, read from whichever evidence this arm leaves.
+
+        A COORDINATOR is judged only on an exhausted continuation chain. Its nodes hand over at
+        the turn bound by design, so the control's marks are all wrong for it: an
+        ``error_max_turns`` is an ordinary handover, and ``steps_missing_from_stream`` is its
+        entire step count because it has no single CLI stream at all. Reading a coordinator with
+        the control's rule voided every checkpoint of every coordinator run.
+        """
+        if self.coordinator:
+            return self.chain_exhausted > 0
         return self.orphaned_tasks > 0 or self.max_turns_results > 0 or self.steps_missing_from_stream > 0
 
 
@@ -253,6 +285,131 @@ def read_stream(stdout_jsonl: Path) -> StreamReading:
     return StreamReading(peak, new_tokens, len(charged), results, inits, orphaned, max_turns)
 
 
+@dataclass(frozen=True)
+class CoordinatorReading:
+    """What one checkpoint's agentdag run says, when the coordinator ran it instead of one CLI.
+
+    A coordinator checkpoint saves ``agent/runs/<run id>/`` holding the run's ``journal.jsonl``
+    and one ``transcript.jsonl`` per node DISPATCH. Those transcripts are the Agent SDK's own
+    message objects, not the CLI's event stream, so they need their own fold; see
+    :func:`read_sdk_transcript`.
+    """
+
+    new_tokens: int
+    peak_prompt_tokens: int
+    distinct_messages: int
+    dispatches: int
+    chain_exhausted: int
+
+
+@dataclass(frozen=True)
+class SdkReading:
+    """One node dispatch's transcript, folded."""
+
+    new_tokens: int
+    peak_prompt_tokens: int
+    distinct_messages: int
+
+
+_SDK_ASSISTANT = "AssistantMessage"
+_SDK_RESULT = "ResultMessage"
+_CONTINUATION_LIMIT = "continuation_limit"
+
+
+def read_sdk_transcript(transcript: Path) -> SdkReading:
+    """Fold one node dispatch's Agent SDK transcript.
+
+    The two usage semantics differ and mixing them is what made the first attempt at this read a
+    peak of 1,874,489 against a 200,000 context window:
+
+    * ``ResultMessage.usage`` is the whole DISPATCH's cumulative total, so it supplies the new
+      tokens and must never enter a per-request peak. The control's fold excluded a cumulative
+      result by ``type == "result"``, which does not match the SDK's ``"ResultMessage"``.
+    * ``AssistantMessage.usage`` is that REQUEST's own, so it supplies the peak. The SDK repeats
+      a message per content block exactly as the CLI does, so ids are deduped.
+
+    Verified against the real parity run: summing this over a checkpoint's dispatches reproduces
+    the harness's independently recorded ``input + cache_write`` to the token.
+    """
+    if not transcript.is_file():
+        return SdkReading(0, 0, 0)
+    new_tokens = peak = 0
+    seen: set[str] = set()
+    for line in transcript.read_text(errors="replace").splitlines():
+        try:
+            payload: object = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        event = cast("dict[str, object]", payload)
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        fields = cast("dict[str, object]", usage)
+        kind = event.get("type")
+        if kind == _SDK_RESULT:
+            new_tokens += _int_field(fields, "input_tokens") + _int_field(fields, "cache_creation_input_tokens")
+            continue
+        if kind != _SDK_ASSISTANT:
+            continue
+        message_id = event.get("message_id")
+        if isinstance(message_id, str):
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+        prompt = _int_field(fields, "input_tokens") + _int_field(fields, "cache_read_input_tokens")
+        peak = max(peak, prompt + _int_field(fields, "cache_creation_input_tokens"))
+    return SdkReading(new_tokens, peak, len(seen))
+
+
+def read_coordinator(agent_dir: Path) -> CoordinatorReading | None:
+    """Read a coordinator checkpoint's own evidence, or ``None`` when a control ran it.
+
+    Presence of ``agent/runs/<run id>/journal.jsonl`` is the test, rather than absence of the
+    control's ``stdout.jsonl``: a missing file is also what a broken or half-saved control
+    checkpoint looks like, and those must not be silently reclassified as a coordinator.
+    """
+    runs = agent_dir / "runs"
+    journals = sorted(runs.glob("*/journal.jsonl")) if runs.is_dir() else []
+    if not journals:
+        return None
+    new_tokens = peak = messages = dispatches = 0
+    for run in sorted({journal.parent for journal in journals}):
+        for transcript in sorted(run.rglob("transcript.jsonl")):
+            reading = read_sdk_transcript(transcript)
+            new_tokens += reading.new_tokens
+            peak = max(peak, reading.peak_prompt_tokens)
+            messages += reading.distinct_messages
+            dispatches += 1
+    return CoordinatorReading(
+        new_tokens=new_tokens,
+        peak_prompt_tokens=peak,
+        distinct_messages=messages,
+        dispatches=dispatches,
+        chain_exhausted=sum(_chain_exhausted(journal) for journal in journals),
+    )
+
+
+def _chain_exhausted(journal: Path) -> int:
+    """Records refused because a node's continuation chain ran out (void condition 3 here)."""
+    exhausted = 0
+    for line in journal.read_text(errors="replace").splitlines():
+        try:
+            payload: object = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        record = cast("dict[str, object]", payload).get("record")
+        if not isinstance(record, dict):
+            continue
+        error = cast("dict[str, object]", record).get("error")
+        if isinstance(error, dict):
+            exhausted += cast("dict[str, object]", error).get("type") == _CONTINUATION_LIMIT
+    return exhausted
+
+
 def peak_prompt_tokens(stdout_jsonl: Path) -> int:
     """Largest single request's prompt size, excluding the cumulative ``result`` event."""
     return read_stream(stdout_jsonl).peak_prompt_tokens
@@ -298,6 +455,7 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
     pass_counts: dict[str, int] = metrics.get("pass_counts", {})
     usage: dict[str, Any] = result.get("usage", {})
     stream = read_stream(checkpoint_dir / "agent" / "stdout.jsonl")
+    coordinator = read_coordinator(checkpoint_dir / "agent")
     steps = int(usage.get("steps", 0) or 0)
     failed_own, failed_inherited = _failed_split(metrics, checkpoint=checkpoint_dir.name)
     return CheckpointReading(
@@ -313,8 +471,8 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
         cost=float(usage.get("cost", 0.0) or 0.0),
         elapsed=float(result.get("elapsed", 0.0) or 0.0),
         steps=steps,
-        new_tokens=stream.new_tokens,
-        peak_prompt_tokens=stream.peak_prompt_tokens,
+        new_tokens=stream.new_tokens if coordinator is None else coordinator.new_tokens,
+        peak_prompt_tokens=(stream.peak_prompt_tokens if coordinator is None else coordinator.peak_prompt_tokens),
         had_error=bool(result.get("had_error", False)),
         infrastructure_failure=bool(metrics.get("infrastructure_failure", False)),
         failed_own=failed_own,
@@ -324,8 +482,16 @@ def read_checkpoint(checkpoint_dir: Path, *, problem: str) -> CheckpointReading 
         init_events=stream.init_events,
         orphaned_tasks=stream.orphaned_tasks,
         max_turns_results=stream.max_turns_results,
-        steps_missing_from_stream=max(0, steps - stream.distinct_messages),
+        steps_missing_from_stream=max(0, steps - _messages(stream, coordinator)),
+        coordinator=coordinator is not None,
+        chain_exhausted=0 if coordinator is None else coordinator.chain_exhausted,
+        distinct_agent_messages=_messages(stream, coordinator),
     )
+
+
+def _messages(stream: StreamReading, coordinator: CoordinatorReading | None) -> int:
+    """Distinct assistant messages, from whichever evidence this checkpoint's arm left."""
+    return stream.distinct_messages if coordinator is None else coordinator.distinct_messages
 
 
 def _checkpoint_number(name: str) -> int | None:
