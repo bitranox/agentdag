@@ -183,6 +183,13 @@ async def run_root(
                                       spent=spent, ids=ids, planner=planner, admitted=graph,
                                       grant_more=grant_more, budget_exhausted=budget_exhausted)  # fmt: skip
         reasons = planned.reasons
+        if not planned.replannable:
+            # A refusal from outside the run binds the whole ACCOUNT, so neither another
+            # dispatch nor a person's grant can change what the next one gets. Abandoning
+            # here is what makes `escalation.on_auth_failure: fail_run` mean anything at the
+            # root: without it the ladder spent max_replans against a dead credential and
+            # then suspended for a decision nobody could usefully make.
+            return _abandoned(planner, reasons=reasons, ctx=ctx)
         if attempts < limits.max_replans:
             attempts += 1
             continue

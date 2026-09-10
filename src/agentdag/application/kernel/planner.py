@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ...domain.journal import PlanAcceptedLine, PlanInvalidatedLine
+from ...domain.models import provider_refusal
 from ...domain.plan import PLAN_FILENAME, Plan, plan_json_schema
 from .plan_validate import Accepted, validate_plan
 from .ports import stamp
@@ -101,6 +102,19 @@ class NotPlanned:
     """The planner node's own record. Present on this branch too, so a run that failed to
     plan still has journal evidence that a planner was dispatched and what it spent."""
 
+    replannable: bool = True
+    """Whether dispatching another planner could do better.
+
+    False when the planner's own record carries a refusal from OUTSIDE the run - a rejected
+    credential or an exhausted quota - because those bind the whole ACCOUNT, so the next
+    dispatch is refused identically. A ladder that re-plans anyway pays for every attempt and
+    then reports the exhaustion as a planning failure, which is what the arm's zero-token
+    rehearsal measured: four planner dispatches against a dead credential, a run suspended at
+    its planning approve, and no error recorded anywhere above it.
+
+    A default of True is the safe one: an outcome nobody classified is retried, which is what
+    every reason other than a provider refusal wants."""
+
 
 async def dispatch_planner(
     *,
@@ -177,6 +191,14 @@ async def _plan_or_reasons(
         is_stopping=is_stopping,
         workspace=ctx.workspace,
     )
+    waiting_on = provider_refusal(record.error)
+    if waiting_on is not None:
+        # Checked BEFORE the plan file, because a refused dispatch also wrote no plan and the
+        # missing file is what the ladder used to see: an account-wide refusal read as an
+        # ordinary bad planner, and was re-planned against.
+        message = "" if record.error is None else f": {record.error.message}"
+        reason = f"the planner node was refused by the provider, waiting on {waiting_on.value}{message}"
+        return NotPlanned(reasons=(reason,), record=record, replannable=False)
     rel = _plan_ref(record)
     if rel is None:
         return NotPlanned(reasons=(f"the planner node wrote no {PLAN_FILENAME}",), record=record)

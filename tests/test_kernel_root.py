@@ -43,7 +43,19 @@ from agentdag.composition.kernel import build_op_registry
 from agentdag.domain.journal import PlanAcceptedLine, PlanInvalidatedLine, RunStartedLine
 from agentdag.domain.kernel_errors import KernelError, Suspended
 from agentdag.domain.keys import hash8
-from agentdag.domain.models import ApprovePayload, Budget, Decision, Kind, NodeSpec, RunStatus, TierRole
+from agentdag.domain.models import (
+    ApprovePayload,
+    Budget,
+    Decision,
+    ErrorType,
+    Kind,
+    NodeError,
+    NodeOutcome,
+    NodeSpec,
+    NodeStatus,
+    RunStatus,
+    TierRole,
+)
 from agentdag.domain.policy import RunLimits
 
 if TYPE_CHECKING:
@@ -52,7 +64,6 @@ if TYPE_CHECKING:
 
     from agentdag.application.kernel.execute import Executed
     from agentdag.application.kernel.ports import ExecutorRequest
-    from agentdag.domain.models import NodeOutcome
 
 REG = build_op_registry()
 
@@ -202,6 +213,40 @@ class RootPlanningExecutor:
         return outcome({"sonnet": 10})
 
 
+class RefusedPlanningExecutor(RootPlanningExecutor):
+    """Every planner dispatch is refused by the PROVIDER, so no plan is ever written.
+
+    What a dead credential or an exhausted quota does to a planner. It writes no plan, which
+    is what a merely bad planner also does - the difference is only in the record's error, and
+    reading it is the whole of the fix this double exercises.
+    """
+
+    def __init__(self) -> None:
+        """No plans: this planner never writes one."""
+        super().__init__(plans=[])
+
+    async def run(self, request: ExecutorRequest) -> NodeOutcome:
+        """Count the planner dispatch and refuse it."""
+        if "You are a planner" in request.prompt:
+            self.briefs.append(request.brief)
+            self.planner_dispatches += 1
+        return NodeOutcome(
+            status=NodeStatus.REFUSED,
+            artefact_refs=[],
+            key_facts={},
+            typed_fields=[],
+            charged_tokens={"sonnet": 10},
+            executor_used="claude",
+            model_used="sonnet",
+            effort_used="-",
+            error=NodeError(
+                type=ErrorType.AUTH_FAILURE,
+                message="Failed to authenticate. API Error: 401 OAuth access token is invalid",
+                transient=False,
+            ),
+        )
+
+
 def root_run_dir(tmp_path: Path) -> FsRunDir:
     """A fresh run directory carrying the ``run_started`` line every real run opens with.
 
@@ -311,6 +356,28 @@ def test_a_valid_root_plan_never_reaches_the_approve(tmp_path: Path) -> None:
 
     assert executor.planner_dispatches == 1
     assert out.done is True
+    assert not list(run_dir.root.glob(f"nodes/{APPROVE_ID}/*/payload.json"))
+
+
+@pytest.mark.os_agnostic
+def test_a_root_planner_the_provider_refused_is_not_re_planned_and_asks_nobody(tmp_path: Path) -> None:
+    """The ladder must not spend its allowance against a refusal that binds the account.
+
+    Measured before this: with an invalid credential the arm dispatched the planner FOUR
+    times, each refused, then suspended at the planning approve - so the run reported no
+    error, cost whatever those four dispatches cost, and an unattended arm recorded a clean
+    zero. Asking a person is wrong for the same reason re-planning is: no answer they can
+    give makes the next dispatch succeed.
+    """
+    run_dir = root_run_dir(tmp_path)
+    executor = RefusedPlanningExecutor()
+
+    out = drive(run_dir, executor, run_limits=limits(max_replans=3))
+
+    assert executor.planner_dispatches == 1
+    assert out.done is False
+    assert [refusal.node_id for refusal in out.refused] == [PLANNER_ID]
+    assert any("refused by the provider" in reason for reason in out.refused[0].reasons), out.refused[0].reasons
     assert not list(run_dir.root.glob(f"nodes/{APPROVE_ID}/*/payload.json"))
 
 

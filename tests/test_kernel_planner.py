@@ -13,14 +13,24 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
-from kernel_fakes import FakeScanner, PlanWritingExecutor, fresh_run_dir, wire
+from kernel_fakes import FakeScanner, OneRowPolicy, PlanWritingExecutor, fresh_run_dir, wire
 
 from agentdag.application.kernel.planner import PLANNER_PROMPT, NotPlanned, Planned, dispatch_planner
 from agentdag.application.kernel.registry import PlanContext
 from agentdag.composition.kernel import build_op_registry
-from agentdag.domain.models import Budget, Isolation, Kind, NodeSpec, TierRole
+from agentdag.domain.models import (
+    Budget,
+    ErrorType,
+    Isolation,
+    Kind,
+    NodeError,
+    NodeOutcome,
+    NodeSpec,
+    NodeStatus,
+    TierRole,
+)
 from agentdag.domain.plan import PLAN_FILENAME, plan_json_schema
-from agentdag.domain.policy import RunLimits
+from agentdag.domain.policy import FailureAction, RunLimits
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -113,6 +123,94 @@ def run_planner(tmp_path: Path, raw: str | None) -> Planned | NotPlanned:
             allocate_id=ids(),
         )
     )
+
+
+class RefusingExecutor:
+    """An executor whose node was refused by the PROVIDER, writing no plan.
+
+    The shape a dead credential or an exhausted quota produces: the dispatch returns, the
+    record carries the refusal, and no ``plan.json`` exists - which is indistinguishable, to
+    a reader of the directory alone, from a planner that simply wrote nothing.
+    """
+
+    def __init__(self, error_type: ErrorType) -> None:
+        self.error_type = error_type
+        self.requests: list[object] = []
+
+    async def run(self, request: object) -> NodeOutcome:
+        """Return a refusal outcome, having written nothing."""
+        self.requests.append(request)
+        return NodeOutcome(
+            status=NodeStatus.REFUSED,
+            artefact_refs=[],
+            key_facts={},
+            typed_fields=[],
+            charged_tokens={"sonnet": 10},
+            executor_used="claude",
+            model_used="sonnet",
+            effort_used="-",
+            error=NodeError(type=self.error_type, message="401 OAuth access token is invalid", transient=False),
+        )
+
+
+class FailingRefusalPolicy(OneRowPolicy):
+    """:class:`OneRowPolicy`, but FAILING on both provider refusals rather than suspending.
+
+    ``OneRowPolicy`` suspends on a rate limit, and a suspend raises before the planner is ever
+    handed a record - so a rate-limit arm under it would prove nothing about this branch.
+    """
+
+    on_auth_failure: FailureAction = FailureAction.FAIL_RUN
+    on_rate_limit: FailureAction = FailureAction.FAIL_RUN
+
+
+def run_refused_planner(tmp_path: Path, error_type: ErrorType) -> Planned | NotPlanned:
+    """Dispatch a planner node the provider refused, under a policy that FAILS on it.
+
+    The policy has to fail rather than suspend for BOTH refusals, or the arm proves nothing:
+    a coordinator whose policy suspends raises before the planner ever gets a record back,
+    which is the other half of this design and is tested where the suspend is. What is under
+    test here is the half a run reaches when policy says the run should fail.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    coordinator = wire(run_dir, RefusingExecutor(error_type), FakeScanner(), policy=FailingRefusalPolicy())
+    ctx = PlanContext(co=coordinator, cwd=run_dir.worktree("a"))
+    return asyncio.run(
+        dispatch_planner(
+            spec=planner_spec(),
+            goal="g",
+            evidence={},
+            ctx=ctx,
+            registry=REG,
+            limits=LIMITS,
+            graph={},
+            is_root=False,
+            allocate_id=ids(),
+        )
+    )
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("error_type", [ErrorType.AUTH_FAILURE, ErrorType.RATE_LIMITED])
+def test_a_planner_the_provider_refused_cannot_be_replanned(tmp_path: Path, error_type: ErrorType) -> None:
+    """Both refusals bind the whole account, so the next planner is refused identically.
+
+    Before this, the only signal was that no plan.json existed, which reads as an ordinary
+    bad planner: the root ladder then re-planned four times against a dead credential, paid
+    for every dispatch, and ended reporting no error at all.
+    """
+    out = run_refused_planner(tmp_path, error_type)
+    assert isinstance(out, NotPlanned)
+    assert out.replannable is False
+    assert any("refused" in reason for reason in out.reasons), out.reasons
+
+
+@pytest.mark.os_agnostic
+def test_a_planner_that_merely_wrote_no_plan_is_still_replannable(tmp_path: Path) -> None:
+    """The control: the flag must distinguish the two, not be False for every NotPlanned."""
+    out = run_planner(tmp_path, None)
+    assert isinstance(out, NotPlanned)
+    assert out.replannable is True
 
 
 @pytest.mark.os_agnostic

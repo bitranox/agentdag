@@ -210,7 +210,11 @@ It binds the COORDINATOR arm only, no checkpoint of which has counted. The corre
 results below were read under the five void conditions above, and nothing here changes them or
 how they were read.
 
-**Decided by the user, 2026-09-10: `cost_limits.max_retries: 0` on the coordinator arm.**
+Two decisions, both taken on 2026-09-10 and both before any counted coordinator checkpoint.
+
+### 1. One attempt per checkpoint
+
+**Decided by the user: `cost_limits.max_retries: 0` on the coordinator arm.**
 
 Why. The harness retries a checkpoint whose agent raised, and for the control that retry is a
 `--continue` which keeps the whole context. The coordinator has no such retry: `retry()` is the
@@ -250,6 +254,38 @@ raises, so that is a coordinator RESULT and it is scored, not voided.
 The arm's config states the setting with this reasoning beside it
 (`deploy/slopcodebench/agentdag.yaml`), and `tests/test_scb_arm_preregistration.py` fails if it
 moves.
+
+### 2. How void condition 2 is evaluated on the coordinator arm
+
+**Decided by the user: fix the coordinator AND state the reading, rather than either alone.**
+
+Void condition 2 above voids a checkpoint "where the agent terminated on an auth failure". On
+the control that is unambiguous: one process, one termination. A coordinator is a tree of
+dispatched nodes, and the arm's zero-token rehearsal found that a refused PLANNER did not
+terminate the run at all - it wrote no `plan.json`, the re-plan ladder read that as an ordinary
+bad plan, spent its allowance, and the run ended suspended at its planning approve with `state:
+ran`, cost 0.0, 0 of 47 tests and exit code 0 everywhere. The refusal was invisible one layer
+up, so the condition could not fire on the evidence the harness had.
+
+**The reading, for the coordinator arm.** A checkpoint is void under condition 2 when any node
+record in its run carries `error.type` of `auth_failure` or `rate_limited`, whatever terminal
+status the run itself reported. That is a fact in the journal rather than an inference from a
+zero, and it fires on the case that produced the arm of zeros. Condition 2's own requirement
+stands unchanged: a rate limit is reported as an auth failure on this provider and no field
+distinguishes them, so the cause is confirmed out of band before anything is re-run. The unit
+stays the problem, as it is for every other condition.
+
+Why this is worth writing down when the coordinator has also been fixed: the fix is a behaviour
+change shipped days before a paid arm, and this defect has already had two causes where fixing
+the first changed nothing at the run level. The reading holds whether or not the fix covers
+every path, and a rule written after a counted checkpoint would not be pre-registration.
+
+**The coordinator fix, for the record.** A planner record carrying a provider refusal now
+stops the subtree instead of being re-planned: the outcome carries `replannable=False` and the
+root ladder abandons rather than spending `max_replans` or asking a person, neither of which can
+change what the next dispatch gets from an account-wide refusal. So `on_auth_failure: fail_run`
+now means what it says at the root. It is a coordinator change, not an arm change, and it
+reaches every agentdag run.
 
 ## Results
 

@@ -35,6 +35,7 @@ __all__ = [
     "CODE_KINDS",
     "DEFAULT_TOOLS",
     "FAN_OUT_KINDS",
+    "PROVIDER_REFUSALS",
     "ApproveOption",
     "ApprovePayload",
     "Budget",
@@ -63,6 +64,7 @@ __all__ = [
     "SuspendReason",
     "TierRole",
     "Tokens",
+    "provider_refusal",
 ]
 
 
@@ -408,6 +410,43 @@ class NodeError(BaseModel):
     type: ErrorType
     message: str
     transient: bool
+
+
+PROVIDER_REFUSALS: dict[ErrorType, SuspendReason] = {
+    ErrorType.RATE_LIMITED: SuspendReason.QUOTA,
+    ErrorType.AUTH_FAILURE: SuspendReason.CREDENTIAL,
+}
+"""The refusals that come from outside the run, and what a suspended run is then waiting for.
+
+Membership is the test for "no retry or escalation can reach this": both bind the whole
+account, so re-dispatching at the same rank or the next one up is refused identically. Every
+other error type is the node's own and stays a record.
+
+It lives in the domain because more than one caller has to agree on it, and the two that do
+answer different questions with it - whether to suspend, and whether re-planning could ever
+help. Two lists of what comes from outside the run would drift, and the drift would be
+invisible: each caller would keep behaving sensibly about the types it still knew.
+"""
+
+
+def provider_refusal(error: NodeError | None) -> SuspendReason | None:
+    """What a run carrying this error is waiting for, or ``None`` when it is the run's own.
+
+    Args:
+        error: A record's or outcome's error, if it has one.
+
+    Returns:
+        The reason a run refused this way is waiting, else ``None``.
+
+    Examples:
+        >>> provider_refusal(None) is None
+        True
+        >>> provider_refusal(NodeError(type=ErrorType.AUTH_FAILURE, message="401", transient=False))
+        <SuspendReason.CREDENTIAL: 'credential'>
+        >>> provider_refusal(NodeError(type=ErrorType.SCHEMA_MISMATCH, message="bad", transient=False)) is None
+        True
+    """
+    return None if error is None else PROVIDER_REFUSALS.get(error.type)
 
 
 class KnowledgeUsed(BaseModel):

@@ -40,24 +40,13 @@ from ...domain.models import (
     NodeOutcome,
     NodeStatus,
     ResultRecord,
-    SuspendReason,
+    provider_refusal,
 )
 from ...domain.plan import PLAN_FILENAME
 from ...domain.policy import FailureAction
 from ...domain.scan import diff_manifests, stray_paths
 from .approve import validate_approve_payload
 from .ports import ExecutorRequest, stamp
-
-_PROVIDER_REFUSALS: dict[ErrorType, SuspendReason] = {
-    ErrorType.RATE_LIMITED: SuspendReason.QUOTA,
-    ErrorType.AUTH_FAILURE: SuspendReason.CREDENTIAL,
-}
-"""The refusals that come from outside the run, and what a suspended run is then waiting for.
-
-Membership is the test for "no retry or escalation can reach this": both bind the whole
-account, so re-dispatching at the same rank or the next one up is refused identically.
-Every other error type is the node's own and stays a record.
-"""
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -522,7 +511,7 @@ class Coordinator:
         """
         if outcome.error is None:
             return outcome
-        reason = _PROVIDER_REFUSALS.get(outcome.error.type)
+        reason = provider_refusal(outcome.error)
         if reason is None:
             return outcome
         # Read and compared in the one function deliberately: routing this through a helper
