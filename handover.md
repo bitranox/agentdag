@@ -5,11 +5,17 @@ where this session stopped and what it decided.
 
 ## The next action
 
-**Put the parity reading to the user, or take it if they have already said go.** Rank 05 is the
-top-ranked open item and the three decisions that were blocking it - ranks 71, 69 and 06 - are all
-made, shipped and pushed, and the clone and image are current. Its `next:` now reads: a clean
-single-checkpoint parity reading, which costs another paid checkpoint. Nothing mechanical stands
-in front of it.
+**Fix rank 07, then Task 13.** The parity reading is TAKEN (see below) and it found a blocker that
+sits in front of the counted arm: `scripts/slopcodebench_readings.py` voids every COORDINATOR
+checkpoint and reports its `new tokens` and `peak prompt` as 0, so a counted Task 13 arm today
+would void every checkpoint AND report zero on the axis the pre-registered score curve is plotted
+on. Rank 07 carries the diagnosis and the fix direction; the figures it needs already exist in the
+harness's own `inference_result.json`, which for a coordinator equals the journal's
+`tokens_by_row` exactly.
+
+Task 13 is the counted arm and the only thing here that can carry a thesis claim. Choose its
+checkpoints so the CONTROL does not saturate them: the parity checkpoint is one the control solves
+47 of 47, where a coordinator can at best tie.
 
 The harness clone was REINSTALLED at `3c01315` and its container image BUILT at that sha, both
 verified from ground truth rather than from a tool's own report: the clone through the harness's
@@ -22,7 +28,8 @@ to 0.0.1 and 2.1.260. Probe the image with `bash -c`, never `bash -lc`: a login 
 
 Nothing running except the CI watch on the tip. Every push this session was preceded by a
 `make test` through `gate.py`, read from its `[PASS] make test (rc=0)` line rather than from a task
-notification.
+notification. The paid parity run finished 18:15:31 with `END ... rc=0`, `ARM COMPLETE` and
+`LAUNCHER_RC=0`; no container of ours is left running.
 
 ## Committed, or not
 
@@ -71,6 +78,16 @@ Mine, the ones that outlive the commits:
   do is fire on a tree of nodes where no single process terminated.
 - **The sub-plan path was left alone.** It already stops on a `NotPlanned` rather than looping, so a
   refusal there costs at most one further planner dispatch.
+- **The parity run was launched DETACHED** (`setsid nohup`), because a session-tied background task
+  dies with its session and would leave a coordinator spending inside an orphaned container. Judge
+  such a run by the `END` and `LAUNCHER_RC` lines in its `arm.log`, never by a task notification.
+- **The launcher's expected duration was raised from 1800 s to 3000 s.** It gates only the
+  token-coverage refusal, and 1800 contradicted this host's own measurement - the void run's
+  surviving attempt alone took 2,487 s.
+- **The reading's VOID verdict was adjudicated, not reported.** The report script said condition 3;
+  two controls (the earlier coordinator run, and a control-arm run) showed it fires on the
+  coordinator's SHAPE rather than on anything the run did. Reporting that void as a result would
+  have thrown away a valid paid checkpoint and hidden the blocker.
 
 ## Decided against, and why
 
@@ -85,10 +102,10 @@ Mine, the ones that outlive the commits:
 
 One line each; `OPEN-WORK.md` holds the detail.
 
-- 28 items are open, counted from the file rather than remembered: rank 05 (named above) plus 32,
-  37, 39, 40, 50, 55 through 68, 70, 72, 73, 75, 77, 80, 85, 87, all as before.
-- Ranks 06, 69 and 71 are CLOSED this session. Rank 66 has only its (c) left; 67 is the cost half
-  of what 71 closed and stays open.
+- Count them from the file rather than trusting a number here. Rank 05 and rank 07 are named above;
+  the rest (32, 37, 39, 40, 50, 55 through 68, 70, 72, 73, 75, 77, 80, 85, 87) are as before.
+- Ranks 06, 69 and 71 were CLOSED this session. Rank 07 is NEW and blocks 05. Rank 66 has only its
+  (c) left; 67 is the cost half of what 71 closed and stays open.
 
 ## Lessons for the next nap
 
@@ -113,6 +130,11 @@ die here if they are not carried again:
 
 New this session:
 
+- A measurement instrument written for one arm's SHAPE can void every run of the other arm and look
+  like a finding. Adjudicate a void against its SOURCE with a control from each arm before believing
+  it; here the control-arm run answered differently and settled it in one pass.
+- A coordinator's zeros and an auth failure's zeros are the same shape. `tokens_by_row` is what
+  separates them, and it must be read before any score is believed.
 - When a module cannot be imported by its own repo, its SHAPE can still be guarded at source with
   AST assertions - and such a guard needs an explicit vacuity check, because every assertion about
   "no raise escapes the handler" is satisfied by a body that cannot raise at all.
@@ -130,8 +152,10 @@ New this session:
 - `PLANS/2026-09-04-corrected-pair-plan.md` - Task 12 is done; Task 13 is next and is the counted arm.
 - `docs/probes/2026-09-05-slopcodebench-corrected-pair.md` - the FROZEN pre-registration, now with
   an addendum below its divider carrying both of this session's void decisions.
+- `docs/probes/2026-09-10-slopcodebench-parity-reading.md` - the CLEAN parity reading, its validity
+  gate condition by condition, and the instrument defect that became rank 07.
 - `docs/probes/2026-09-08-slopcodebench-arm-dry-run.md` - what Task 12 established, per-entry
-  provenance, and why the paid run's parity number is void.
+  provenance, and why THAT paid run's parity number is void. Now points at the reading above.
 - `deploy/slopcodebench/arm-tier-policy.yaml`, `deploy/slopcodebench/agentdag.yaml` - the arm.
 - `deploy/slopcodebench/agentdag_scb_agent/agent.py.tmpl` - the adapter, guarded by
   `tests/test_scb_agent_harvest.py` (shape) and `tests/test_scb_arm_preregistration.py` (settings).
