@@ -356,21 +356,48 @@ class AgentdagAgent(Agent):
         to answer, whatever landed in the workspace is what the checkpoint is scored on, and
         the node it suspended at is recorded.
 
+        Every way out of this method other than a clean return goes through the handler below,
+        which harvests the run the launch created before the error travels on. It is written as
+        an invariant rather than as a harvest on each raising path because forgetting one is
+        SILENT: an attempt killed before it printed its terminal line is recorded at cost 0.0
+        and tokens 0, which reads exactly like a checkpoint that was cheap. That is what
+        happened to the paid dry run's first attempt, whose spend was unrecoverable within the
+        hour because the run store is a temporary directory.
+
         Args:
             task: The checkpoint prompt, which becomes the root planner's goal.
 
         Raises:
             AgentError: The launch produced no result, timed out, printed no terminal line, or
-                ended in a status that is neither done nor suspended.
+                ended in a status that is neither done nor suspended. The message carries what
+                was recovered of the run's spend, or why nothing could be.
         """
         self.suspended_at = None
         self.log.info("agent.agentdag.start", workspace=str(self.workspace), prompt_chars=len(task))
         before = self._run_directories()
+        claimed = len(self._run_ids)
+        try:
+            self._launch_and_read(task)
+        except AgentError as exc:
+            if len(self._run_ids) != claimed:
+                raise
+            recovered = self._harvest_abandoned(before)
+            self.log.error("agent.agentdag.abandoned", recovered=recovered, cost=self.usage.cost)
+            raise AgentError(f"{exc}; {recovered}") from exc
+
+    def _launch_and_read(self, task: str) -> None:
+        """Launch one coordinator run, read its terminal line, and harvest what it spent.
+
+        Raises without harvesting anything, deliberately: ``run`` owns that, so a raise added
+        here cannot lose a run's spend by omission. A raise AFTER the run id is claimed is left
+        alone there, because the id is already named in the message and re-reading the same
+        records would fail the same way.
+        """
         result = self._stream(self._launch_command(task), env={}, timeout=self._timeout_s())
         self.final_result = result
         if result.timed_out:
             self._kill_launched_group()
-            raise AgentError(f"agentdag run timed out after {self.timeout}s; {self._harvest_abandoned(before)}")
+            raise AgentError(f"agentdag run timed out after {self.timeout}s")
         run_id, outcome = self._terminal_line(result)
         self._run_ids.append(run_id)
         if outcome.startswith(SUSPENDED_PREFIX):
@@ -420,12 +447,17 @@ class AgentdagAgent(Agent):
         return {entry.name for entry in self._runs_host.iterdir() if entry.is_dir()}
 
     def _harvest_abandoned(self, before: set[str]) -> str:
-        """Harvest a killed run's spend, and report what was recovered.
+        """Harvest an abandoned run's spend, and report what was recovered.
 
-        A run stopped at the wall clock never printed its terminal line, so its id cannot come
-        from stdout; it is the single directory the launch added to the run store, which is a
-        set difference over a directory this agent owns rather than a guess at the newest one.
-        Real spend recorded as zero would corrupt exactly the measurement this arm exists for.
+        Serves every way ``run`` can raise before a run id is claimed - a wall-clock kill, a
+        launch that produced no result, a process that printed no terminal line - none of which
+        leaves an id on stdout. The id is the single directory the launch added to the run
+        store, which is a set difference over a directory this agent owns rather than a guess
+        at the newest one. Real spend recorded as zero would corrupt exactly the measurement
+        this arm exists for.
+
+        The wall-clock path is the only one the arm is NOT exposed to: the pre-registration
+        holds both arms at no harness timeout, so ``timed_out`` cannot become true there.
         """
         appeared = sorted(self._run_directories() - before)
         if len(appeared) != 1:
