@@ -19,15 +19,21 @@ Rank 06 is the one that gates Task 13's validity rather than its cost.
 
 ## In flight
 
-Nothing running. The paid checkpoint finished 2026-09-08 04:17:31; its backstop and every CI
-watcher have reported. One CI watch was still polling when this file was written - see
-`How to verify`.
+Nothing running. The paid checkpoint finished 2026-09-08 04:17:31; its backstop and the CI
+watchers for the six code commits have all reported green. The watches for the last few commits
+were still polling when this file was written - see `How to verify`.
 
 ## Committed, or not
 
-Everything is committed and pushed. This session's work is `f85cfe5..3a515b6` on `main`. CI and
-CodeQL are green on `f85cfe5`, `d1e4cef`, `b417a04`, `5733663`, `88a4d3f` and `cf3138c`, each
-read from a `gate.py` `[PASS]` line rather than from a task notification.
+Everything is committed and pushed, and the working tree is clean apart from the staged
+deletion below. This session's work starts at `f85cfe5` and runs to the tip:
+`git log --oneline f85cfe5~1..origin/main`. No sha for the end is written here, because the
+commit that adds this file moves it and so does every fix to this line.
+
+CI and CodeQL are green on `f85cfe5`, `d1e4cef`, `b417a04`, `5733663`, `88a4d3f` and `cf3138c`,
+each read from a `gate.py` `[PASS]` line rather than from a task notification. The commits after
+those carry no code: the write-up, this file, and the dependency floors bmk raised. Check their
+runs first.
 
 **Not mine:** `CLAUDE.md.bak` is still `AD` in the index (rank 72), untouched again this session.
 Every commit used a pathspec.
@@ -139,7 +145,8 @@ New this session:
 - `git log --oneline f85cfe5~1..HEAD` shows this session's work.
 - The gate is `make test` through `gate.py`; it read `[PASS] make test (rc=0)` at every commit.
 - CI: `uv run <compuse-toolbox>/scripts/ci_wait.py --sha <full sha>` for each of the six above.
-  The seventh, `3a515b6`, was still polling when this file was written - check it first.
+  The commits after them were still polling when this file was written - check those first, with
+  `gh run list --json headSha,name,status,conclusion` to see which ones exist.
 - The arm against its pre-registration:
   `.venv/bin/python -m pytest tests/test_scb_arm_preregistration.py -q` reads 6 passed.
 - That the paid run is void rather than a reading: its `infer.log` carries a `retry_attempt` field
