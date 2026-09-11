@@ -1,55 +1,72 @@
-# Handover, written 2026-09-10 15:20 CEST
+# Handover, written 2026-09-11 10:55 CEST
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where this session stopped and what it decided.
 
 ## The next action
 
-**A PAID COUNTED RUN IS IN FLIGHT. Do not start another; do not run `make test` expecting a quiet
-box.** Task 13's first problem, `database_migration`, started 2026-09-11 00:53:37 in
-`~/agentdag-eval/slopcodebench/task13/`. Judge it by the `END` and `LAUNCHER_RC` lines in
-`logs/arm.log`, never by a task notification. Disarm by killing the pid in `logs/launcher.pid`;
-stop a running container with `docker stop` on the `slop-code:agentdag-*` one.
+**A PAID COUNTED RUN IS IN FLIGHT, AND `make test` WOULD KILL IT.** `scb_run_arm.py` is a
+long-lived process running on the project `.venv`, and a bmk gate RESYNCS that venv underneath it.
+So do NOT run `make test`, `make push` or anything bmk until `logs/arm.log` shows `END` and
+`LAUNCHER_RC`. For a signal before then, use `.venv/bin/python -m pytest` directly - it does not
+resync.
 
-When it ends, the launcher AUTOMATICALLY re-checks the token and attempts
-`dynamic_config_service_api` next. That is intended. If the token no longer covers it the launcher
-exits 3 having started nothing, which is not a failure - relaunch when a window opens.
+The run is Task 13 round 2: `database_migration` re-run under the raised handover budget, started
+2026-09-11 09:54:53 in `~/agentdag-eval/slopcodebench/task13/`, into a token valid to 16:48. Round 1
+of the same problem is VOID and quarantined as `runs/VOID-continuation-limit-*`; it enters no tally.
+Judge the run by the `END` and `LAUNCHER_RC` lines in `arm.log`, never by a task notification. To
+stop it: kill the pid in `logs/launcher.pid`, then `docker stop` the `slop-code:agentdag-*`
+container.
 
-Then, in order:
+**TWO COMMITS ARE UNPUSHED, on purpose.** `3c359ac` and `edb653e` are committed and safe in git but
+not pushed, because pushing requires the gate that would kill the run. They are the first thing to
+do when it ends.
 
-1. Read the arm with `scripts/scb_arm_report.py <run dir>` and apply EVERY void condition,
-   including the addendum's condition 6. Read `tokens_by_row` before believing any score: a
-   suspended checkpoint that charged zero is an auth failure, not a result.
-2. Decide `circuit_eval` with the REAL ratio in hand rather than my extrapolation. It needs about
-   10.5 h of token on that extrapolation, against lifetimes of 7 to 8, so it may need its catalog
-   split by checkpoint. The measured ratio below suggests the time half of that estimate was too
-   pessimistic.
-3. The results go BELOW the divider of `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`,
-   and the order deviation (short problems first) is recorded there.
+In order, once `arm.log` shows END:
+
+1. `make test`, then push both commits. Watch CI on the pushed sha.
+2. Read the arm: `scripts/scb_arm_report.py <run dir>`, applying EVERY void condition including the
+   addendum's condition 6. Read `tokens_by_row` before believing any score - a suspended checkpoint
+   that charged zero is an auth failure, not a result. **The open question is whether the raised
+   handover budget clears condition 3, or whether a node exhausts even at 8.** That decides whether
+   Task 13 can produce a tally at all.
+3. The launcher attempts `dynamic_config_service_api` by itself when the problem ends. If the token
+   no longer covers it, it exits 3 having started NOTHING, which is not a failure.
+4. Then `circuit_eval` at `:21701`. It needs NO catalog split: on the measured ratio it fits a fresh
+   ~8 h window, and a split would be INVALID anyway because the checkpoints are cumulative -
+   `checkpoint_5.md` tells the agent parts 1-4 are already implemented, which is false from a fresh
+   workspace. If a window ever does run out mid-problem, the harness's own `detect_resume_point`
+   spans it correctly.
+5. Retire `task13/launch_round2.sh` - the last of four launcher copies, left alone only because it
+   is the script currently executing.
+6. Results go BELOW the divider of `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, with
+   the order deviation (short problems first) recorded there.
 
 ## In flight
 
-`database_migration` is RUNNING as above, in its own detached process group, into a token valid to
-08:52. Two of its five checkpoints were evaluated in the first 43 minutes.
+`database_migration` round 2 is RUNNING as above, in its own detached process group. Round 1 of it
+completed in 3.00 h and was voided by a continuation-chain exhaustion; round 2 runs under
+`max_continuations: 8`, pre-registered as addendum 3 and pushed at `0b75f61` BEFORE it started.
 
-**Provisional readings, which are NOT an outcome** - a later checkpoint can repair what an earlier
-one broke, and that is what `repaired` measures:
+**Round 1's figures, which are evidence and NOT a tally** (the problem is void, and the addendum
+says outright that it is discarded):
 
-| ck | arm         | strict | core  | cost USD | seconds | steps | peak    | new tokens |
-|----|-------------|--------|-------|----------|---------|-------|---------|------------|
-| 1  | control     | 1.000  | 1.000 | 1.04     | 253     | 8     | 58,973  | 29,982     |
-| 1  | coordinator | 1.000  | 1.000 | 2.53     | 472     | 13    | 79,151  | 127,436    |
-| 2  | control     | 0.984  | 1.000 | 1.36     | 291     | 14    | 73,154  | 46,090     |
-| 2  | coordinator | 0.903  | 0.667 | 10.59    | 2,108   | 56    | 142,208 | 495,666    |
+| ck | strict | core  | cost USD | seconds |
+|----|--------|-------|----------|---------|
+| 1  | 1.000  | 1.000 | 2.53     | 472     |
+| 2  | 0.903  | 0.667 | 10.59    | 2,108   |
+| 3  | 0.920  | 1.000 | 14.52    | 3,017   |
+| 4  | 0.915  | 0.833 | 15.36    | 3,207   |
+| 5  | 0.891  | 0.333 | 8.46     | 1,803   |
 
-**My sizing extrapolation is already wrong on time.** It scaled everything by 4.43x wall clock from
-one checkpoint of the easiest kind. Two checkpoints in 43 minutes puts this problem near the
-control's own pace rather than 4.4x it, so the 17 h figure for the whole arm is too pessimistic.
-The COST side is holding or worse: checkpoint 2 alone cost 10.59 against the control's 1.36.
+51.46 USD against the control's 14.63, and 3.00 h against 0.98 h. **The measured wall-clock ratio is
+therefore 3.06x, not the 4.43x I extrapolated from one easy checkpoint** - which is why
+`circuit_eval` no longer needs splitting. The COST ratio, 3.5x, held.
 
 ## Committed, or not
 
-Everything is committed and pushed. This session's work is `git log --oneline 6fe5ed5..origin/main`
+TWO COMMITS ARE COMMITTED BUT NOT PUSHED (`3c359ac`, `edb653e`) - see The next action for why, and
+push them first. Everything else is pushed. This session's work is `git log --oneline 6fe5ed5..HEAD`
 - run it rather than trusting a count here, which the commit adding this file and every correction
 to it would move. It is one commit per decision, plus the dependency floor bmk raised, plus this
 file and its corrections.
@@ -157,6 +174,14 @@ die here if they are not carried again:
 
 New this session:
 
+- A test that INJECTS a seam observes the CALL, not its cost. Injected `sleep` made a 300 s overshoot
+  invisible to four passing unit tests; running the real argv found it in one go. When you inject
+  time, something still has to measure duration.
+- Retiring a predecessor means COUNTING the copies first: I filed "three launchers" and there were
+  four, because one lived under a directory I had not looked in.
+- A gate can be the thing that breaks production: `make test` resyncs the project venv, and a
+  long-lived process running from that venv dies under it. Serialise them, and say so where the next
+  person will read it BEFORE running the gate.
 - An extrapolation from ONE measurement can be wrong in one dimension and right in the other. The
   4.43x wall-clock ratio from a single easy checkpoint over-predicted Task 13's duration badly while
   the cost ratio held or worsened. Say which dimension a scaled estimate was measured on.
