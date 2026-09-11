@@ -236,35 +236,6 @@ def test_work_is_not_capped_when_the_spec_declares_no_budget_for_the_resolved_ro
 
 
 @pytest.mark.os_agnostic
-def test_work_refuses_the_dispatch_when_the_node_s_own_cap_would_push_the_run_past_its_ceiling(
-    tmp_path: Path,
-) -> None:
-    """The run-level cap (design 7): the SECOND call site, evaluated before the
-    executor is ever called. ``work_spec()``'s node declares a 400,000-token cap on
-    ``sonnet``; :class:`LowCeilingPolicy` caps the whole run at 100 - so this dispatch
-    must be refused OUTRIGHT, never reach the executor, and still produce a normal
-    ``started``/``result`` journal pair (the always-a-record invariant: a refusal is a
-    RECORD, not an exception).
-    """
-    run_dir = fresh_run_dir(tmp_path)
-    executor = RecordingExecutor(outcome({"sonnet": 120}))
-    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowCeilingPolicy())
-
-    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
-
-    assert record.status == NodeStatus.FAILED
-    assert record.error is not None
-    assert record.error.type == "budget_exceeded"
-    assert record.error.transient is False
-    assert executor.requests == []  # never dispatched
-    assert coordinator.tokens_by_row == {}  # nothing was actually spent
-    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
-    # Still a normal started/result pair, like any other dispatch - the refusal is
-    # JOURNALED, not a silent skip: a resume of this run must see it, not re-attempt it.
-    assert [type(line).__name__ for line in journal.lines()] == ["StartedLine", "ResultLine"]
-
-
-@pytest.mark.os_agnostic
 def test_work_dispatches_normally_when_the_node_s_cap_fits_under_the_run_ceiling(tmp_path: Path) -> None:
     """Control for the refusal test above: the identical node spec, under a ceiling
     its own cap fits comfortably under, runs the executor as normal.
@@ -1166,3 +1137,68 @@ def test_a_workspace_inside_a_symlinked_run_root_is_still_refused(tmp_path: Path
 
     with pytest.raises(KernelError, match="inside the run root"):
         asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=inside, workspace=inside))
+
+
+@pytest.mark.os_agnostic
+def test_work_clamps_the_node_s_cap_to_the_run_s_remaining_headroom_instead_of_refusing(
+    tmp_path: Path,
+) -> None:
+    """The run-level cap must SPEND the ceiling it was given, not reserve it.
+
+    Refusing whenever ``charged + node_cap`` would cross the ceiling reserves the node's
+    whole declared cap before it starts, so a ceiling of C behaves as ``C - node_cap`` for
+    the last node: measured 2026-09-11 on Task 13, a pre-registered 1,200,000 ceiling
+    stopped three runs at 942k-975k, refusing a successor that had already been briefed
+    while ~21 percent of the budget went unspent. The arm's own policy states the model
+    this breaks - "the real ceiling on spend stays run_limits.tokens_per_row".
+
+    So a node whose own cap outruns the remaining headroom is ADMITTED with its cap
+    clamped to that headroom. It may then reach the clamped cap and hand over, which is
+    the correct ending and preserves its work; overshoot is bounded by one turn, exactly
+    as it already is for a node's own cap.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 5}))
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowCeilingPolicy())
+
+    record = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+
+    assert record.status == NodeStatus.DONE
+    assert executor.requests[0].token_cap == 100  # the headroom, not the spec's own 400,000
+
+
+@pytest.mark.os_agnostic
+def test_work_still_refuses_a_dispatch_once_the_row_ceiling_has_no_headroom_left(
+    tmp_path: Path,
+) -> None:
+    """The boundary the clamp must not erode: a ceiling with nothing left still REFUSES.
+
+    Clamping admits a node while headroom remains; it must not admit one when the row is
+    already spent, or the ceiling would stop being a ceiling. The first dispatch here
+    charges 120 against a ceiling of 100 (the one-turn overshoot the clamp accepts), so
+    the second has negative headroom and must be refused outright, never reaching the
+    executor, and still produce a journalled record like any other refusal.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    executor = RecordingExecutor(outcome({"sonnet": 120}))
+    coordinator = wire(run_dir, executor, FakeScanner(), policy=LowCeilingPolicy())
+
+    first = asyncio.run(coordinator.work(work_spec(), brief="migrate", cwd=run_dir.worktree("a")))
+    second = asyncio.run(coordinator.work(work_spec(), brief="follow on", cwd=run_dir.worktree("b")))
+
+    assert first.status == NodeStatus.DONE
+    assert coordinator.tokens_by_row == {"sonnet": 120}
+    assert second.status == NodeStatus.FAILED
+    assert second.error is not None
+    assert second.error.type == "budget_exceeded"
+    assert second.error.transient is False
+    assert len(executor.requests) == 1  # the second never reached the executor
+    journal = JsonlJournal(run_dir.journal_path, run_dir.audit_path)
+    # The refusal is JOURNALED like any other dispatch, not a silent skip: a resume
+    # of this run must see it rather than re-attempt it (the always-a-record invariant).
+    assert [type(line).__name__ for line in journal.lines()] == [
+        "StartedLine",
+        "ResultLine",
+        "StartedLine",
+        "ResultLine",
+    ]

@@ -240,9 +240,11 @@ class Coordinator:
         which the executor enforces per TURN by calling ``client.interrupt()`` once a
         turn's own usage passes it; and its ``body`` closure calls
         :meth:`_run_cap_refusal` first, which refuses the dispatch OUTRIGHT (a FAILED,
-        ``BUDGET_EXCEEDED`` record, the executor never called) when this node's own cap
-        would push the run's row total past ``policy.run_limits.tokens_per_row``. Both checks are a
-        no-op for a node whose spec declares no cap for the resolved row.
+        ``BUDGET_EXCEEDED`` record, the executor never called) only when the row has
+        already charged its whole ``policy.run_limits.tokens_per_row``; short of that,
+        :meth:`_cap_to_headroom` narrows the cap the executor is handed to what the run
+        can still afford. Both checks are a no-op for a node whose spec declares no cap
+        for the resolved row.
 
         The node deadline (design 7, M3; a DIFFERENT quantity from the token cap - wall-clock
         seconds elapsed, never a token count) is threaded the same way:
@@ -455,6 +457,7 @@ class Coordinator:
                     effort_used="-",
                     error=refusal,
                 )
+            effective_cap = self._cap_to_headroom(row.alias, node_cap)
             # The duty rides in the PROMPT, not the brief and not a hook. Measured over 40
             # dispatches (RESEARCH probes/handover-nudge-inject.md, decision 14): a stop
             # notice with no prior standing in the task is refused 4 of 4 as prompt
@@ -475,7 +478,7 @@ class Coordinator:
                 deny_bash=self.policy.deny_bash,
                 deny_tools=self.policy.deny_tools,
                 read_roots=(node_dir, cwd) if confine_reads else None,
-                token_cap=node_cap,
+                token_cap=effective_cap,
                 deadline_s=node_deadline_s,
                 handover_at_tokens=row.handover_at_tokens,
                 is_stopping=is_stopping,
@@ -559,16 +562,17 @@ class Coordinator:
         )
 
     def _run_cap_refusal(self, row: str, node_cap: int | None) -> NodeError | None:
-        """Whether dispatching now, with ``node_cap`` on ``row``, would push the run past its ceiling.
+        """Whether ``row`` has any of its run ceiling left to dispatch this node against.
 
         Checked freshly at BODY-EXECUTION time (called from inside :meth:`work`'s own
         ``body`` closure, not precomputed before ``_dispatch`` is awaited) so a concurrent
         map branch's own charge - landed between this call being queued and it actually
         running - is reflected here rather than read stale (design 7: "evaluated before
-        the NEXT dispatch"). The check is against the node's OWN DECLARED CAP, not what it
-        might actually spend: a node that stays well under its cap still could not have
-        been allowed to start once its cap alone would tip the row over, because the
-        coordinator has no way to promise it will not use the whole of what it declared.
+        the NEXT dispatch"). The check is on what the row has already CHARGED, never on
+        what this node might add: reserving the declared cap before the node starts made a
+        ceiling of C behave as ``C - node_cap``, which is a quarter of the budget on the
+        shipped figures. A node that outruns the remaining headroom is narrowed to it by
+        :meth:`_cap_to_headroom` instead of being turned away.
 
         Both sides of the comparison are the SAME unit: a dispatch's total SPEND (input
         total plus output tokens, summed across its whole turn stream), never a single
@@ -585,13 +589,13 @@ class Coordinator:
             row: The resolved model row alias (``ResolvedRow.alias``).
             node_cap: This node's own cap for ``row`` (``NodeSpec.budget.tokens.get(row)``),
                 or ``None`` when the node declares no cap for this row at all - nothing to
-                check here (the run-level cap has nothing to add against; the per-node
-                turn-seam check in the executor is the same "no cap declared, nothing
-                enforced" rule).
+                check here (the per-node turn-seam check in the executor keeps the same
+                "no cap declared, nothing enforced" rule). Quoted in the refusal message so
+                a reader can see what could not be afforded.
 
         Returns:
             A ``BUDGET_EXCEEDED`` :class:`~agentdag.domain.models.NodeError` when
-            ``tokens_by_row[row] + node_cap`` would exceed ``policy.run_limits.tokens_per_row[row]``,
+            ``tokens_by_row[row]`` has already reached ``policy.run_limits.tokens_per_row[row]``,
             else ``None`` - also ``None`` when ``policy.run_limits.tokens_per_row`` declares no
             ceiling for ``row`` at all (an operator who did not cap a row is not capping
             it here either).
@@ -602,16 +606,48 @@ class Coordinator:
         if ceiling is None:
             return None
         charged = self.tokens_by_row.get(row, 0)
-        if charged + node_cap <= ceiling:
+        if charged < ceiling:
             return None
         return NodeError(
             type=ErrorType.BUDGET_EXCEEDED,
             message=(
-                f"row {row!r} already charged {charged} of {ceiling}; this node's own "
-                f"cap {node_cap} would push the run past its ceiling"
+                f"row {row!r} already charged {charged} of {ceiling}; the ceiling has no "
+                f"headroom left for this node's cap of {node_cap}"
             ),
             transient=False,
         )
+
+    def _cap_to_headroom(self, row: str, node_cap: int | None) -> int | None:
+        """Return ``node_cap`` narrowed to what ``row`` has left of its run ceiling.
+
+        The counterpart to :meth:`_run_cap_refusal`, and the reason that method can afford
+        to refuse only a row with NOTHING left. A node whose own cap outruns the remaining
+        headroom is still worth dispatching - it simply may not spend more than the run has
+        - so it is admitted under the smaller figure and reaches that instead of its own.
+        Reaching it ends the node ``NEEDS_CONTINUATION`` with its worktree intact, so the
+        narrowing costs the work nothing.
+
+        Reserving the full cap instead is what this replaces, and it was measured: a
+        pre-registered 1,200,000 ceiling behaved as 900,000 for any node declaring a
+        300,000 cap, stopping three of Task 13's five checkpoints with about 21 percent of
+        the budget unspent and a briefed successor refused.
+
+        Args:
+            row: The resolved model row alias.
+            node_cap: This node's own cap for ``row``, or ``None`` when it declares none -
+                returned unchanged, the same "no cap declared, nothing enforced" rule the
+                rest of this path keeps.
+
+        Returns:
+            ``min(node_cap, ceiling - charged)`` when ``row`` carries a ceiling, else
+            ``node_cap`` unchanged.
+        """
+        if node_cap is None:
+            return None
+        ceiling = self.policy.run_limits.tokens_per_row.get(row)
+        if ceiling is None:
+            return node_cap
+        return min(node_cap, ceiling - self.tokens_by_row.get(row, 0))
 
     def _recorded_cwd(self, cwd: Path, *, workspace: Path | None, node_id: str) -> str:
         """Name ``cwd`` the way this dispatch's key will, refusing one under no root it was given.
