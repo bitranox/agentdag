@@ -323,6 +323,66 @@ What this does NOT change: every other setting, the void conditions, and the fac
 still exhausts at 8 voids its problem exactly as before. The arm's config states the value with this
 reasoning beside it, and `tests/test_scb_arm_preregistration.py` fails if it moves.
 
+## Addendum, pre-registered 2026-09-12
+
+Written BEFORE any further counted checkpoint. The counted `database_migration` run of 2026-09-11
+is DISCARDED under this addendum rather than kept: its figures appear below and in the commits as
+the EVIDENCE for these changes, and they enter no tally. The re-run replaces them.
+
+### 4. The row ceiling is spent rather than reserved, and a spent budget hands over
+
+Three coordinator-arm changes, all shipped before the re-run: `00d77ec`, `01fa4e8`, `5f36183`,
+`48d0c6a`. The control arm is untouched by every one of them - none of this code runs in a control
+dispatch - so the corrected control's 17 checkpoints stand as tallied and are NOT re-run.
+
+**Why this is a defect fix and not a raised bar.** The pre-registration states a `tokens_per_row`
+ceiling of 1,200,000. The implementation refused a dispatch whenever `charged + node_cap` would
+cross it, which reserves the node's whole declared cap before it starts, so a ceiling of C behaved
+as `C - node_cap`: 900,000 for any node declaring the shipped 300,000. That is the instrument not
+matching its own specification. The arm's tier policy already states the intended model in its
+comment on `max_continuations`: "the real ceiling on spend stays `run_limits.tokens_per_row`".
+
+**What it cost, measured on the discarded run.** Checkpoints 3, 4 and 5 - every checkpoint where
+the two arms diverge - each ended on this refusal at 949,098 / 974,915 / 942,578 charged, leaving
+250,902 / 225,085 / 257,422 unspent, about 21 percent. Each refused a node whose brief had already
+been written. Checkpoint 5's refused successor had a handover in hand naming the exact one-line fix
+its predecessor had diagnosed. The control was truncated on none of its five checkpoints (42 steps
+of a 100 bound at most), so the arms were not bounded alike.
+
+**The three changes.**
+
+1. `_run_cap_refusal` refuses only a row that has charged its whole ceiling; `_cap_to_headroom`
+   narrows an outrunning node's cap to what is actually left. Overshoot stays bounded by one turn,
+   as it already was for a node's own cap.
+2. A node that reaches its token cap ARMS the handover rather than being interrupted where it
+   stands, on the same measured `HANDOVER_GRACE_TURNS` grace the context ceiling uses, and its
+   record keeps the worktree. Before, the cap path emptied `artefact_refs` by design. The wall-clock
+   deadline is deliberately unchanged and still stops a node for good.
+3. A planner refused for a spent budget is reported un-replannable instead of reading as "wrote no
+   `plan.json`", which was spending every `max_replans` attempt against a bound that cannot move.
+
+**What this does to spend, stated before the run rather than after.** The grace is up to three
+further API requests per handover, so a run may now exceed `tokens_per_row` by more than the one
+turn the old rule allowed. That is accepted: the ceiling is a stop rule, not a measured quantity,
+and the tally reports ACTUAL new tokens throughout. Change 1 raises the arm's effective budget by
+about a third (900,000 to 1,200,000 per checkpoint), so the coordinator arm is expected to cost
+MORE than the discarded run, not less. Nothing here is expected to improve its score by itself; it
+removes a truncation that made the score a floor.
+
+**Why `database_migration` is re-run.** Uniform conditions across the 17 checkpoints. Reading a
+tally that mixed two ceilings would be uninterpretable, and the cheaper alternative - keeping the
+discarded figures and running only the remaining two problems under the fix - is exactly that
+mixture.
+
+**Falsifier, pre-registered.** If the re-run's coordinator arm ends no checkpoint on a budget bound
+AND its per-checkpoint new tokens land within 5 percent of the discarded run's, then these changes
+did not bind on this problem and the discarded run's readings were not truncation-limited after
+all; the write-up must say so rather than claiming a repaired measurement.
+
+**Proof before spending.** The mechanism was run end to end on a cheap row before any of this was
+committed to the arm, recorded in `docs/probes/2026-09-11-budget-handover-proof.md`; the raw runs
+are outside every git work tree at `~/agentdag-eval/handover-proof/`.
+
 ## Results
 
 ### Corrected control
