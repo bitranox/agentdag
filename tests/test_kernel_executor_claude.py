@@ -679,9 +679,9 @@ def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_
 
     FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
     outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=200)))
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"
+    assert outcome.status == "needs_continuation"  # a spent budget hands over, it does not fault
+    assert outcome.error is None
+    assert outcome.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     instance = FakeStreamClient.instances[0]
     assert instance.interrupt_calls == 1
     assert instance.turns_yielded == 2  # the third turn was never even seen
@@ -710,9 +710,9 @@ def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_si
 
     FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
     outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=200)))
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"
+    assert outcome.status == "needs_continuation"  # a spent budget hands over, it does not fault
+    assert outcome.error is None
+    assert outcome.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     instance = FakeStreamClient.instances[0]
     assert instance.interrupt_calls == 1
     assert instance.turns_yielded == 3  # crossed only once the third turn's own usage landed
@@ -775,9 +775,9 @@ def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
 
     FakeStreamClient.configure(turns, terminal)
     one_under = asyncio.run(executor.run(_request(tmp_path, token_cap=109)))
-    assert one_under.status == "failed"
-    assert one_under.error is not None
-    assert one_under.error.type == "budget_exceeded"
+    assert one_under.status == "needs_continuation"  # a spent budget hands over, it does not fault
+    assert one_under.error is None
+    assert one_under.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     assert one_under.charged_tokens == {"sonnet": 110}  # the SAME figure, via the interrupted path
     assert FakeStreamClient.instances[0].interrupt_calls == 1
 
@@ -788,16 +788,16 @@ def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     [(False, "success"), (True, "error_during_execution")],
     ids=["turn_boundary_success_shaped", "mid_tool_error_shaped"],
 )
-def test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_s_own_shape(
+def test_a_capped_node_s_record_is_a_handover_regardless_of_the_sdk_s_own_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_error: bool, subtype: str
 ) -> None:
     """Both shapes the probe measured (``workflow/design/probes/m3-interrupt.md`` in
     RESEARCH): a turn-boundary interrupt reports itself ``is_error=False,
     subtype="success"`` - indistinguishable from a node that finished; a mid-tool
     interrupt reports ``is_error=True, subtype="error_during_execution"`` - the
-    opposite. NEITHER may decide this node's outcome: both must land
-    ``BUDGET_EXCEEDED``, ``transient=False``, with no artefact ref at all (never the
-    half-finished worktree presented as a completed one).
+    opposite. NEITHER may decide this node's outcome: both must land a handover that
+    KEEPS the worktree, so whichever shape the SDK reports, the successor continues
+    from the same tree rather than starting over.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
@@ -809,11 +809,9 @@ def test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_
 
     outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
 
-    assert outcome.status == "failed"
-    assert outcome.artefact_refs == []  # never the half-finished worktree, whichever SDK shape
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"
-    assert outcome.error.transient is False  # never retried into spending the cap again
+    assert outcome.status == "needs_continuation"
+    assert outcome.artefact_refs == ["wt/r"]  # the successor continues from it, whichever SDK shape
+    assert outcome.error is None  # a bound reached is not a fault
     assert outcome.key_facts.get("cap_hit") is True
     assert outcome.charged_tokens == {"sonnet": 500 + 3}  # the terminal usage the SDK still reported
     assert FakeStreamClient.instances[0].interrupt_calls == 1
@@ -885,15 +883,15 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
 ) -> None:
     """The one branch neither SDK-shape test reaches: ``_run``'s own
     ``if cap_hit: return self._budget_outcome(request, first_turn_input, usage,
-    cost_usd=cost_usd)`` after the ``async with`` block - a capped dispatch whose stream
+    cwd_rel, cost_usd=cost_usd)`` after the ``async with`` block - a capped dispatch whose stream
     ends with no terminal ``ResultMessage`` at all. Both
-    ``test_a_capped_node_s_record_is_failed_budget_exceeded_regardless_of_the_sdk_s_own_shape``
+    ``test_a_capped_node_s_record_is_a_handover_regardless_of_the_sdk_s_own_shape``
     cases go through a ``ResultMessage`` arriving (one of the two shapes the probe
     measured); this one never gets one, so ``_budget_outcome`` is called with an EMPTY
     usage mapping rather than a terminal one - it must still report a well-formed
-    ``BUDGET_EXCEEDED`` record (zero charged tokens, since no terminal usage was ever
-    seen), not fall through to the generic "no ResultMessage" ``EXECUTOR_ERROR`` a few
-    lines below it in the source.
+    handover (zero charged tokens, since no terminal usage was ever seen), not fall
+    through to the generic "no ResultMessage" ``EXECUTOR_ERROR`` a few lines below it
+    in the source.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
@@ -902,11 +900,9 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
 
     outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
 
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"
-    assert outcome.error.transient is False
-    assert outcome.artefact_refs == []
+    assert outcome.status == "needs_continuation"
+    assert outcome.error is None
+    assert outcome.artefact_refs == ["wt/r"]
     assert outcome.key_facts.get("cap_hit") is True
     assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
     assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
@@ -1214,9 +1210,9 @@ def test_the_running_total_counts_one_api_request_once_however_many_blocks_it_ar
     # so the assertion above is about double counting and not about the cap being disarmed.
     FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=2))
     under = asyncio.run(executor.run(_request(tmp_path, token_cap=150)))
-    assert under.status == "failed"
-    assert under.error is not None
-    assert under.error.type == "budget_exceeded"
+    assert under.status == "needs_continuation"  # a spent budget hands over, it does not fault
+    assert under.error is None
+    assert under.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     assert FakeStreamClient.instances[0].interrupt_calls == 1
 
 
@@ -1931,7 +1927,7 @@ and is the control test below, not an arm here."""
     [
         ("normal", NodeStatus.DONE),
         ("handover", NodeStatus.NEEDS_CONTINUATION),
-        ("budget", NodeStatus.FAILED),
+        ("budget", NodeStatus.NEEDS_CONTINUATION),
         ("deadline", NodeStatus.CANCELLED),
     ],
 )
@@ -1980,8 +1976,8 @@ def test_a_dispatch_that_never_reached_a_terminal_message_records_no_cost(
 
     outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
 
-    assert outcome.error is not None
-    assert outcome.error.type == "budget_exceeded"  # the path really is the interrupted one
+    assert outcome.error is None
+    assert outcome.key_facts.get("cap_hit") is True  # the path really is the interrupted one
     assert outcome.cost_usd is None
     assert outcome.tokens is not None
     assert outcome.tokens.cache_write == 0
@@ -2248,3 +2244,38 @@ def test_the_deny_hooks_are_registered_unchanged_under_the_widening_permission_m
     assert fire(_only_hook(matchers, "Bash"), "Bash", {"command": "git push origin main"}) == "deny"
     assert fire(_only_hook(matchers, "Bash"), "Bash", {"command": "pytest -q"}) is None
     assert fire(_only_hook(matchers, "WebFetch"), "WebFetch", {"url": "https://example.invalid"}) == "deny"
+
+
+@pytest.mark.os_agnostic
+def test_a_node_that_spends_its_own_token_cap_hands_its_worktree_over_instead_of_losing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spending a budget is a bound the operator set, reached - the same class of event as
+    crossing ``handover_at_tokens`` or the turn ceiling, both of which already end
+    ``NEEDS_CONTINUATION`` and KEEP the worktree so a successor can carry the work on.
+
+    Before this, the token cap was the one bound that ended ``FAILED`` with
+    ``artefact_refs`` deliberately emptied, so a node stopped for spending its budget had
+    its half-finished tree discarded and nothing could continue it. Measured 2026-09-11 on
+    Task 13: three of five checkpoints ended on a budget bound, one of them holding a
+    handover that named the exact one-line fix it had just diagnosed.
+
+    ``error`` stays ``None`` for the reason the context ceiling's does: a caller branching
+    on ``error is not None`` must not read a scheduled handover as a fault.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn(500)]  # crosses a cap of 100 on the very first turn
+    result = _result(is_error=False, subtype="success", num_turns=1, usage_input=500)
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, result)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.artefact_refs == ["wt/r"]  # the successor continues from exactly this tree
+    assert outcome.error is None  # a bound reached is not a fault
+    assert outcome.key_facts.get("cap_hit") is True
+    assert outcome.charged_tokens == {"sonnet": 500 + 3}
+    assert FakeStreamClient.instances[0].interrupt_calls == 1

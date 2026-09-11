@@ -1230,8 +1230,9 @@ class ClaudeExecutor:
         dispatch's terminal message reports itself as a plain SUCCESS when the interrupt
         landed at a turn boundary and as a transient ``executor_error`` when it landed
         mid-tool, and NEITHER may decide this node's outcome (a plain success would hand
-        a half-finished worktree downstream as complete; a transient error would let
-        Task 24's retry re-dispatch the same node into spending its cap again). Once
+        a half-finished worktree downstream as COMPLETE - which a handover does not,
+        it hands it on as unfinished; a transient error would let Task 24's retry
+        re-dispatch the same node into spending its cap again). Once
         ``cap_hit`` is set, no further :meth:`_on_turn` call is made even if more
         ``AssistantMessage``s arrive before the stream actually stops - avoids a second,
         redundant ``interrupt()`` call on an already-interrupted client.
@@ -1339,7 +1340,7 @@ class ClaudeExecutor:
         if deadline_hit:
             return self._deadline_outcome(request, first_turn_input, usage, cost_usd=cost_usd)
         if cap_hit:
-            return self._budget_outcome(request, first_turn_input, usage, cost_usd=cost_usd)
+            return self._budget_outcome(request, first_turn_input, usage, cwd_rel, cost_usd=cost_usd)
         if handover.armed:
             return self._handover_outcome(
                 request,
@@ -1526,12 +1527,12 @@ class ClaudeExecutor:
     ) -> NodeOutcome:
         """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
 
-        The one stopped-dispatch record that is NOT a failure, and the one that KEEPS its
-        artefact ref. :meth:`_budget_outcome` and :meth:`_deadline_outcome` both empty
-        ``artefact_refs`` deliberately, so a half-finished worktree is never presented as a
-        completed one - the right call when the node is stopping for good. A handover is
-        the opposite case: the work in that tree is exactly what the successor continues
-        from, so dropping the ref would throw away the thing the mechanism exists to save.
+        A stopped-dispatch record that is NOT a failure and KEEPS its artefact ref.
+        :meth:`_budget_outcome` now takes this same shape, for the same reason: the work
+        in that tree is exactly what the successor continues from, so dropping the ref
+        would throw away the thing the mechanism exists to save. :meth:`_deadline_outcome`
+        still empties ``artefact_refs`` deliberately - a node out of WALL-CLOCK time has no
+        successor waiting on more of it, so it is stopping for good.
 
         ``status`` is ``NEEDS_CONTINUATION`` and ``error`` is ``None``: crossing a context
         ceiling is a scheduled event, not something that went wrong, and a caller
@@ -1648,7 +1649,13 @@ class ClaudeExecutor:
         return True
 
     def _budget_outcome(
-        self, request: ExecutorRequest, first_turn_input: int, usage: Mapping[str, Any], *, cost_usd: float | None
+        self,
+        request: ExecutorRequest,
+        first_turn_input: int,
+        usage: Mapping[str, Any],
+        cwd_rel: str,
+        *,
+        cost_usd: float | None,
     ) -> NodeOutcome:
         """Build the record a cap-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
@@ -1659,18 +1666,26 @@ class ClaudeExecutor:
         tokens and :attr:`~agentdag.application.kernel.context.Coordinator.tokens_by_row`
         must reflect that, the same as any other outcome's ``charged_tokens``).
 
-        Two things this outcome deliberately does NOT carry, both load-bearing:
-        ``artefact_refs`` stays empty (never ``[cwd_rel]``) so a work node's
-        half-finished worktree is never handed downstream as a completed artefact - the
-        empty-result refusal (:func:`~agentdag.application.kernel.dispatch._refuse_empty`)
-        only inspects a ``DONE`` outcome, so it cannot rescue this one; and
-        ``error.transient`` is ``False``, so Task 24's retry path never re-dispatches a
-        node that was stopped for spending its own budget, straight back into spending
-        it again.
+        Spending a budget is a bound the operator set, reached - the same class of event
+        as crossing ``handover_at_tokens``, and the same class the TURN ceiling was
+        already corrected to (see :func:`outcome_from_usage`, where treating a reached
+        bound as a transient error once killed six work nodes namelessly). So this ends
+        ``NEEDS_CONTINUATION`` carrying ``[cwd_rel]``: the work in that tree is exactly
+        what the successor continues from, and dropping the ref would throw away the
+        thing the handover mechanism exists to save. Measured 2026-09-11 on Task 13,
+        where a node had diagnosed a one-line fix, written it into a handover, and had
+        the tree discarded under it.
+
+        ``error`` is ``None`` for the reason a context handover's is: a caller branching
+        on ``error is not None`` must not read a scheduled handover as a fault. Nothing
+        is re-dispatched blindly as a result - Task 24's retry path only ever considers a
+        FAILED record carrying a TRANSIENT error, and the successor chain this outcome
+        starts is bounded by ``Policy.max_continuations`` with the real ceiling on spend
+        staying ``run_limits.tokens_per_row``.
 
         Args:
             request: The dispatch this outcome is for - ``request.model`` names the row
-                charged, ``request.token_cap`` is quoted in the error message.
+                charged.
             first_turn_input: What :meth:`_run` recorded as the FIRST turn's own
                 :func:`input_total`, kept in ``key_facts`` like every other outcome.
             usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
@@ -1687,7 +1702,8 @@ class ClaudeExecutor:
         """
         tokens = tokens_from_usage(usage)
         return NodeOutcome(
-            status=NodeStatus.FAILED,
+            status=NodeStatus.NEEDS_CONTINUATION,
+            artefact_refs=[cwd_rel],
             key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
             typed_fields=["cap_hit"],
             tokens=tokens,
@@ -1696,14 +1712,7 @@ class ClaudeExecutor:
             executor_used="claude",
             model_used=request.model,
             effort_used=_NO_VALUE,
-            error=NodeError(
-                type=ErrorType.BUDGET_EXCEEDED,
-                message=(
-                    f"node token cap {request.token_cap} exceeded at a turn seam; "
-                    "interrupted, overshoot bounded by one turn"
-                ),
-                transient=False,
-            ),
+            error=None,
         )
 
     def _deadline_exceeded(self, dispatch_started: datetime, deadline_s: float | None) -> bool:
@@ -1763,15 +1772,16 @@ class ClaudeExecutor:
     ) -> NodeOutcome:
         """Build the record a deadline-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
-        Mirrors :meth:`_budget_outcome` exactly - the SAME probe finding applies here:
+        The SAME probe finding as :meth:`_budget_outcome` applies here:
         an interrupted dispatch's terminal message never says "interrupted" (a plain
         SUCCESS at a turn boundary, a transient ``executor_error`` mid-tool), so this is
         the ONLY place a deadline-stopped node's outcome may be decided, never the
-        terminal ``ResultMessage`` :meth:`_run` may still receive afterward. Same two
-        load-bearing omissions too: no ``artefact_refs`` (a half-finished worktree is
-        never handed downstream as complete) and ``error.transient=False`` (a node
-        stopped for running too long must not be Task 24's retry target, straight back
-        into running out of time again).
+        terminal ``ResultMessage`` :meth:`_run` may still receive afterward. It KEEPS the
+        two omissions :meth:`_budget_outcome` has since dropped, and the divergence is
+        deliberate: no ``artefact_refs`` (a half-finished worktree is never handed
+        downstream as complete) and ``error.transient=False`` (a node stopped for running
+        too long must not be Task 24's retry target, straight back into running out of
+        time again). A budget can be granted again; the wall clock cannot.
 
         Args:
             request: The dispatch this outcome is for - ``request.model`` names the row
