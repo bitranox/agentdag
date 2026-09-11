@@ -274,3 +274,19 @@ def test_the_planner_prompt_says_judging_is_not_available_yet() -> None:
     gets "unregistered op", which reads as a typo unless it was told."""
     assert "judge" in PLANNER_PROMPT
     assert "not yet available" in PLANNER_PROMPT
+
+
+@pytest.mark.os_agnostic
+def test_a_planner_refused_for_a_spent_budget_cannot_be_replanned(tmp_path: Path) -> None:
+    """A spent row ceiling refuses every next planner identically, so re-planning cannot help.
+
+    The same shape the provider refusals above have, and it was found the same way: measured
+    2026-09-11 on a real run, a row with no headroom refused the planner, the ladder saw only
+    that no plan.json existed, and it spent every max_replans attempt re-dispatching into a
+    ceiling that could not move - then suspended asking whether to grant more RE-PLANS, which
+    is the one thing that cannot help. The budget question is the one worth asking.
+    """
+    out = run_refused_planner(tmp_path, ErrorType.BUDGET_EXCEEDED)
+    assert isinstance(out, NotPlanned)
+    assert out.replannable is False
+    assert any("budget" in reason for reason in out.reasons), out.reasons

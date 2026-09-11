@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ...domain.journal import PlanAcceptedLine, PlanInvalidatedLine
-from ...domain.models import provider_refusal
+from ...domain.models import ErrorType, provider_refusal
 from ...domain.plan import PLAN_FILENAME, Plan, plan_json_schema
 from .plan_validate import Accepted, validate_plan
 from .ports import stamp
@@ -198,6 +198,15 @@ async def _plan_or_reasons(
         # ordinary bad planner, and was re-planned against.
         message = "" if record.error is None else f": {record.error.message}"
         reason = f"the planner node was refused by the provider, waiting on {waiting_on.value}{message}"
+        return NotPlanned(reasons=(reason,), record=record, replannable=False)
+    if record.error is not None and record.error.type == ErrorType.BUDGET_EXCEEDED:
+        # Checked BEFORE the plan file for the same reason a provider refusal is: a
+        # refused dispatch wrote no plan either, and the missing file is all the ladder
+        # used to see. A spent row ceiling refuses every next planner identically, so
+        # re-planning spends max_replans against a bound that cannot move - measured on a
+        # real run, which then suspended asking whether to grant more RE-PLANS, the one
+        # thing that could not help. Un-replannable routes it to the budget question.
+        reason = f"the planner node was refused for a spent budget: {record.error.message}"
         return NotPlanned(reasons=(reason,), record=record, replannable=False)
     rel = _plan_ref(record)
     if rel is None:
