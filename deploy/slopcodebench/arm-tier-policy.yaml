@@ -242,8 +242,16 @@ thresholds:
   # journal line count that is a SIGNAL, not a trigger, until real runs exist to measure against
   # (3.4, 3.5); Continue-As-New is not part of this design.
   journal_max_lines: 5000
-  # how many handovers a node chain may take before it ends failed/continuation_limit (3.8)
-  max_continuations: 3
+  # how many handovers a node chain may take before it ends failed/continuation_limit (3.8).
+  # RAISED from the shipped table's 3 for this arm, pre-registered 2026-09-11 as addendum 3 of
+  # docs/probes/2026-09-05-slopcodebench-corrected-pair.md. 3 was inherited, never chosen for this
+  # pair, and it was already at the boundary of the work: the parity run's n-0002 finished on its
+  # FOURTH link, the last allowed, and database_migration checkpoint_4's n-0002 needed a fifth and
+  # voided the whole problem. The control carries no per-node chain budget at all - its process is
+  # retried with --continue and its context comes with it - so this bound is one the coordinator
+  # carries alone. 8 rather than unbounded, because a runaway chain should still end; the real
+  # ceiling on spend stays run_limits.tokens_per_row.
+  max_continuations: 8
   # how many times ONE code node may be dispatched before its transient failure stands. 2 means
   # one retry, mirroring design 2.3 rule 5, which re-dispatches ONCE and suspends on the second
   # failure rather than climbing. Only a FAILED record carrying a TRANSIENT error retries: a red

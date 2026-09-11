@@ -35,6 +35,9 @@ ARM_POLICY = ARM_ROOT / "arm-tier-policy.yaml"
 PREREGISTERED_TOKENS_PER_ROW = 1_200_000
 """Decision 1: the runaway guard, per checkpoint run, in agentdag's charged unit."""
 
+PREREGISTERED_MAX_CONTINUATIONS = 8
+"""Addendum 3: the per-node handover budget, raised from the shipped table's inherited 3."""
+
 PREREGISTERED_DENY_BASH = ["git push", "gh pr", "gh release"]
 """Decision 3: publishing actions only. The default also closes ``curl -X POST`` and
 ``curl --data``, which the calibration control used four times on ``dynamic_config_service_api``
@@ -110,6 +113,18 @@ def test_every_kind_that_resolves_a_model_asks_for_high_effort() -> None:
     resolving = {kind: default for kind, default in table.kind_defaults.items() if default.tier_role is not None}
     assert resolving, "a table where no kind resolves a model would satisfy this vacuously"
     assert {kind: default.effort for kind, default in resolving.items()} == dict.fromkeys(resolving, "high")
+
+
+def test_the_handover_budget_is_the_raised_one_not_the_shipped_default() -> None:
+    """Addendum 3, 2026-09-11: `max_continuations` 3 -> 8.
+
+    3 was inherited from the shipped table rather than chosen for this arm, and it voided a whole
+    counted problem when one node needed a fifth link. Pinned here because the value that bites is
+    the one nothing checks: a chain that exhausts voids its problem, so a silent revert to 3 costs
+    hours of paid run before anything says why.
+    """
+    loaded = load_policy(ARM_POLICY, max_turns=100, deny_bash=(), deny_tools=())
+    assert loaded.max_continuations == PREREGISTERED_MAX_CONTINUATIONS
 
 
 def test_the_token_guard_is_the_pre_registered_one_on_every_row() -> None:

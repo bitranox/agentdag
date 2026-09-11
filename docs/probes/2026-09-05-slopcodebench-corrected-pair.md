@@ -287,6 +287,42 @@ change what the next dispatch gets from an account-wide refusal. So `on_auth_fai
 now means what it says at the root. It is a coordinator change, not an arm change, and it
 reaches every agentdag run.
 
+## Addendum, pre-registered 2026-09-11
+
+Written BEFORE any further counted checkpoint, which is the whole of what makes it legitimate. The
+counted `database_migration` run that prompted it is DISCARDED, not kept: it is not tallied, not
+reported as a null result, and its figures appear below only as the evidence for this change.
+
+### 3. The coordinator arm's per-node handover budget
+
+**Decided by the user: `thresholds.max_continuations` 3 -> 8 in the arm's tier policy.**
+
+Why. A coordinator node that reaches `kernel.max_turns` (100, matched to the control's step limit)
+hands over to a continuation, and `max_continuations` bounds how many times a chain may do that
+before the node ends `continuation_limit`. On 2026-09-11 that fired for real: in
+`database_migration` checkpoint_4, node `n-0002` handed over 4 times against a policy of 3, which
+is void condition 3 for a coordinator and therefore voided the whole problem - five checkpoints,
+three hours and 51.46 USD, none of it tallyable.
+
+Three things make 3 the wrong number rather than an unlucky one:
+
+* **It is not in the held-fixed table.** It was inherited verbatim from agentdag's shipped tier
+  table when the arm's policy was derived from it, and the four pre-registered changes did not
+  touch it. It was never a choice made for this pair.
+* **It was already at the boundary of the work.** In the clean parity reading (2026-09-10) node
+  `n-0002` finished `done` on its FOURTH link - continuation 3, the last one allowed. The default
+  was not comfortably above what these checkpoints need; it was exactly at it.
+* **The control has no counterpart.** A control process that hits its turn bound is retried by the
+  harness with `--continue`, and its context comes with it. There is no per-node chain budget on
+  that side to match, so a chain limit is a bound the coordinator carries alone.
+
+8 rather than unbounded: a runaway chain should still end, and the run-level token guard
+(`tokens_per_row` 1,200,000) remains the real ceiling on spend.
+
+What this does NOT change: every other setting, the void conditions, and the fact that a chain that
+still exhausts at 8 voids its problem exactly as before. The arm's config states the value with this
+reasoning beside it, and `tests/test_scb_arm_preregistration.py` fails if it moves.
+
 ## Results
 
 ### Corrected control
