@@ -5,63 +5,55 @@ where this session stopped and what it decided.
 
 ## The next action
 
-**A PAID COUNTED RUN IS IN FLIGHT, AND `make test` WOULD KILL IT.** `scb_run_arm.py` is a
-long-lived process running on the project `.venv`, and a bmk gate RESYNCS that venv underneath it.
-So do NOT run `make test`, `make push` or anything bmk until `logs/arm.log` shows `END` and
-`LAUNCHER_RC`. For a signal before then, use `.venv/bin/python -m pytest` directly - it does not
-resync.
+**Nothing is running.** Task 13's `database_migration` is DONE and TALLIED; the other two problems
+are owed. `make test` is safe again (it was not while the launcher held the project `.venv`).
 
-The run is Task 13 round 2: `database_migration` re-run under the raised handover budget, started
-2026-09-11 09:54:53 in `~/agentdag-eval/slopcodebench/task13/`, into a token valid to 16:48. Round 1
-of the same problem is VOID and quarantined as `runs/VOID-continuation-limit-*`; it enters no tally.
-Judge the run by the `END` and `LAUNCHER_RC` lines in `arm.log`, never by a task notification. To
-stop it: kill the pid in `logs/launcher.pid`, then `docker stop` the `slop-code:agentdag-*`
-container.
+In order:
 
-**TWO COMMITS ARE UNPUSHED, on purpose.** `3c359ac` and `edb653e` are committed and safe in git but
-not pushed, because pushing requires the gate that would kill the run. They are the first thing to
-do when it ends.
+1. **Write the result below the divider** of `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`,
+   recording the order deviation (short problems first) and that round 1 of this problem is void and
+   discarded.
+2. **`dynamic_config_service_api`**, refused at 14:07 on a 2.7 h token against 3.45 h needed. Launch
+   it on a fresh window with
+   `setsid nohup .venv/bin/python scripts/scb_run_arm.py --config ~/agentdag-eval/slopcodebench/task13/run-task13.yaml --harness ~/agentdag-eval/slopcodebench/slop-code-bench --problems-path ~/agentdag-eval/slopcodebench/scb-problems-cumulative --log-dir ~/agentdag-eval/slopcodebench/task13/logs --wait-for-token 43200 --problem dynamic_config_service_api:10355 </dev/null >/dev/null 2>&1 &`
+   There is no wrapper script any more and none should be written: the wait is a flag.
+3. **`circuit_eval`** at `:21701`, same shape. NO catalog split - it fits a fresh ~8 h window on the
+   measured ratio, and a split would be invalid because the checkpoints are cumulative.
+4. While a problem runs, do NOT run `make test`: it resyncs the project `.venv` under
+   `scb_run_arm.py`. Use `.venv/bin/python -m pytest` for a signal.
 
-In order, once `arm.log` shows END:
-
-1. `make test`, then push both commits. Watch CI on the pushed sha.
-2. Read the arm: `scripts/scb_arm_report.py <run dir>`, applying EVERY void condition including the
-   addendum's condition 6. Read `tokens_by_row` before believing any score - a suspended checkpoint
-   that charged zero is an auth failure, not a result. **The open question is whether the raised
-   handover budget clears condition 3, or whether a node exhausts even at 8.** That decides whether
-   Task 13 can produce a tally at all.
-3. The launcher attempts `dynamic_config_service_api` by itself when the problem ends. If the token
-   no longer covers it, it exits 3 having started NOTHING, which is not a failure.
-4. Then `circuit_eval` at `:21701`. It needs NO catalog split: on the measured ratio it fits a fresh
-   ~8 h window, and a split would be INVALID anyway because the checkpoints are cumulative -
-   `checkpoint_5.md` tells the agent parts 1-4 are already implemented, which is false from a fresh
-   workspace. If a window ever does run out mid-problem, the harness's own `detect_resume_point`
-   spans it correctly.
-5. Retire `task13/launch_round2.sh` - the last of four launcher copies, left alone only because it
-   is the script currently executing.
-6. Results go BELOW the divider of `docs/probes/2026-09-05-slopcodebench-corrected-pair.md`, with
-   the order deviation (short problems first) recorded there.
+**`arm.log` is APPEND-ONLY across rounds**, so a waiter that greps for `END <problem>` matches an
+earlier round's line and reports a run finished while it is still going. Count the lines and assert
+the baseline.
 
 ## In flight
 
-`database_migration` round 2 is RUNNING as above, in its own detached process group. Round 1 of it
-completed in 3.00 h and was voided by a continuation-chain exhaustion; round 2 runs under
-`max_continuations: 8`, pre-registered as addendum 3 and pushed at `0b75f61` BEFORE it started.
+Nothing. `database_migration` ended rc=0 at 14:07:26 after 4.12 h, and the launcher then correctly
+refused `dynamic_config_service_api` (exit 3, nothing started).
 
-**Round 1's figures, which are evidence and NOT a tally** (the problem is void, and the addendum
-says outright that it is discarded):
+**The first TALLIED head-to-head, `Void: none`, both arms through `scb_arm_report.py`:**
 
-| ck | strict | core  | cost USD | seconds |
-|----|--------|-------|----------|---------|
-| 1  | 1.000  | 1.000 | 2.53     | 472     |
-| 2  | 0.903  | 0.667 | 10.59    | 2,108   |
-| 3  | 0.920  | 1.000 | 14.52    | 3,017   |
-| 4  | 0.915  | 0.833 | 15.36    | 3,207   |
-| 5  | 0.891  | 0.333 | 8.46     | 1,803   |
+|                         | control | coordinator | ratio  |
+|-------------------------|---------|-------------|--------|
+| S (strict-perfect of 5) | 1       | 1           | tie    |
+| C (mean core)           | 0.833   | 0.900       | better |
+| mean strict             | 0.963   | 0.967       | tie    |
+| repaired                | 0 of 4  | 0 of 4      | tie    |
+| cost USD                | 14.63   | 55.19       | 3.8x   |
+| seconds                 | 3,537   | 14,844      | 4.2x   |
+| new tokens              | 390,820 | 2,436,034   | 6.2x   |
+| peak over 150k          | 0 of 5  | 2 of 5      |        |
 
-51.46 USD against the control's 14.63, and 3.00 h against 0.98 h. **The measured wall-clock ratio is
-therefore 3.06x, not the 4.43x I extrapolated from one easy checkpoint** - which is why
-`circuit_eval` no longer needs splitting. The COST ratio, 3.5x, held.
+On a problem the control does NOT saturate, the coordinator is marginally better on quality and
+several times more expensive - the OPPOSITE shape from the parity reading, where it was worse on a
+checkpoint the control aced. NEITHER arm repaired a single carried-forward defect. One run per arm,
+so this is SEPARATION not causation, and it is one problem of three.
+
+Checkpoint 5's coordinator run ended on the 1.2M `tokens_per_row` ceiling (`budget_exceeded`), which
+the pre-registration calls a normal end. No node passed 2 continuations, so the raised handover
+budget was not the binding constraint there - a different ceiling bit on each round.
+
+Conditions: loadavg 29.7 at the end, against round 1's 2.0.
 
 ## Committed, or not
 
