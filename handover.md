@@ -99,9 +99,11 @@ Mine, the ones that outlive the commits:
   run by the `END` and `LAUNCHER_RC` lines in its `arm.log`, never by a task notification.
 - **Task 13 waits for the token rather than racing it.** The harness FREEZES the token into the
   container at launch and nothing inside refreshes it, so a problem that outlives it dies mid-run
-  and is VOID under condition 4. `launch_when_token_allows.sh` polls the credential and starts only
-  when the window covers the problem. It worked: the token sat at 0.14 h, rolled to 7.98 h at
-  00:53, and the launcher caught it within five minutes.
+  and is VOID under condition 4. The wait lives in the launcher itself:
+  `scripts/scb_run_arm.py --wait-for-token SECONDS` polls the credential, RE-READING it each time
+  because a roll is what it waits for, and starts only when the window covers the problem. It
+  worked: the token sat at 0.14 h, rolled to 7.98 h at 00:53, and it was caught within five
+  minutes. The three bespoke wrapper scripts that used to do this are retired as loud shims.
 - **The launch condition was checked in BOTH directions before arming** (3.99 waits, 5.20 launches),
   because the dangerous direction is a false "fits" that spends money. The script writes its own PID
   to a pidfile: the launch command contains the script's name, so a `pgrep -f` liveness check would

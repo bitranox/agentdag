@@ -25,11 +25,17 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-__all__ = ["ProblemPlan", "parse_problem", "token_covers"]
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+__all__ = ["ProblemPlan", "Waiting", "await_token", "parse_problem", "token_covers"]
 
 EXIT_REFRESH_NEEDED = 3
 MARGIN = 1.2
+POLL_SECONDS = 300.0
+"""How often the wait re-reads the credential. A token roll is not an event we can subscribe to."""
 
 
 class ProblemPlan:
@@ -52,6 +58,61 @@ def token_covers(*, expires_at_ms: int, now_s: float, expected_s: int, margin: f
     """True when the token outlives the expected duration times the margin."""
     remaining = expires_at_ms / 1000.0 - now_s
     return remaining >= expected_s * margin
+
+
+class Waiting:
+    """The clock a wait runs on, bundled so the three cannot be passed apart.
+
+    They are one decision - how this wait perceives and spends time - and a test that replaced the
+    clock but not the sleep, or either without the interval, would wait on a mixture of real and
+    fake time without anything saying so.
+    """
+
+    def __init__(
+        self,
+        *,
+        now: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+        poll_s: float = POLL_SECONDS,
+    ) -> None:
+        self.now = now
+        self.sleep = sleep
+        self.poll_s = poll_s
+
+
+def await_token(
+    plan: ProblemPlan,
+    *,
+    credentials: Path,
+    deadline_s: float,
+    waiting: Waiting | None = None,
+    note: Callable[[str], None] | None = None,
+) -> tuple[str, int] | None:
+    """The credential once it covers ``plan``, or ``None`` when the wait ran out.
+
+    The credential is RE-READ on every poll, because a token ROLL is exactly what this waits for:
+    the file changes under it and the remaining validity jumps. Measured 2026-09-11, a real token
+    sat at 0.14 h, rolled to 7.98 h, and a wait caught it within five minutes.
+
+    Giving up returns ``None`` rather than the stale credential, so a caller cannot accidentally
+    start a problem the token still cannot cover - which is the whole reason the guard exists.
+
+    ``now`` and ``sleep`` are injected so the wait is testable without one.
+    """
+    clock = Waiting() if waiting is None else waiting
+    while True:
+        token, expires_at_ms = _read_credential(credentials)
+        if token_covers(expires_at_ms=expires_at_ms, now_s=clock.now(), expected_s=plan.expected_seconds):
+            return token, expires_at_ms
+        if clock.now() >= deadline_s:
+            return None
+        if note is not None:
+            remaining_h = (expires_at_ms / 1000.0 - clock.now()) / 3600.0
+            note(f"WAITING for {plan.name}: token has {remaining_h:.2f} h, needs {plan.expected_seconds * MARGIN:.0f}s")
+        # Never sleep past our own deadline: a short wait must give up when it said it would,
+        # not one poll interval later. Found by running the real argv - `--wait-for-token 1`
+        # slept the full 300 s - which the injected-sleep tests cannot see.
+        clock.sleep(min(clock.poll_s, max(0.0, deadline_s - clock.now())))
 
 
 def _read_credential(path: Path) -> tuple[str, int]:
@@ -96,16 +157,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--problem", type=parse_problem, action="append", required=True, help="NAME:EXPECTED_SECONDS, in run order"
     )
+    parser.add_argument(
+        "--wait-for-token",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="wait up to this long for the token to cover a problem, rather than refusing at once",
+    )
     args = parser.parse_args(argv)
     args.log_dir.mkdir(parents=True, exist_ok=True)
     chain = args.log_dir / "arm.log"
     for plan in args.problem:
-        token, expires_at_ms = _read_credential(args.credentials)
-        expiry = dt.datetime.fromtimestamp(expires_at_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
-        if not token_covers(expires_at_ms=expires_at_ms, now_s=time.time(), expected_s=plan.expected_seconds):
+        found = await_token(
+            plan,
+            credentials=args.credentials,
+            deadline_s=time.time() + float(args.wait_for_token),
+            note=lambda line: _note(chain, line),
+        )
+        if found is None:
+            _, expires_at_ms = _read_credential(args.credentials)
+            expiry = dt.datetime.fromtimestamp(expires_at_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
             needed = f"{plan.expected_seconds}s x {MARGIN}"
             _note(chain, f"REFRESH NEEDED before {plan.name}: token expires {expiry}, expected {needed}")
             return EXIT_REFRESH_NEEDED
+        token, expires_at_ms = found
+        expiry = dt.datetime.fromtimestamp(expires_at_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
         _note(chain, f"START {plan.name} token_expires={expiry} loadavg={_loadavg()}")
         rc = _run_problem(plan, args=args, token=token, log_dir=args.log_dir)
         _note(chain, f"END {plan.name} rc={rc} loadavg={_loadavg()}")

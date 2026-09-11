@@ -18,7 +18,9 @@ One checkpoint, `dynamic_config_service_api` checkpoint_1, from the one-checkpoi
 * Run directory: `~/agentdag-eval/slopcodebench/task12-parity/runs/PARITY-agentdag_20260910T173601`.
   Named `PARITY-*` so it can never be mixed with the void `TASK12-DRYRUN-*` ones. Outside every git
   work tree, because a run directory holds a credential copy per node.
-* Launcher and config: `task12-parity/launch_detached.sh` and `run-parity.yaml`, both copies of the
+* Launcher and config: `task12-parity/launch_detached.sh` (RETIRED 2026-09-11 to a shim, its
+  original kept beside it; the wait it wrapped is now `scb_run_arm.py --wait-for-token`) and
+  `run-parity.yaml`, both copies of the
   dry run's with the run-directory naming changed and the expected duration raised from 1800 s to
   3000 s. That number gates only the token-coverage refusal, and 1800 contradicted this host's own
   measurement: the void run's surviving attempt alone took 2,487 s. **[measured]**
