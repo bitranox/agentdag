@@ -211,21 +211,6 @@ that a member's value is a string the SDK accepts (:func:`_sdk_permission_mode`)
 :data:`_EFFORT_LEVELS` does for an effort."""
 
 
-class _Interruptible(Protocol):
-    """What :meth:`ClaudeExecutor._on_turn` needs from the live client: only ``interrupt()``.
-
-    A narrower seam than the concrete :class:`~claude_agent_sdk.ClaudeSDKClient` this
-    method is actually handed (:meth:`ClaudeExecutor._run` calls it with the real
-    client) - a real client structurally satisfies this Protocol, and a unit test can
-    hand it a bare double with one method and no cast, the same reasoning
-    :class:`CredentialSource` below already applies to the credential seam.
-    """
-
-    async def interrupt(self) -> None:
-        """Stop the in-flight dispatch; the SDK's own ``ClaudeSDKClient.interrupt``."""
-        ...
-
-
 class CredentialSource(Protocol):
     """What :class:`ClaudeExecutor` needs from a credential: one node's own env slice."""
 
@@ -725,6 +710,13 @@ class _Handover:
     by_subtree: bool = False
     """Whether the SUBTREE stopping armed this handover, rather than the context ceiling."""
 
+    by_budget: bool = False
+    """Whether a SPENT TOKEN BUDGET armed this handover, rather than the context ceiling.
+
+    Recorded as ``cap_hit`` on the outcome - the field name the composition layer already
+    declares branchable - so a plan may route on a node that stopped for spending rather
+    than for filling its window."""
+
     armed_request: str | None = None
     """The request that crossed the ceiling. Its own later blocks must not spend the grace."""
 
@@ -755,6 +747,7 @@ class _Handover:
         *,
         request_id: str | None,
         stop_requested: bool = False,
+        budget_spent: bool = False,
     ) -> bool:
         """Fold one turn in, and say whether the dispatch should now be interrupted.
 
@@ -784,12 +777,19 @@ class _Handover:
                 same record shape; once armed, neither reason can arm it again, so this is
                 read only on the arming turn. Defaults False, which is what a dispatch
                 belonging to no subtree passes.
+            budget_spent: Whether this dispatch has passed its own ``token_cap``. The THIRD
+                reason, ORed in exactly as ``stop_requested`` was, so a spent budget spends
+                the same measured grace and lands the same record shape. It used to
+                interrupt on the crossing turn, which preserved the worktree and guaranteed
+                no handover record was ever written to go with it - decision 14's finding,
+                that stopping a node at the moment of asking is how you get a tree with no
+                note attached to it.
 
         Returns:
             Whether to interrupt now.
         """
         if not self.armed:
-            if not (stop_requested or _past_context_ceiling(usage, ceiling)):
+            if not (stop_requested or budget_spent or _past_context_ceiling(usage, ceiling)):
                 return False
             self.armed = True
             # Subtree first when a turn triggers both: a node whose subtree is stopping is
@@ -797,6 +797,10 @@ class _Handover:
             # continued, so recording the ceiling here would let a re-plan read an
             # abandoned node as an ordinary continuation.
             self.by_subtree = stop_requested
+            # Budget ranks under the subtree and over the ceiling: a node whose budget is
+            # spent cannot be continued on the same allowance however full its window is,
+            # so that is the fact its successor needs recorded.
+            self.by_budget = budget_spent and not stop_requested
             self.context_at = input_total(usage)
             self.armed_request = request_id
             return False
@@ -806,6 +810,44 @@ class _Handover:
         self.last_counted = key
         self.grace_used += 1
         return self.grace_used >= HANDOVER_GRACE_TURNS
+
+
+def _past_spend_cap(running_total: int, cap: int | None) -> bool:
+    """Whether this dispatch's RUNNING SPEND has passed its own ``cap``.
+
+    Purely a comparison: interrupting is the handover's to decide, because crossing the cap
+    ARMS it and only the grace running out stops the node. Deciding and stopping are two
+    facts about different things, so they live in different objects.
+
+    The sum, never a single turn's own figure: every turn re-charges its whole input (prompt
+    caching discounts the COST of a cache read, not the token count this module sums), so a
+    dispatch's true spend is the sum across turns - what the terminal ``ResultMessage.usage``
+    reports and what :func:`outcome_from_usage` records as ``charged_tokens``. Measured on the
+    M2 attended runs (run ``20260818T060025Z-21e810``, node ``w_migrate@1``, hash ``b47149d9``):
+    a 28-turn dispatch charged 802,098 tokens while its first turn alone was 26,029.
+
+    INCLUSIVE of the cap: ``running_total == cap`` does not pass it, only ``>`` does.
+
+    Args:
+        running_total: Cumulative spend so far, including the turn that just arrived.
+        cap: ``request.token_cap``, or ``None`` when the node declares none for its row, in
+            which case nothing is enforced - the same "no cap declared, nothing checked" rule
+            the run-level call site keeps.
+
+    Returns:
+        Whether the cap was passed.
+
+    Examples:
+        >>> _past_spend_cap(101, 100)
+        True
+        >>> _past_spend_cap(100, 100)
+        False
+        >>> _past_spend_cap(10_000_000, None)
+        False
+    """
+    if cap is None:
+        return False
+    return running_total > cap
 
 
 def _subtree_stopping(request: ExecutorRequest) -> bool:
@@ -1224,16 +1266,17 @@ class ClaudeExecutor:
 
         The token cap (design 7, M3; ``workflow/design/probes/m3-interrupt.md`` in
         RESEARCH) is enforced HERE, not left to the terminal ``ResultMessage``: once
-        :meth:`_on_turn` calls ``client.interrupt()``, ``cap_hit`` is latched and every
-        branch below that would otherwise translate the SDK's own report is skipped in
-        favour of :meth:`_budget_outcome` - the probe measured that an interrupted
+        the running spend passes it, :func:`_past_spend_cap` arms the handover and the
+        node is asked to hand over rather than cut off; once the grace expires the branches
+        below that would otherwise translate the SDK's own report are skipped in
+        favour of :meth:`_handover_outcome` - the probe measured that an interrupted
         dispatch's terminal message reports itself as a plain SUCCESS when the interrupt
         landed at a turn boundary and as a transient ``executor_error`` when it landed
         mid-tool, and NEITHER may decide this node's outcome (a plain success would hand
         a half-finished worktree downstream as COMPLETE - which a handover does not,
         it hands it on as unfinished; a transient error would let Task 24's retry
         re-dispatch the same node into spending its cap again). Once
-        ``cap_hit`` is set, no further :meth:`_on_turn` call is made even if more
+        the handover is armed, no further arming decision is made even if more
         ``AssistantMessage``s arrive before the stream actually stops - avoids a second,
         redundant ``interrupt()`` call on an already-interrupted client.
 
@@ -1249,12 +1292,12 @@ class ClaudeExecutor:
         holding about 250000 against a 400000 cap and discarded its finished work. A later
         event for a request REPLACES its entry rather than adding to it, so a usage that
         arrives more complete on a subsequent block wins. It is kept here (not inside
-        :meth:`_on_turn`, which has no state of its own across calls: this class is a
+        :func:`_past_spend_cap`, which has no state of its own across calls: this class is a
         frozen dataclass) because it is the loop that owns "one more turn arrived".
-        This is the SAME unit :func:`outcome_from_usage` and :meth:`_budget_outcome`
+        This is the SAME unit :func:`outcome_from_usage` and :meth:`_handover_outcome`
         use to build ``charged_tokens`` (also input_total + output_tokens, just of a
         single terminal usage snapshot rather than summed turn by turn) - see
-        :meth:`_on_turn`'s own docstring for why a per-turn figure alone can never
+        :func:`_past_spend_cap`'s own docstring for why a per-turn figure alone can never
         serve as a spend cap.
 
         The node deadline (design 7, M3) is checked at the SAME turn seam, right after
@@ -1279,7 +1322,6 @@ class ClaudeExecutor:
         dispatch_started = self.clock.now()
         first_turn_input = 0
         seen_first_turn = False
-        cap_hit = False
         deadline_hit = False
         spend_by_request: dict[str, int] = {}
         running_total = 0
@@ -1301,29 +1343,21 @@ class ClaudeExecutor:
                     request_key = message.message_id or f"unkeyed-{len(spend_by_request)}"
                     spend_by_request[request_key] = charged_total(usage)
                     running_total = sum(spend_by_request.values())
-                    if not cap_hit and not deadline_hit:
-                        cap_hit = await self._on_turn(running_total, client, request.token_cap)
-                    if (
-                        not cap_hit
-                        and not deadline_hit
-                        and self._deadline_exceeded(dispatch_started, request.deadline_s)
-                    ):
+                    if not deadline_hit and self._deadline_exceeded(dispatch_started, request.deadline_s):
                         await client.interrupt()
                         deadline_hit = True
-                    # The context ceiling is checked LAST and only when neither hard stop
-                    # fired: a node that is out of budget or out of time is stopping for
-                    # good, and offering it a successor would hand the chain a way to
-                    # outlive the bound that just stopped it. It compares THIS turn's own
-                    # context, never the running sum above.
-                    if (
-                        not cap_hit
-                        and not deadline_hit
-                        and handover.observe(
-                            usage,
-                            request.handover_at_tokens,
-                            request_id=message.message_id,
-                            stop_requested=_subtree_stopping(request),
-                        )
+                    # The DEADLINE still short-circuits: a node out of wall-clock time has no
+                    # successor waiting on more of it, so offering one would hand the chain a
+                    # way to outlive the bound that stopped it. A spent BUDGET is different -
+                    # it can be granted again - so it arms this handover as a third reason
+                    # rather than cutting the node off where it stands. The ceiling half
+                    # compares THIS turn's own context, never the running sum above.
+                    if not deadline_hit and handover.observe(
+                        usage,
+                        request.handover_at_tokens,
+                        request_id=message.message_id,
+                        stop_requested=_subtree_stopping(request),
+                        budget_spent=_past_spend_cap(running_total, request.token_cap),
                     ):
                         await client.interrupt()
                 if isinstance(message, ResultMessage):
@@ -1339,8 +1373,6 @@ class ClaudeExecutor:
         cost_usd = terminal.total_cost_usd if terminal is not None else None
         if deadline_hit:
             return self._deadline_outcome(request, first_turn_input, usage, cost_usd=cost_usd)
-        if cap_hit:
-            return self._budget_outcome(request, first_turn_input, usage, cwd_rel, cost_usd=cost_usd)
         if handover.armed:
             return self._handover_outcome(
                 request,
@@ -1351,6 +1383,7 @@ class ClaudeExecutor:
                 grace_used=handover.grace_used,
                 grace_expired=handover.expired,
                 stopped_by_subtree=handover.by_subtree,
+                cap_hit=handover.by_budget,
                 cost_usd=cost_usd,
             )
         if terminal is not None:
@@ -1523,12 +1556,13 @@ class ClaudeExecutor:
         grace_used: int,
         grace_expired: bool,
         stopped_by_subtree: bool,
+        cap_hit: bool,
         cost_usd: float | None,
     ) -> NodeOutcome:
         """Build the record a node gets when its CONTEXT ceiling stopped it (design 3.8).
 
         A stopped-dispatch record that is NOT a failure and KEEPS its artefact ref.
-        :meth:`_budget_outcome` now takes this same shape, for the same reason: the work
+        A spent BUDGET now arms this same handover, for the same reason: the work
         in that tree is exactly what the successor continues from, so dropping the ref
         would throw away the thing the mechanism exists to save. :meth:`_deadline_outcome`
         still empties ``artefact_refs`` deliberately - a node out of WALL-CLOCK time has no
@@ -1574,12 +1608,13 @@ class ClaudeExecutor:
                 "grace_used": grace_used,
                 "grace_expired": grace_expired,
                 "stopped_by_subtree": stopped_by_subtree,
+                "cap_hit": cap_hit,
             },
             # `grace_expired` is TYPED, by direct analogy with `cap_hit` and `deadline_hit`:
             # it is this outcome's decisive fact, and design 3.3 lets the coordinator branch
             # ONLY on a key named here. `grace_used` stays free text - a measurement, like
             # `first_turn_input_tokens`, not something a branch should read.
-            typed_fields=["context_at_handover", "grace_expired", "stopped_by_subtree"],
+            typed_fields=["context_at_handover", "grace_expired", "stopped_by_subtree", "cap_hit"],
             tokens=tokens,
             charged_tokens={request.model: charged_total(usage)},
             cost_usd=cost_usd,
@@ -1589,139 +1624,13 @@ class ClaudeExecutor:
             error=None,  # a handover is a scheduled event, never a fault
         )
 
-    async def _on_turn(self, running_total: int, client: _Interruptible, cap: int | None) -> bool:
-        """Per-``AssistantMessage`` hook point: stop the dispatch once its RUNNING SPEND passes ``cap``.
-
-        Compares ``running_total`` - :meth:`_run`'s running sum of every turn's own
-        :func:`input_total` plus ``output_tokens`` seen so far this dispatch - against
-        ``cap``. Two different readings of a turn's usage exist and this cap needs the
-        SUM, never a single turn's own figure alone:
-
-        * A single ``AssistantMessage.usage``'s own :func:`input_total` is the
-          CONTEXT SIZE at that turn - "what the model just saw" (design 3.8) - bounded
-          by the model's context window. That figure belongs to design 3.8's separate,
-          later context-ceiling mechanism (``handover_at_tokens``), which will read a
-          turn's own ``input_total`` directly and NOT sum it, because a context ceiling
-          asks "is the window full right now", a question a running sum cannot answer
-          (it would trip on a long dispatch whose window is nowhere near full).
-        * A per-node cap, in contrast, is a SPEND budget, and spend is charged per
-          request: every turn re-charges its whole input again (prompt caching
-          discounts the cost of a cache read, not the TOKEN COUNT this module sums), so
-          a dispatch's true spend is the SUM across turns - exactly what the terminal
-          ``ResultMessage.usage`` already reports and what :func:`outcome_from_usage`
-          and :meth:`_budget_outcome` record as ``charged_tokens``. Comparing a single
-          turn's context size against a spend cap has no usable threshold: set the cap
-          near what a node actually spends and no single turn's context ever reaches
-          it (the node runs to completion, unbounded); set it below one turn's context
-          and every node dies on its first turn. Measured on the M2 attended runs,
-          from the run records themselves rather than a design probe doc (a run's
-          ``nodes/<node_id>/<hash>/record.json`` under ``/var/lib/agentdag/runs/<run-id>/`` -
-          run ``20260818T060025Z-21e810``, node ``w_migrate@1``, hash ``b47149d9``): a
-          28-turn dispatch charged 802,098 tokens total while its first turn alone was
-          26,029 - far more than any single turn's context, and only explainable as a sum.
-
-        Args:
-            running_total: This dispatch's cumulative spend so far, INCLUDING the turn
-                that just arrived - see :meth:`_run`.
-            client: The live client this dispatch is running on - needed to call
-                ``interrupt()``; M2's docstring on this method already flagged the
-                signature would have to change for exactly this.
-            cap: ``request.token_cap`` - this node's own cap for the resolved row, or
-                ``None`` when the node declares no cap for it, in which case nothing is
-                enforced (mirrors :meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`'s
-                same "no cap declared, nothing checked" rule on the run-level call site,
-                and the same SPEND unit - see that method's docstring). The comparison
-                is INCLUSIVE of ``cap`` itself: ``running_total == cap`` does NOT
-                interrupt, only ``running_total > cap`` does - a node's cap is a ceiling
-                it may fully spend, not a strict bound that trips on reaching it exactly
-                (the code below reads ``running_total <= cap: return False``).
-
-        Returns:
-            Whether ``running_total`` passed ``cap`` and ``client.interrupt()`` was
-            called. :meth:`_run` uses this to stamp the record ``BUDGET_EXCEEDED``
-            itself, regardless of which of the two shapes the (now-interrupted)
-            dispatch's own terminal message reports - the probe measured that message
-            never says "interrupted" and gets it backwards in both directions.
-        """
-        if cap is None or running_total <= cap:
-            return False
-        await client.interrupt()
-        return True
-
-    def _budget_outcome(
-        self,
-        request: ExecutorRequest,
-        first_turn_input: int,
-        usage: Mapping[str, Any],
-        cwd_rel: str,
-        *,
-        cost_usd: float | None,
-    ) -> NodeOutcome:
-        """Build the record a cap-stopped dispatch gets, stamped on the path that called ``interrupt()``.
-
-        This is the ONLY place that gets to decide a capped node's outcome - never the
-        terminal ``ResultMessage`` :meth:`_run` may still receive afterward (the probe
-        measured one always arrives, carrying real usage, which is why ``usage`` is
-        threaded through here rather than left at zero: a capped node still spent real
-        tokens and :attr:`~agentdag.application.kernel.context.Coordinator.tokens_by_row`
-        must reflect that, the same as any other outcome's ``charged_tokens``).
-
-        Spending a budget is a bound the operator set, reached - the same class of event
-        as crossing ``handover_at_tokens``, and the same class the TURN ceiling was
-        already corrected to (see :func:`outcome_from_usage`, where treating a reached
-        bound as a transient error once killed six work nodes namelessly). So this ends
-        ``NEEDS_CONTINUATION`` carrying ``[cwd_rel]``: the work in that tree is exactly
-        what the successor continues from, and dropping the ref would throw away the
-        thing the handover mechanism exists to save. Measured 2026-09-11 on Task 13,
-        where a node had diagnosed a one-line fix, written it into a handover, and had
-        the tree discarded under it.
-
-        ``error`` is ``None`` for the reason a context handover's is: a caller branching
-        on ``error is not None`` must not read a scheduled handover as a fault. Nothing
-        is re-dispatched blindly as a result - Task 24's retry path only ever considers a
-        FAILED record carrying a TRANSIENT error, and the successor chain this outcome
-        starts is bounded by ``Policy.max_continuations`` with the real ceiling on spend
-        staying ``run_limits.tokens_per_row``.
-
-        Args:
-            request: The dispatch this outcome is for - ``request.model`` names the row
-                charged.
-            first_turn_input: What :meth:`_run` recorded as the FIRST turn's own
-                :func:`input_total`, kept in ``key_facts`` like every other outcome.
-            usage: The terminal ``ResultMessage.usage`` the interrupted dispatch still
-                produced, or ``{}`` on the rarer path where the stream ended with no
-                terminal message at all.
-            cost_usd: What that same terminal message reported the dispatch cost, or
-                ``None`` when none arrived. Its meters are read even though its verdict is
-                not: a node stopped at a ceiling spent real money, exactly as it spent the
-                real tokens ``usage`` already carries here.
-
-        Returns:
-            A ``FAILED`` outcome, ``error.type=BUDGET_EXCEEDED``, ``transient=False``,
-            ``key_facts["cap_hit"] = True``, tokens/``charged_tokens`` from ``usage``.
-        """
-        tokens = tokens_from_usage(usage)
-        return NodeOutcome(
-            status=NodeStatus.NEEDS_CONTINUATION,
-            artefact_refs=[cwd_rel],
-            key_facts={"cap_hit": True, "first_turn_input_tokens": first_turn_input},
-            typed_fields=["cap_hit"],
-            tokens=tokens,
-            charged_tokens={request.model: charged_total(usage)},
-            cost_usd=cost_usd,
-            executor_used="claude",
-            model_used=request.model,
-            effort_used=_NO_VALUE,
-            error=None,
-        )
-
     def _deadline_exceeded(self, dispatch_started: datetime, deadline_s: float | None) -> bool:
         """Whether WALL-CLOCK time elapsed since ``dispatch_started`` has passed ``deadline_s``.
 
         The node-deadline half of the M3 turn seam, deliberately a PURE comparison with
-        no ``interrupt()`` call of its own (unlike :meth:`_on_turn`, which both decides
+        no ``interrupt()`` call of its own (the arming decision and the stop are separate
         AND acts) - :meth:`_run` calls ``client.interrupt()`` itself once this returns
-        ``True``, the same shape :meth:`_on_turn` uses, kept as two separate calls here
+        ``True``, the same shape :func:`_past_spend_cap` uses, kept as two separate calls here
         only because this method has no client to call it on without widening its
         signature for no reason: ``self.clock.now() - dispatch_started`` is the only
         thing it needs.
@@ -1735,12 +1644,12 @@ class ClaudeExecutor:
                 :meth:`~agentdag.application.kernel.context.Coordinator.work` before it
                 ever reached :class:`~agentdag.application.kernel.ports.ExecutorRequest`,
                 or ``None`` for a call site that predates this field (every test fixture
-                built before M3) - nothing is enforced then, mirroring :meth:`_on_turn`'s
+                built before M3) - nothing is enforced then, mirroring :func:`_past_spend_cap`'s
                 own "no cap declared, nothing checked" rule for :attr:`token_cap`.
 
         Returns:
             ``True`` once elapsed SECONDS strictly exceeds ``deadline_s`` - inclusive at
-            the boundary itself, same as :meth:`_on_turn`'s own ``<=`` reading of
+            the boundary itself, same as :func:`_past_spend_cap`'s own ``<=`` reading of
             ``token_cap``: a node may fully spend the deadline it was given, not be cut
             off the instant it reaches it exactly.
 
@@ -1772,12 +1681,12 @@ class ClaudeExecutor:
     ) -> NodeOutcome:
         """Build the record a deadline-stopped dispatch gets, stamped on the path that called ``interrupt()``.
 
-        The SAME probe finding as :meth:`_budget_outcome` applies here:
+        The SAME probe finding as the budget path applies here:
         an interrupted dispatch's terminal message never says "interrupted" (a plain
         SUCCESS at a turn boundary, a transient ``executor_error`` mid-tool), so this is
         the ONLY place a deadline-stopped node's outcome may be decided, never the
         terminal ``ResultMessage`` :meth:`_run` may still receive afterward. It KEEPS the
-        two omissions :meth:`_budget_outcome` has since dropped, and the divergence is
+        two omissions the budget path has since dropped, and the divergence is
         deliberate: no ``artefact_refs`` (a half-finished worktree is never handed
         downstream as complete) and ``error.transient=False`` (a node stopped for running
         too long must not be Task 24's retry target, straight back into running out of

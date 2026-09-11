@@ -520,24 +520,13 @@ def test_result_translation_missing_usage_fields_default_to_zero() -> None:
 # ---------------------------------------------------------------------------------
 # M3: the token cap's two call sites. The per-run call site (Coordinator._run_cap_refusal)
 # is covered in test_kernel_context.py, where the caller that owns tokens_by_row and
-# the policy ceiling lives. Below is the per-node, per-turn call site: _on_turn's own
+# the policy ceiling lives. Below is the per-node, per-turn call site: the turn seam's own
 # comparison (a pure unit test against a bare interrupt() double, no stream at all),
 # then _run's use of it end-to-end against a fake ClaudeSDKClient stream - the SDK
 # client construction is this module's own documented external edge (see the module
 # docstring), the same reasoning that already keeps every other test in this file off
 # a real SDK/network call.
 # ---------------------------------------------------------------------------------
-
-
-class _RecordingInterruptClient:
-    """A bare double for ``_Interruptible``: only the one method ``_on_turn`` calls."""
-
-    def __init__(self) -> None:
-        self.interrupt_calls = 0
-
-    async def interrupt(self) -> None:
-        """Record that this dispatch was asked to stop."""
-        self.interrupt_calls += 1
 
 
 def _turn(usage_input: int) -> AssistantMessage:
@@ -640,35 +629,7 @@ class FakeStreamClient:
 
 
 @pytest.mark.os_agnostic
-def test_on_turn_interrupts_once_the_running_total_passes_the_cap(
-    tmp_path: Path,
-) -> None:
-    """Compares the RUNNING TOTAL - :meth:`ClaudeExecutor._run`'s cumulative sum of
-    every turn's own spend so far - against ``cap``, not a single turn's figure alone
-    (that is the regression this fix round closed: see
-    ``test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_single_turn_does``
-    for the end-to-end proof). A running total of 100 stays under a cap of 200; the
-    NEXT turn pushes it to 350, which crosses.
-    """
-    keyfile = tmp_path / "tok"
-    keyfile.write_text("sk-ant-oat01-SECRET\n")
-    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
-    client = _RecordingInterruptClient()
-
-    first = asyncio.run(executor._on_turn(100, client, 200))  # pyright: ignore[reportPrivateUsage]
-    assert first is False
-    assert client.interrupt_calls == 0
-    second = asyncio.run(executor._on_turn(350, client, 200))  # pyright: ignore[reportPrivateUsage]
-    assert second is True
-    assert client.interrupt_calls == 1
-    # No cap declared for this row at all: never enforced, whatever the running total.
-    third = asyncio.run(executor._on_turn(10_000, client, None))  # pyright: ignore[reportPrivateUsage]
-    assert third is False
-    assert client.interrupt_calls == 1
-
-
-@pytest.mark.os_agnostic
-def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_lets_all_three_through(
+def test_run_arms_the_handover_at_the_turn_that_crosses_the_cap_and_a_higher_cap_lets_all_three_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     keyfile = tmp_path / "tok"
@@ -683,8 +644,9 @@ def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_
     assert outcome.error is None
     assert outcome.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     instance = FakeStreamClient.instances[0]
-    assert instance.interrupt_calls == 1
-    assert instance.turns_yielded == 2  # the third turn was never even seen
+    assert instance.interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
+    assert instance.turns_yielded == 3  # the third turn is the node's grace to write in
+    assert outcome.key_facts.get("grace_used") == 1
 
     FakeStreamClient.configure(turns, _result(is_error=False, subtype="success", num_turns=3))
     outcome2 = asyncio.run(executor.run(_request(tmp_path, token_cap=10_000)))
@@ -692,7 +654,7 @@ def test_run_stops_the_stream_at_the_turn_that_crosses_the_cap_and_a_higher_cap_
 
 
 @pytest.mark.os_agnostic
-def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_single_turn_does(
+def test_run_arms_the_handover_when_the_running_total_crosses_the_cap_even_though_no_single_turn_does(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The regression proof for this fix round: three turns of 80 input tokens each,
@@ -714,8 +676,9 @@ def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_si
     assert outcome.error is None
     assert outcome.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     instance = FakeStreamClient.instances[0]
-    assert instance.interrupt_calls == 1
+    assert instance.interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
     assert instance.turns_yielded == 3  # crossed only once the third turn's own usage landed
+    assert outcome.key_facts.get("grace_used") == 0  # the crossing turn was the last one
 
     # Control: the same per-turn shape, but a cap above the eventual total (240) -
     # never interrupted, runs to completion.
@@ -728,7 +691,7 @@ def test_run_interrupts_when_the_running_total_crosses_the_cap_even_though_no_si
 
 
 @pytest.mark.os_agnostic
-def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
+def test_the_spend_cap_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The unit-pinning proof: the number the cap compares and the number the record
@@ -737,9 +700,9 @@ def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     Two turns charging 45 and 65, replayed against a terminal ``ResultMessage.usage``
     also totalling 110 (mirroring the real SDK, whose terminal usage is the cumulative
     dispatch total rather than one call's snapshot). At cap=110 the running total lands
-    exactly ON the cap and must NOT interrupt (``_on_turn`` uses ``<=``); the dispatch
+    exactly ON the cap and must NOT arm (:func:`_past_spend_cap` uses ``<=``); the dispatch
     completes and ``charged_tokens`` reports the identical 110. Drop the cap to 109 and
-    the SAME running total crosses it, landing ``_budget_outcome``, which reports 110 too.
+    the SAME running total crosses it, arming the handover, whose record reports 110 too.
 
     Both sides carry a cache-read field that must NOT be charged - 10 on the second turn,
     99,999 on the terminal usage. That asymmetry is deliberate: if either side starts
@@ -779,7 +742,7 @@ def test_on_turn_s_running_total_is_pinned_to_the_same_unit_as_charged_tokens(
     assert one_under.error is None
     assert one_under.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
     assert one_under.charged_tokens == {"sonnet": 110}  # the SAME figure, via the interrupted path
-    assert FakeStreamClient.instances[0].interrupt_calls == 1
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
 
 
 @pytest.mark.os_agnostic
@@ -814,7 +777,7 @@ def test_a_capped_node_s_record_is_a_handover_regardless_of_the_sdk_s_own_shape(
     assert outcome.error is None  # a bound reached is not a fault
     assert outcome.key_facts.get("cap_hit") is True
     assert outcome.charged_tokens == {"sonnet": 500 + 3}  # the terminal usage the SDK still reported
-    assert FakeStreamClient.instances[0].interrupt_calls == 1
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
 
 
 @pytest.mark.os_agnostic
@@ -843,7 +806,7 @@ class _NoTerminalStreamClient:
     turns loop, whether or not it was interrupted early - that is exactly what the
     two SDK-shape tests need (the probe measured a terminal message always arrives,
     in one of two shapes). This fake covers the ONE branch neither of those reaches:
-    ``ClaudeExecutor._run``'s own ``if cap_hit: return self._budget_outcome(request,
+    ``ClaudeExecutor._run``'s own budget arming at the turn seam (request,
     first_turn_input, usage, cost_usd=cost_usd)`` sitting AFTER the ``async with`` block -
     reached only when the stream closes with no terminal message whatsoever (a connection
     drop right after the interrupted turn, before the SDK's own terminal message would have
@@ -882,12 +845,12 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The one branch neither SDK-shape test reaches: ``_run``'s own
-    ``if cap_hit: return self._budget_outcome(request, first_turn_input, usage,
-    cwd_rel, cost_usd=cost_usd)`` after the ``async with`` block - a capped dispatch whose stream
-    ends with no terminal ``ResultMessage`` at all. Both
+    ``if handover.armed: return self._handover_outcome(...)`` after the ``async with``
+    block - a capped dispatch whose stream ends with no terminal ``ResultMessage`` at
+    all. Both
     ``test_a_capped_node_s_record_is_a_handover_regardless_of_the_sdk_s_own_shape``
     cases go through a ``ResultMessage`` arriving (one of the two shapes the probe
-    measured); this one never gets one, so ``_budget_outcome`` is called with an EMPTY
+    measured); this one never gets one, so ``_handover_outcome`` is called with an EMPTY
     usage mapping rather than a terminal one - it must still report a well-formed
     handover (zero charged tokens, since no terminal usage was ever seen), not fall
     through to the generic "no ResultMessage" ``EXECUTOR_ERROR`` a few lines below it
@@ -905,7 +868,7 @@ def test_run_reports_budget_exceeded_with_empty_usage_when_the_stream_ends_with_
     assert outcome.artefact_refs == ["wt/r"]
     assert outcome.key_facts.get("cap_hit") is True
     assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
-    assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
+    assert _NoTerminalStreamClient.instances[-1].interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
 
 
 # ---------------------------------------------------------------------------------
@@ -944,9 +907,9 @@ class _SequenceClock:
 @pytest.mark.os_agnostic
 def test_deadline_exceeded_compares_elapsed_seconds_never_a_token_count(tmp_path: Path) -> None:
     """Direct unit test of the comparison itself, mirroring
-    ``test_on_turn_interrupts_once_the_running_total_passes_the_cap``'s own shape for the
+    ``test_past_spend_cap_reads_the_running_total_and_is_inclusive_of_the_cap``'s own shape for the
     token cap. Inclusive at the boundary (``>``, never ``>=``), same reading as
-    ``_on_turn``'s own ``<=``: a node may fully spend the deadline it was given.
+    :func:`_past_spend_cap`'s own ``<=``: a node may fully spend the deadline it was given.
     """
     keyfile = tmp_path / "tok"
     keyfile.write_text("sk-ant-oat01-SECRET\n")
@@ -1108,7 +1071,9 @@ def test_run_reports_deadline_with_empty_usage_when_the_stream_ends_with_no_term
     assert outcome.artefact_refs == []
     assert outcome.key_facts.get("deadline_hit") is True
     assert outcome.charged_tokens == {"sonnet": 0}  # no terminal usage ever arrived
-    assert _NoTerminalStreamClient.instances[0].interrupt_calls == 1
+    # This test's OWN client: `instances` is a ClassVar that is appended to and never
+    # reset, so index 0 is the first client of the whole session, not this one's.
+    assert _NoTerminalStreamClient.instances[-1].interrupt_calls == 1
 
 
 @pytest.mark.os_agnostic
@@ -1213,7 +1178,7 @@ def test_the_running_total_counts_one_api_request_once_however_many_blocks_it_ar
     assert under.status == "needs_continuation"  # a spent budget hands over, it does not fault
     assert under.error is None
     assert under.key_facts.get("cap_hit") is True  # the decisive fact, now that error is None
-    assert FakeStreamClient.instances[0].interrupt_calls == 1
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
 
 
 @pytest.mark.os_agnostic
@@ -2278,4 +2243,68 @@ def test_a_node_that_spends_its_own_token_cap_hands_its_worktree_over_instead_of
     assert outcome.error is None  # a bound reached is not a fault
     assert outcome.key_facts.get("cap_hit") is True
     assert outcome.charged_tokens == {"sonnet": 500 + 3}
-    assert FakeStreamClient.instances[0].interrupt_calls == 1
+    assert FakeStreamClient.instances[0].interrupt_calls == 0  # crossing ARMS; only grace expiry interrupts
+
+
+@pytest.mark.os_agnostic
+def test_crossing_the_token_cap_arms_the_handover_instead_of_interrupting_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spent budget ASKS the node to hand over, on the same grace the context ceiling uses.
+
+    Interrupting on the crossing turn preserves the worktree but guarantees no handover
+    RECORD exists for the successor, which is decision 14's finding restated: stopping a
+    node at the moment of asking is how you get a tree with no note attached to it. The
+    budget is ORed into the same arming decision as the context ceiling and the subtree
+    stop, so all three spend one measured grace and produce one record shape.
+
+    Here the cap is crossed on the first turn; ``interrupt()`` must NOT have been called
+    by then, and the node must still be receiving turns in which to write its handover.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    # Turn 1 crosses a cap of 100; two further turns are the grace the node writes in.
+    turns = [_turn_of_message("m1", 500), _turn_of_message("m2", 10), _turn_of_message("m3", 10)]
+    result = _result(is_error=False, subtype="success", num_turns=3, usage_input=520)
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, result)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.artefact_refs == ["wt/r"]
+    assert outcome.error is None
+    assert outcome.key_facts.get("cap_hit") is True  # which of the three reasons armed it
+    assert outcome.key_facts.get("grace_used") == 2  # it was given turns, not cut off at the crossing
+
+
+@pytest.mark.os_agnostic
+def test_a_budget_armed_handover_interrupts_once_its_grace_runs_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of arming: the node is ASKED, not cut off, but it is not asked forever.
+
+    A spent budget spends the SAME measured grace as the context ceiling, so a node that
+    keeps working after the notice is still stopped. Without this the budget bound would be
+    advisory, and the cap could be outrun by ignoring it - which is exactly what the grace
+    probe measured some nodes doing.
+
+    Turn 1 crosses a cap of 100 and arms; the next three requests are the grace, and the
+    third of them reaches ``HANDOVER_GRACE_TURNS`` and interrupts.
+    """
+    keyfile = tmp_path / "tok"
+    keyfile.write_text("sk-ant-oat01-SECRET\n")
+    executor = ClaudeExecutor(OAuthTokenFile(keyfile), deny_bash=())
+    turns = [_turn_of_message(f"m{i}", 500 if i == 1 else 10) for i in range(1, 6)]
+    result = _result(is_error=False, subtype="success", num_turns=5, usage_input=540)
+    monkeypatch.setattr(executor_claude_module, "ClaudeSDKClient", FakeStreamClient)
+    FakeStreamClient.configure(turns, result)
+
+    outcome = asyncio.run(executor.run(_request(tmp_path, token_cap=100)))
+
+    assert outcome.status == "needs_continuation"
+    assert outcome.key_facts.get("cap_hit") is True
+    assert outcome.key_facts.get("grace_used") == HANDOVER_GRACE_TURNS
+    assert outcome.key_facts.get("grace_expired") is True
+    assert FakeStreamClient.instances[0].interrupt_calls == 1  # asked, then stopped

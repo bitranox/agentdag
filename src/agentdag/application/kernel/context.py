@@ -578,11 +578,11 @@ class Coordinator:
         total plus output tokens, summed across its whole turn stream), never a single
         turn's context size. ``tokens_by_row`` is built by summing each recorded
         ``charged_tokens`` (:func:`~agentdag.adapters.kernel.executor_claude.outcome_from_usage`
-        and :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._budget_outcome`
+        and :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._handover_outcome`
         both compute that as one dispatch's input-plus-output total), and ``node_cap``
         is ``request.token_cap`` - the same figure
-        :meth:`~agentdag.adapters.kernel.executor_claude.ClaudeExecutor._on_turn` enforces
-        against its own running sum of that dispatch's turns (see that method's
+        :func:`~agentdag.adapters.kernel.executor_claude._past_spend_cap` compares
+        against its own running sum of that dispatch's turns (see that function's
         docstring for why a per-turn context figure could not serve here instead).
 
         Args:
