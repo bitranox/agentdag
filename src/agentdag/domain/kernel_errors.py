@@ -24,6 +24,7 @@ from __future__ import annotations
 from .models import SuspendReason
 
 __all__ = [
+    "GateNotRunnable",
     "KernelError",
     "LockHeld",
     "NondeterministicCallError",
@@ -62,6 +63,14 @@ class SpecRejected(KernelError):
 
 class RunRefused(KernelError):
     """run.start / resume refused before anything ran (missing runs dir, live lock, bad args)."""
+
+
+class GateNotRunnable(KernelError):
+    """The gate's program could not be STARTED, so there is no exit code to judge.
+
+    A configuration bug rather than a verdict: the same argv fails the same way every time,
+    so it must not be retried like a gate that ran and reported a real answer.
+    """
 
 
 class Suspended(Exception):

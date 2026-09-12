@@ -19,6 +19,8 @@ import os
 import subprocess  # nosec B404 - running the gate as a separate process IS this adapter
 from typing import TYPE_CHECKING
 
+from ...domain.kernel_errors import GateNotRunnable
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
@@ -205,20 +207,37 @@ class MakeTestGate:
         Returns:
             The gate's exit code; ``0`` means the change passed.
 
+        Raises:
+            GateNotRunnable: The program could not be STARTED - a mistyped name, a whole
+                command arriving as one word, a script without its executable bit. Nothing
+                checks this in advance because nothing usefully could: the command may be
+                relative to ``worktree``, which is not this process's cwd and need not exist
+                when the run starts, so a ``which`` check at run start would refuse a command
+                that runs. The attempt IS the runnability check, and the log is written
+                before the raise so the failure is readable where a gate failure is read.
         """
         # Suppression below: argv is a list run with shell=False, so there is no shell to inject
         # metacharacters into, and the argv itself is the OPERATOR's own [kernel] gate_command,
         # never a node's or a plan's - _GateMakeTestArgs is extra="forbid" with no fields, so
         # nothing a plan entry or a dispatched node writes can reach this call.
-        proc = subprocess.run(  # nosec B603  # noqa: S603
-            list(self._command),
-            cwd=worktree,
-            env=gate_env(os.environ),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            proc = subprocess.run(  # nosec B603  # noqa: S603
+                list(self._command),
+                cwd=worktree,
+                env=gate_env(os.environ),
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            # The program could not be STARTED - a typo, a whole command arriving as one
+            # word, a file without its executable bit. Once a process starts, every failure
+            # comes back as a return code instead, so this branch is always a configuration
+            # bug and never a verdict on the work.
+            reason = f"gate command {list(self._command)} could not be run in {worktree}: {exc}"
+            _write_owner_only(log, _log_header(os.environ) + reason + "\n")
+            raise GateNotRunnable(reason) from exc
         _write_owner_only(log, _log_header(os.environ) + proc.stdout + proc.stderr)
         return proc.returncode
 

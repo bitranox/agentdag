@@ -29,7 +29,7 @@ from ...domain.handover import (
     stamp_identity,
 )
 from ...domain.journal import ApproveDecisionLine, RetryGrantLine
-from ...domain.kernel_errors import KernelError, Suspended
+from ...domain.kernel_errors import GateNotRunnable, KernelError, Suspended
 from ...domain.keys import canonical_json, content_hash, hash8
 from ...domain.models import (
     CODE_KINDS,
@@ -45,6 +45,7 @@ from ...domain.models import (
 from ...domain.plan import PLAN_FILENAME
 from ...domain.policy import FailureAction
 from ...domain.scan import diff_manifests, stray_paths
+from ...domain.scrub import scrub
 from .approve import validate_approve_payload
 from .ports import ExecutorRequest, stamp
 
@@ -739,8 +740,26 @@ class Coordinator:
 
         async def body(node_dir: Path) -> NodeOutcome:
             log = node_dir / "gate.log"
-            rc = self.gate_port.run(cwd, log)
             rel_log = f"{node_dir.relative_to(self.run_dir.root).as_posix()}/gate.log"
+            try:
+                rc = self.gate_port.run(cwd, log)
+            except GateNotRunnable as exc:
+                # The gate never started, so there is no `rc` to put in `key_facts` and nothing
+                # for a workflow to branch on. It is failed and NOT transient: the same argv
+                # cannot start next time either, so the retry in `_auto_retries` would spend the
+                # run's attempts on a typo. The log the port wrote is referenced like any other
+                # gate log, because a gate that never ran is exactly when an operator most needs
+                # to be led to a file that says so.
+                return NodeOutcome(
+                    status=NodeStatus.FAILED,
+                    artefact_refs=[rel_log],
+                    executor_used="code",
+                    model_used="-",
+                    effort_used="-",
+                    error=NodeError(
+                        type=ErrorType.EXECUTOR_ERROR, message=cast("str", scrub(str(exc))), transient=False
+                    ),
+                )
             # A red gate is an ordinary FAILED outcome, not an executor error - the mechanical
             # step ran to completion and reported a real answer, so `error` stays unset. The
             # result-record schema (schemas/result-record.schema.json) does not list `error`

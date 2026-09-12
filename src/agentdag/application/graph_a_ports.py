@@ -82,7 +82,14 @@ class GatePort(Protocol):
         ...
 
     def run(self, worktree: Path, log: Path) -> int:
-        """Run the gate; return its exit code."""
+        """Run the gate; return its exit code.
+
+        An exit code is a VERDICT, so it is only returned when the gate actually ran. An
+        implementation that cannot start the program at all raises
+        :class:`~agentdag.domain.kernel_errors.GateNotRunnable` instead of inventing one,
+        because a made-up code is indistinguishable from a real red gate and would send
+        the run's ladder off to fix work that is fine.
+        """
         ...
 
 

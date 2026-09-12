@@ -63,6 +63,11 @@ coincidence against a coordinator that still hard-codes ``make test``."""
 _RED = (sys.executable, "-c", "raise SystemExit(1)")
 """Its red twin, for the arm about two gates keying differently."""
 
+_MISSING = ("agentdag-no-such-gate-program", "test")
+"""A gate command whose PROGRAM does not exist, the shape a typo or a whole command
+arriving as one word produces. Not a shell string: the gate runs an argv with no shell,
+so the failure is the OS refusing to start the program, on every platform."""
+
 
 def gate_spec(node_id: str = "g_test@1") -> NodeSpec:
     """The gate node these arms dispatch."""
@@ -308,3 +313,60 @@ def test_the_wired_registry_describes_the_wired_gate(tmp_path: Path) -> None:
 
     assert wiring.gate_port.command == ("pytest", "-q")
     assert "pytest -q" in wiring.registry.get("gate:make-test").description
+
+
+@pytest.mark.os_agnostic
+def test_a_gate_whose_program_cannot_be_run_does_not_earn_a_retry(tmp_path: Path) -> None:
+    """A typo in the gate command is a configuration bug, so the failure is NOT transient.
+
+    Nothing checks that the resolved program exists, and nothing usefully could: a gate
+    command may be relative to the WORKTREE, which is not this process's cwd and need not
+    exist when the run starts, so a ``which`` check at run start false-refuses a command
+    that would have run. The attempt is therefore the runnability check, and what this arm
+    pins is its CLASSIFICATION - a transient one is retried against a typo that reproduces
+    every time, burning the run's attempts on a command that can never start.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+
+    record = asyncio.run(gated(run_dir, MakeTestGate(command=_MISSING)).gate(gate_spec(), cwd=run_dir.root))
+
+    assert record.status is NodeStatus.FAILED
+    assert record.error is not None
+    assert record.error.transient is False
+    assert _MISSING[0] in record.error.message
+
+
+@pytest.mark.os_agnostic
+def test_a_gate_whose_program_cannot_be_run_writes_the_log_its_record_points_at(tmp_path: Path) -> None:
+    """The failure is readable where every other gate failure is read: the gate log.
+
+    A gate that never started writes nothing by default, so the one file an operator opens
+    after a red gate is absent exactly when the cause is least obvious. The log is written
+    and REFERENCED, so the record leads to it the way a real gate's record does.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+
+    record = asyncio.run(gated(run_dir, MakeTestGate(command=_MISSING)).gate(gate_spec(), cwd=run_dir.root))
+
+    assert record.artefact_refs, "an unrunnable gate must still reference the log it wrote"
+    log = run_dir.root / record.artefact_refs[0]
+    assert log.name == "gate.log"
+    assert _MISSING[0] in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.os_agnostic
+def test_an_unrunnable_gate_s_message_is_scrubbed_like_every_other_failure(tmp_path: Path) -> None:
+    """The gate's argv reaches ``record.json``, so a token-shaped word in it is redacted.
+
+    Every other raising body's message is scrubbed by the dispatcher
+    (``_failed_outcome``). This path builds its own ``NodeError``, so it has to scrub for
+    itself or the one failure that quotes the operator's whole command back is the one that
+    does not.
+    """
+    run_dir = fresh_run_dir(tmp_path)
+    command = ("agentdag-no-such-gate-program", "--token=sk-ant-oat01-AAAABBBBCCCCDDDD")
+
+    record = asyncio.run(gated(run_dir, MakeTestGate(command=command)).gate(gate_spec(), cwd=run_dir.root))
+
+    assert record.error is not None
+    assert "sk-ant-oat01" not in record.error.message
