@@ -1,4 +1,4 @@
-# Handover, written 2026-09-12 00:40 CEST
+# STALE - read 2026-09-12, work continued
 
 Read `OPEN-WORK.md` FIRST and this second. The backlog says what is worth doing; this says only
 where this session stopped and what it decided.
