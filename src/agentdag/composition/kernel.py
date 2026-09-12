@@ -33,7 +33,7 @@ from ..adapters.kernel.executor_claude import ClaudeExecutor
 from ..adapters.kernel.isolation_scan import IsolationScanner
 from ..adapters.kernel.journal_jsonl import JsonlJournal
 from ..adapters.kernel.lock_file import FileRunLock
-from ..adapters.kernel.policy_yaml import load_policy
+from ..adapters.kernel.policy_yaml import DEFAULT_NODE_TOKENS, load_policy
 from ..adapters.kernel.sandbox_none import NoSandbox
 from ..adapters.kernel.scope_none import NoScope
 from ..adapters.kernel.scope_systemd import SystemdScope
@@ -77,7 +77,7 @@ def wire_kernel(
     permission_mode: PermissionMode,
     gate_command: Sequence[str],
     notifier: Notifier,
-    default_node_tokens: int | None = None,
+    default_node_tokens: int = DEFAULT_NODE_TOKENS,
 ) -> KernelWiring:
     """Build the production kernel wiring for one CLI invocation of ``agentdag run``.
 
@@ -90,9 +90,12 @@ def wire_kernel(
             reporting that choice is the CLI's job, not the composition root's.
         parallel: How many map branches a launch may run at once.
         max_turns: The SDK turn ceiling every node dispatch runs under.
-        default_node_tokens: The per-node token budget a spec that declares none takes,
-            in NEW tokens; ``None`` leaves such a node uncapped, which is what every
-            planner-emitted node was before this existed.
+        default_node_tokens: The per-node token budget a spec that declares none takes, in
+            NEW tokens. Defaults to
+            :data:`~agentdag.adapters.kernel.policy_yaml.DEFAULT_NODE_TOKENS` rather than to
+            "uncapped": every planner-emitted node declares no budget, so the default IS the
+            bound on the model-driven path, and a caller who omits it should get the usual
+            cap rather than a run nothing can stop.
         deny_bash: The Bash command denylist every node's PreToolUse hook enforces.
         deny_tools: The tool names every node's PreToolUse hook refuses outright. Required,
             like ``deny_bash``: the composition is the one caller that must not forget it.

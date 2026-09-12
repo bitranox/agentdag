@@ -225,3 +225,40 @@ def _tokenfile(tmp_path: Path) -> Path:
     path = tmp_path / "token"
     path.write_text("sk-ant-oat01-NOT-A-REAL-TOKEN\n")
     return path
+
+
+@pytest.mark.os_agnostic
+def test_a_kernel_wired_without_a_token_default_still_caps_its_nodes(tmp_path: Path) -> None:
+    """An unbounded node is unrepresentable, not merely unusual (OPEN-WORK 55).
+
+    A node that declares no budget takes the policy's default, and the CLI always supplies
+    one from the packaged ``[kernel] default_node_tokens``. Leaving it to a ``None`` default
+    meant the one caller who did NOT go through the CLI - anyone embedding this published
+    package and wiring the kernel themselves - got nodes that no per-node cap and no run-wide
+    row ceiling could stop, with nothing to report it: the nodes simply never stop.
+
+    The packaged figure is read here rather than repeated, so the wiring default and the
+    config an operator sees cannot drift apart unnoticed.
+    """
+    import tomllib
+
+    from agentdag.composition.kernel import wire_kernel
+
+    path = Path(str(files("agentdag.adapters.config") / "defaultconfig.d" / "60-kernel.toml"))
+    with path.open("rb") as handle:
+        packaged = tomllib.load(handle)["kernel"]["default_node_tokens"]
+
+    wiring = wire_kernel(
+        policy_path=shipped(),
+        credential=OAuthTokenFile(_tokenfile(tmp_path)),
+        parallel=1,
+        max_turns=25,
+        deny_bash=(),
+        deny_tools=(),
+        tools=DEFAULT_TOOLS,
+        permission_mode=PermissionMode.DONT_ASK,
+        gate_command=("make", "test"),
+        notifier=NoNotifier(),
+    )
+
+    assert wiring.policy.default_node_tokens == packaged

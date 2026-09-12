@@ -411,6 +411,10 @@ def launch(
     return outcome, run_dir
 
 
+_NO_PRACTICAL_CAP = 1_000_000_000
+"""Stands in for "this double imposes no default per-node cap"."""
+
+
 class OneRowPolicy:
     """A one-row tier policy: every spec resolves to the sonnet row on the claude executor.
 
@@ -423,9 +427,11 @@ class OneRowPolicy:
 
     version: str = "sha256:test"
     max_turns: int = 5
-    default_node_tokens: int | None = None
-    """No default cap: these doubles pin what a node's OWN declared budget does,
-    and a default would silently cap every spec that declares none."""
+    default_node_tokens: int = _NO_PRACTICAL_CAP
+    """A cap no arm can reach: these doubles pin what a node's OWN declared budget does,
+    and a real default would silently cap every spec that declares none. The port requires a
+    number (an absent one used to leave a node unbounded), so "no default cap" is expressed
+    as a figure nothing in a test spends rather than as ``None``."""
     max_attempts: int = 1
     max_continuations: int = 3
     deny_bash: tuple[str, ...] = ("git push",)

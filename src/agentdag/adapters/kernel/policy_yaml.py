@@ -30,7 +30,16 @@ if TYPE_CHECKING:
     from ...domain.models import NodeSpec
     from ...domain.policy import RunLimits, Thresholds, TierRow
 
-__all__ = ["LoadedPolicy", "load_policy"]
+__all__ = ["DEFAULT_NODE_TOKENS", "LoadedPolicy", "load_policy"]
+
+DEFAULT_NODE_TOKENS = 300_000
+"""The per-node token budget a caller who names none gets, so no kernel has uncapped nodes.
+
+The same fact as the packaged ``[kernel] default_node_tokens`` in ``60-kernel.toml``, which
+is what the CLI falls back to; this is the fallback for a caller that wires a kernel without
+going through config at all. Declared rather than defaulted to ``None`` because the two
+readings of a missing value - "no cap" and "the usual cap" - differ only in whether an
+unattended run can be stopped."""
 
 
 def load_policy(
@@ -39,7 +48,7 @@ def load_policy(
     max_turns: int = 25,
     deny_bash: Sequence[str] = (),
     deny_tools: Sequence[str] = (),
-    default_node_tokens: int | None = None,
+    default_node_tokens: int = DEFAULT_NODE_TOKENS,
 ) -> LoadedPolicy:
     """Read ``path`` once, content-hash its bytes, and parse it into a loaded policy port.
 
@@ -86,7 +95,7 @@ class LoadedPolicy:
         version: str,
         max_turns: int,
         deny: Denylists,
-        default_node_tokens: int | None = None,
+        default_node_tokens: int = DEFAULT_NODE_TOKENS,
     ) -> None:
         """Bind a loaded table to the two app-config limits every node dispatch reads.
 

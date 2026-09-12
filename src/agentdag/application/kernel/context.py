@@ -562,7 +562,7 @@ class Coordinator:
             transient=False,
         )
 
-    def _run_cap_refusal(self, row: str, node_cap: int | None) -> NodeError | None:
+    def _run_cap_refusal(self, row: str, node_cap: int) -> NodeError | None:
         """Whether ``row`` has any of its run ceiling left to dispatch this node against.
 
         Checked freshly at BODY-EXECUTION time (called from inside :meth:`work`'s own
@@ -588,11 +588,10 @@ class Coordinator:
 
         Args:
             row: The resolved model row alias (``ResolvedRow.alias``).
-            node_cap: This node's own cap for ``row`` (``NodeSpec.budget.tokens.get(row)``),
-                or ``None`` when the node declares no cap for this row at all - nothing to
-                check here (the per-node turn-seam check in the executor keeps the same
-                "no cap declared, nothing enforced" rule). Quoted in the refusal message so
-                a reader can see what could not be afforded.
+            node_cap: This node's own cap for ``row`` - its own
+                ``NodeSpec.budget.tokens.get(row)`` when it declares one, else the policy's
+                ``default_node_tokens``, which is not optional, so this is always a number.
+                Quoted in the refusal message so a reader can see what could not be afforded.
 
         Returns:
             A ``BUDGET_EXCEEDED`` :class:`~agentdag.domain.models.NodeError` when
@@ -601,8 +600,6 @@ class Coordinator:
             ceiling for ``row`` at all (an operator who did not cap a row is not capping
             it here either).
         """
-        if node_cap is None:
-            return None
         ceiling = self.policy.run_limits.tokens_per_row.get(row)
         if ceiling is None:
             return None
@@ -618,7 +615,7 @@ class Coordinator:
             transient=False,
         )
 
-    def _cap_to_headroom(self, row: str, node_cap: int | None) -> int | None:
+    def _cap_to_headroom(self, row: str, node_cap: int) -> int:
         """Return ``node_cap`` narrowed to what ``row`` has left of its run ceiling.
 
         The counterpart to :meth:`_run_cap_refusal`, and the reason that method can afford
@@ -635,16 +632,13 @@ class Coordinator:
 
         Args:
             row: The resolved model row alias.
-            node_cap: This node's own cap for ``row``, or ``None`` when it declares none -
-                returned unchanged, the same "no cap declared, nothing enforced" rule the
-                rest of this path keeps.
+            node_cap: This node's own cap for ``row``. Always a number: a spec declaring
+                none takes the policy's ``default_node_tokens``, which is not optional.
 
         Returns:
             ``min(node_cap, ceiling - charged)`` when ``row`` carries a ceiling, else
             ``node_cap`` unchanged.
         """
-        if node_cap is None:
-            return None
         ceiling = self.policy.run_limits.tokens_per_row.get(row)
         if ceiling is None:
             return node_cap

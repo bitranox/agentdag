@@ -513,15 +513,20 @@ class Policy(Protocol):
     version: str
     max_turns: int
 
-    default_node_tokens: int | None
-    """The per-node token budget applied when a node's own spec declares none, or ``None``
-    to leave such a node uncapped.
+    default_node_tokens: int
+    """The per-node token budget applied when a node's own spec declares none.
 
     Planner-emitted entries carry no ``budget`` - nothing in the plan schema makes one
     mandatory and no shipped rule adds one - so before this existed EVERY node on the
     model-driven path was exempt from the per-node cap, and only the run-wide row ceiling
     bound them at all. That is the gap `OPEN-WORK.md` 55 names. The default closes it in the
     fail-CLOSED direction: an absent budget becomes a real number rather than an exemption.
+
+    Not optional. It was ``int | None`` with a ``None`` default on every constructor, so the
+    one caller who did not come through the CLI - anyone embedding this package and wiring
+    the kernel themselves - could build a kernel whose nodes no per-node cap and no run-wide
+    ceiling could stop, silently. The adapter's :data:`~agentdag.adapters.kernel.policy_yaml.
+    DEFAULT_NODE_TOKENS` is what such a caller now gets.
 
     In the unit ``charged_tokens`` carries: input + cache_creation + output, cache reads
     excluded."""

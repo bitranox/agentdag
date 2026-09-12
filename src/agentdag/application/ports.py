@@ -130,7 +130,7 @@ class WireKernel(Protocol):
         credential: CredentialSource,
         parallel: int,
         max_turns: int,
-        default_node_tokens: int | None,
+        default_node_tokens: int,
         deny_bash: Sequence[str],
         deny_tools: Sequence[str],
         tools: Sequence[str],

@@ -217,12 +217,15 @@ def test_work_clamps_the_node_s_deadline_to_the_policy_s_ceiling(tmp_path: Path)
 
 
 @pytest.mark.os_agnostic
-def test_work_is_not_capped_when_the_spec_declares_no_budget_for_the_resolved_row(tmp_path: Path) -> None:
-    """A node with no declared cap for the resolved row is checked against NEITHER
-    call site - not the per-turn one (``token_cap`` stays ``None``) and not the
-    run-level one (:meth:`~agentdag.application.kernel.context.Coordinator._run_cap_refusal`
-    returns ``None`` on a ``None`` cap before it ever reads the ceiling), even under a
-    ceiling (``LowCeilingPolicy``) low enough to refuse ``work_spec()``'s own cap.
+def test_work_with_no_declared_budget_is_capped_by_the_run_s_remaining_headroom(tmp_path: Path) -> None:
+    """A node declaring no budget is bounded by the RUN, not exempted from it (OPEN-WORK 55).
+
+    This arm used to assert the opposite - ``token_cap is None``, checked against neither
+    call site - and it passed because the test double declared no default either. Both halves
+    are gone: the policy's ``default_node_tokens`` is not optional, so an undeclared cap is a
+    real number, and :meth:`~agentdag.application.kernel.context.Coordinator._cap_to_headroom`
+    narrows it to what the row has left. ``LowCeilingPolicy``'s ceiling is 100 and nothing has
+    been charged, so that is exactly the cap the executor is handed.
     """
     run_dir = fresh_run_dir(tmp_path)
     executor = RecordingExecutor(outcome({"sonnet": 5}))
@@ -232,7 +235,7 @@ def test_work_is_not_capped_when_the_spec_declares_no_budget_for_the_resolved_ro
     record = asyncio.run(coordinator.work(spec, brief="migrate", cwd=run_dir.worktree("a")))
 
     assert record.status == NodeStatus.DONE
-    assert executor.requests[0].token_cap is None
+    assert executor.requests[0].token_cap == 100
 
 
 @pytest.mark.os_agnostic
