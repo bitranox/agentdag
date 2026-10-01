@@ -40,7 +40,7 @@ LIST_SETTINGS = ["allowed_extensions", "blocked_extensions", "allowed_directorie
 COMMA_VALUE = {
     "allowed_extensions": ".pdf,.txt",
     "blocked_extensions": ".exe,.bat",
-    "allowed_directories": "/srv/outbox,/srv/reports",
+    "allowed_directories": "/var/outbox,/var/reports",
     "blocked_directories": "/etc,/root",
 }
 
@@ -84,7 +84,7 @@ def test_a_comma_separated_string_is_refused_not_dropped(setting: str) -> None:
 @pytest.mark.parametrize("setting", LIST_SETTINGS)
 def test_a_single_string_is_refused_too(setting: str) -> None:
     """One extension or directory is still a list of one; a bare string is not read as one."""
-    problems = _refusal(setting, ".pdf" if "extensions" in setting else "/srv/outbox")
+    problems = _refusal(setting, ".pdf" if "extensions" in setting else "/var/outbox")
 
     assert [field for field, _ in problems] == [_field(setting)]
 
@@ -112,14 +112,14 @@ def test_a_list_tuple_or_set_is_read_as_a_frozenset() -> None:
         {
             "attachment_allowed_extensions": [".pdf", ".txt"],
             "attachment_blocked_extensions": (".exe",),
-            "attachment_allowed_directories": {"/srv/outbox"},
+            "attachment_allowed_directories": {"/var/outbox"},
             "attachment_blocked_directories": frozenset({Path("/etc")}),
         }
     )
 
     assert config.attachment_allowed_extensions == frozenset({".pdf", ".txt"})
     assert config.attachment_blocked_extensions == frozenset({".exe"})
-    assert config.attachment_allowed_directories == frozenset({Path("/srv/outbox")})
+    assert config.attachment_allowed_directories == frozenset({Path("/var/outbox")})
     assert config.attachment_blocked_directories == frozenset({Path("/etc")})
 
 
