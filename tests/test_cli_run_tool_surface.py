@@ -170,12 +170,34 @@ def test_a_tools_entry_that_cannot_be_a_tool_name_is_refused(cli_runner: CliRunn
 
 
 @pytest.mark.os_agnostic
-def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_read_as_one_tool(
+def test_an_unquoted_json_array_written_into_a_dotenv_is_read_as_the_tool_list(
     cli_runner: CliRunner, tmp_path: Path
 ) -> None:
-    """A ``.env`` value is TEXT: read as one word it would name a tool that does not exist."""
+    """Since ``lib_layered_config`` 6.0.0, an unquoted ``.env`` array arrives as a real list.
+
+    ``KERNEL__TOOLS=["Read","Grep"]`` used to arrive as one TEXT value and be refused outright;
+    it now parses into the list ``["Read", "Grep"]`` and is wired as that tool list.
+    """
     env_file = tmp_path / "dotenv"
-    env_file.write_text('KERNEL__TOOLS=["Read"]\n', encoding="utf-8")
+    env_file.write_text('KERNEL__TOOLS=["Read","Grep"]\n', encoding="utf-8")
+
+    rc, output, calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
+
+    assert rc == 0, output
+    assert calls and calls[0]["tools"] == ("Read", "Grep")
+
+
+@pytest.mark.os_agnostic
+def test_a_quoted_json_looking_string_written_into_a_dotenv_is_still_refused(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A QUOTED ``.env`` value still arrives as TEXT in 6.0.0, so the TEXT guard still fires.
+
+    ``KERNEL__TOOLS="[\\"Read\\"]"`` is a quoted string, not a bare array: dotenv keeps it as
+    one literal string, so it is still read as one word naming a tool that does not exist.
+    """
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__TOOLS="[\\"Read\\"]"\n', encoding="utf-8")
 
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
 

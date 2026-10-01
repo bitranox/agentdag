@@ -67,18 +67,37 @@ def blank_deny_bash_in_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.mark.os_agnostic
-def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_read_as_one_entry(
+def test_an_unquoted_json_array_written_into_a_dotenv_is_read_as_a_list_of_entries(
     cli_runner: CliRunner, tmp_path: Path
 ) -> None:
-    """A ``.env`` value is TEXT, and this list fails OPEN when that is not noticed.
+    """Since ``lib_layered_config`` 6.0.0, an unquoted ``.env`` array arrives as a real list.
 
-    ``AGENTDAG___KERNEL__DENY_BASH='["git push"]'`` is parsed as a list; the same words in a
-    ``.env`` are not, so they used to become the single substring ``["git push"]`` - a denylist
-    that matches that literal and NOT ``git push``, which reads as closed in the file and is
-    open in the run.
+    ``KERNEL__DENY_BASH=["git push","gh pr"]`` used to arrive as the raw TEXT and be refused
+    outright; it now parses into the list ``["git push", "gh pr"]``, the same shape a TOML
+    array or an ``AGENTDAG___`` environment variable would give, and each entry is wired as its
+    own denylist item rather than one literal substring.
     """
     env_file = tmp_path / "dotenv"
-    env_file.write_text('KERNEL__DENY_BASH=["git push"]\n', encoding="utf-8")
+    env_file.write_text('KERNEL__DENY_BASH=["git push","gh pr"]\n', encoding="utf-8")
+
+    rc, output, calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
+
+    assert rc == 0, output
+    assert calls and calls[0]["deny_bash"] == ("git push", "gh pr")
+
+
+@pytest.mark.os_agnostic
+def test_a_quoted_json_looking_string_written_into_a_dotenv_is_still_refused(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A QUOTED ``.env`` value still arrives as TEXT in 6.0.0, so the TEXT guard still fires.
+
+    ``KERNEL__DENY_BASH="[\\"git push\\"]"`` is a quoted string, not a bare array: dotenv keeps
+    it as one literal string, so it still hits the JSON-shaped-string refusal rather than being
+    split into the single substring ``["git push"]``.
+    """
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__DENY_BASH="[\\"git push\\"]"\n', encoding="utf-8")
 
     rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
 

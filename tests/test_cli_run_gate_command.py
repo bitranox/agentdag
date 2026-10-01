@@ -212,18 +212,41 @@ def test_a_gate_command_that_is_not_a_list_of_words_is_refused(cli_runner: CliRu
 
 
 @pytest.mark.os_agnostic
-def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_split_into_nonsense(
+def test_an_unquoted_json_array_written_into_a_dotenv_is_wired_as_the_argv(
     cli_runner: CliRunner, tmp_path: Path
 ) -> None:
-    """A ``.env`` value is TEXT: unlike an ``AGENTDAG___`` variable or ``--set``, nothing parses it.
+    """Since ``lib_layered_config`` 6.0.0, an unquoted ``.env`` array arrives as a real list.
 
-    So the JSON array an operator naturally writes arrives as one string and the comma split
-    would turn it into the words ``["pytest"`` and ``"-q"]`` - an argv nobody wrote, from a value
-    that looks right in the file.
+    ``KERNEL__GATE_COMMAND=["pytest","-q"]`` used to arrive as one string and be refused
+    outright; it now parses into the list ``["pytest", "-q"]``, the same shape a TOML array or
+    ``--set`` would give, and is wired as that argv rather than refused.
+    """
+    (tmp_path / "runs").mkdir()
+    calls: list[Mapping[str, object]] = []
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__GATE_COMMAND=["pytest","-q"]\n', encoding="utf-8")
+    argv = ["--env-file", str(env_file), *start_args(tmp_path)]
+
+    result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path, wire_calls=calls))
+
+    assert result.exit_code == 0, result.output
+    assert calls, "the run built no wiring at all"
+    assert _wired_gate_commands(calls) == [("pytest", "-q")] * len(calls), calls
+
+
+@pytest.mark.os_agnostic
+def test_a_quoted_json_looking_string_written_into_a_dotenv_is_still_refused(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """A QUOTED ``.env`` value still arrives as TEXT in 6.0.0, so the TEXT guard still fires.
+
+    ``KERNEL__GATE_COMMAND="[\\"pytest\\",\\"-q\\"]"`` is a quoted string, not a bare array:
+    dotenv keeps it as one literal string, so it still hits the JSON-shaped-string refusal
+    rather than being split into nonsense words.
     """
     (tmp_path / "runs").mkdir()
     env_file = tmp_path / "dotenv"
-    env_file.write_text('KERNEL__GATE_COMMAND=["pytest","-q"]\n', encoding="utf-8")
+    env_file.write_text('KERNEL__GATE_COMMAND="[\\"pytest\\",\\"-q\\"]"\n', encoding="utf-8")
     argv = ["--env-file", str(env_file), *start_args(tmp_path)]
 
     result = cli_runner.invoke(cli_mod.cli, argv, obj=services_with(CommittingExecutor(), tmp_path))
@@ -236,11 +259,10 @@ def test_a_json_array_written_into_a_dotenv_is_refused_rather_than_split_into_no
 def test_an_empty_json_array_written_into_a_dotenv_is_refused_like_any_other(
     cli_runner: CliRunner, tmp_path: Path
 ) -> None:
-    """The route that bypassed the empty-command refusal: ``[]`` in a ``.env`` is the STRING ``[]``.
+    """An unquoted ``[]`` in a ``.env`` now arrives as the real empty list, same as ``--set``.
 
-    Read as one word it is a program named ``[]``, so the run starts, spends its work node, and
-    the gate then dies on a missing executable - the outcome the refusal exists to prevent,
-    reached through the one route that does not parse its value.
+    It is refused for the same reason an explicit empty ``--set kernel.gate_command=[]`` is:
+    there is no argv to run, not because the text looked like a program named ``[]``.
     """
     (tmp_path / "runs").mkdir()
     env_file = tmp_path / "dotenv"
