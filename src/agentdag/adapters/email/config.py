@@ -107,7 +107,12 @@ class EmailConfig(BaseModel):
             ['a@example.com', 'b@example.com']
             >>> EmailConfig._coerce_string_to_list("")
             []
+            >>> EmailConfig._coerce_string_to_list(None)
+            []
         """
+        # A bare YAML key or an environment null means the setting is not configured.
+        if v is None:
+            return []
         if isinstance(v, str):
             return [v] if v.strip() else []
         return v

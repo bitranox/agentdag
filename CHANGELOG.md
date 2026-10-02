@@ -6,6 +6,11 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 
 ## [Unreleased]
 
+### Fixed
+- **`email.smtp_hosts` and `email.recipients` set to nothing mean not configured.** A bare YAML
+  key or an environment `null` was refused as "Input should be a valid list" for both settings.
+  Both now read `None` as an empty list.
+
 ### Security
 - An email attachment allow or block list given in a form it cannot be read in is now refused
   instead of silently ignored. A comma-separated value (`.pdf,.txt` in an environment variable or
