@@ -129,6 +129,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   `runtime.shutdown()` does not undo. A second autouse fixture resets rich-click's colour and width
   globals, which it reads once at import (from `GITHUB_ACTIONS` and the terminal), so CI and a
   79-column Windows runner render CLI errors the same as a developer machine.
+- **`[email.attachments] max_size_bytes = 0` disables the size check, as documented.** EmailConfig
+  read 0 as "no limit" (None), but the send passed None to btx_lib_mail, which reads None as "use
+  the settings", and its settings default to 25 MiB: a larger attachment was still refused. The
+  send now hands btx_lib_mail settings that carry this repo's limit, so 0 means no limit.
 - **`email.smtp_hosts` and `email.recipients` set to nothing mean not configured.** A bare YAML
   key or an environment `null` was refused as "Input should be a valid list" for both settings.
   Both now read `None` as an empty list.

@@ -1267,6 +1267,62 @@ def test_send_email_refuses_more_attachments_than_one_send_accepts(tmp_path: Pat
     assert transport.attempted_hosts == []
 
 
+@pytest.mark.os_agnostic
+def test_send_email_max_size_zero_disables_the_size_check(tmp_path: Path) -> None:
+    """``[email.attachments] max_size_bytes = 0`` is documented to disable the size check.
+
+    EmailConfig reads 0 as None; the send must then apply no limit, not btx_lib_mail's 25 MiB.
+    """
+    attachment = tmp_path / "large.bin.txt"
+    attachment.write_bytes(b"x" * (26_214_400 + 1))
+    config = EmailConfig(
+        smtp_hosts=["smtp.test.com:587"],
+        from_address="sender@test.com",
+        attachment_max_size_bytes=0,
+        attachment_blocked_directories=frozenset(),
+    )
+    assert config.attachment_max_size_bytes is None  # premise: 0 reads as "no limit"
+
+    transport = RecordingTransport()
+    result = send_email(
+        config=config,
+        recipients="recipient@test.com",
+        subject="Test Subject",
+        attachments=[attachment],
+        transport=transport,
+    )
+
+    assert result is True
+    assert transport.recipients == ["recipient@test.com"]
+
+
+@pytest.mark.os_agnostic
+def test_send_email_still_applies_a_configured_size_limit(tmp_path: Path) -> None:
+    """Control: a positive max_size_bytes still refuses a larger file."""
+    from btx_lib_mail import AttachmentSecurityError
+
+    attachment = tmp_path / "small.txt"
+    attachment.write_bytes(b"x" * 11)
+    config = EmailConfig(
+        smtp_hosts=["smtp.test.com:587"],
+        from_address="sender@test.com",
+        attachment_max_size_bytes=10,
+        attachment_blocked_directories=frozenset(),
+    )
+
+    transport = RecordingTransport()
+    with pytest.raises(AttachmentSecurityError, match="size"):
+        send_email(
+            config=config,
+            recipients="recipient@test.com",
+            subject="Test Subject",
+            attachments=[attachment],
+            transport=transport,
+        )
+
+    assert transport.attempted_hosts == []
+
+
 # ======================== Real SMTP Integration ========================
 
 
