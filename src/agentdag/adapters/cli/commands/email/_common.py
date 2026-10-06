@@ -299,9 +299,9 @@ def _handle_send_error(
         log_traceback: Whether to include traceback in logs.
 
     Raises:
-        click.exceptions.Exit: Always raised, with the given exit code. Commands exit through
-            click's context, never a bare ``SystemExit``, which ``main()`` would print as
-            ``SystemExit: N``.
+        click.exceptions.Exit: Always raised, with the given exit code. The email commands
+            exit through click's context (``ctx.exit``), whose exit code rich_click's
+            ``main()`` hands back to ``adapters/cli/main.py``.
     """
     logger.error(
         log_message,
