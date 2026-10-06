@@ -477,6 +477,11 @@ LOG_ENABLE_GRAYLOG=false
 
 By default, the application searches upward from the current directory to discover `.env` files.
 
+Logging reads the `LOG_*` lines of the same `.env` (the `--env-file` when one is given, otherwise the
+nearest `.env` up to the project root) and copies only those into the environment, never over a
+variable that is already set. No other `.env` line reaches the environment, so a `.env` cannot act
+as the environment layer for a later configuration load.
+
 To load a specific `.env` file instead, use `--env-file`:
 
 ```bash

@@ -51,7 +51,7 @@ the [documentation index](../README.md).
 - `src/agentdag/adapters/email/transport.py`  -  SMTP send functions (`send_email`, `send_notification`)
 - `src/agentdag/adapters/email/sender.py`  -  Re-exports `config` and `transport` for backward compatibility
 - `src/agentdag/adapters/email/validation.py`  -  Email recipient validation
-- `src/agentdag/adapters/logging/setup.py`  -  lib_log_rich initialization
+- `src/agentdag/adapters/logging/setup.py`  -  lib_log_rich initialization; copies only the `LOG_*` lines of a `.env`, raises `InvalidLoggingConfigError` for a refused section
 - `src/agentdag/adapters/cli/`  -  CLI adapter package:
   - `__init__.py`  -  Public facade
   - `constants.py`  -  Shared constants
@@ -130,6 +130,7 @@ the [documentation index](../README.md).
 - `tests/test_mail.py`  -  Email configuration and sending tests
 - `tests/test_cli_email_config_errors.py`  -  An invalid `[email]` section or option value: one `Error:` line per problem
 - `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
+- `tests/test_logging_dotenv_isolation.py`  -  Logging takes only `LOG_*` lines from a `.env`; an invalid `[lib_log_rich]` section is a configuration failure
 - `tests/test_metadata.py`  -  Package metadata tests
 - `tests/test_module_entry.py`  -  `python -m` entry tests
 - `tests/test_ports.py`  -  Protocol conformance tests

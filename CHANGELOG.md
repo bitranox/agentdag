@@ -7,6 +7,26 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **A `.env` reaches logging and nothing else.** The logging setup called lib_log_rich's
+  `enable_dotenv()`, which copied every line of the nearest `.env` into the process environment,
+  so a later configuration load (`config --profile`, the deploy's permission read) took an
+  app-prefixed `.env` line for the environment layer: a prefixed
+  `AGENTDAG___LIB_LAYERED_CONFIG__DEFAULT_PERMISSIONS__USER_FILE=400` in the working directory
+  refused `config-deploy` even under `--env-file`, and every other line (a token included) sat in
+  the coordinator's own environment. Logging now copies only the `LOG_*` lines, never over a
+  variable that is already set, and reads them from the `--env-file` when one is given; otherwise
+  from the nearest `.env` up to the project root, without changing directory and passing over a
+  directory it cannot read. A `.env` that is not UTF-8 no longer stops logging from starting.
+  Other `.env` lines (`DEVELOPMENT_MODE=1` included) no longer reach the environment; set such a
+  variable in the environment itself.
+- **An invalid `[lib_log_rich]` value no longer disables every command.** A value lib_log_rich
+  refuses (`rate_limit = "100:60"`, `queue_maxsize = 0`, an unknown `console_level`) exited 22
+  with pydantic's multi-line report from every command, `config-deploy --force` included. It is
+  now a configuration failure like a broken file: logging starts with its defaults, `config`,
+  `send-email`, `send-notification`, `notify-test` and the `run` subcommands refuse with exit 78
+  and one line per problem (`lib_log_rich.rate_limit: Input should be a valid tuple`), and the
+  other commands run. `InvalidLoggingConfigError` (a `ConfigurationError`) is what the logging
+  setup raises for it.
 - **The documented `.env` and environment syntax for logging tables and SMTP hosts works.**
   `.env.example`, `defaultconfig.d/90-logging.toml` and the README still showed `LEVEL=style` /
   `field=regex` pairs and a comma-separated `SMTP_HOSTS`, but a comma-separated value arrives as
@@ -372,6 +392,11 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Requires python-dotenv and lib_log_rich 6.3.9; `InitLogging` takes `dotenv_path`.** The
+  logging setup reads the `LOG_*` lines of a `.env` itself, so python-dotenv (already installed
+  through lib_log_rich) is declared. The port is `init_logging(config, *, dotenv_path=None)`. An
+  invalid `[lib_log_rich]` value exits 78 from the commands that read the configuration, no
+  longer 22 from every command (exit code change).
 - **Exit code change: an invalid `[email]` section exits 78, no longer 22** (see Fixed). A script
   that checks for 22 after `send-email`, `send-notification` or `notify-test` must check for 78
   (EX_CONFIG); an invalid option value such as `--timeout -5` still exits 22. The log record for a
