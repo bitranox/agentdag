@@ -323,6 +323,11 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Requires lib_layered_config 7.0.1.** An unquoted `.env` value now converts like the
+  environment layer: `true`/`false` arrive as booleans, `null`/`none` as None (not for a secret
+  key such as a password), a JSON array or object parsed, a number that converts back to the same
+  text as a number, anything else as text; quote a value to keep it text. So `ENABLED=false`
+  arrives as the boolean `false`. A `.env` setting still never reaches a `config-deploy`.
 - **Exit code change: a configuration that does not load exits 78, an invalid `--profile` name
   exits 2.** A broken or unreadable configuration file exited 1 from every command; it now exits
   78 (EX_CONFIG) from the commands that read the configuration and does not stop the others. An
