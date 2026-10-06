@@ -47,7 +47,6 @@ the [documentation index](../README.md).
 - `src/agentdag/adapters/config/deploy.py`  -  Configuration deployment
 - `src/agentdag/adapters/config/display.py`  -  Configuration display (TOML/JSON output, redaction)
 - `src/agentdag/adapters/config/overrides.py`  -  CLI `--set` override parsing and deep-merge
-- `src/agentdag/adapters/config/permissions.py`  -  Permission defaults loader and the effective directory/file modes for config deployment
 - `src/agentdag/adapters/email/config.py`  -  EmailConfig (Pydantic) and its dict loader
 - `src/agentdag/adapters/email/transport.py`  -  SMTP send functions (`send_email`, `send_notification`)
 - `src/agentdag/adapters/email/sender.py`  -  Re-exports `config` and `transport` for backward compatibility
@@ -140,6 +139,8 @@ the [documentation index](../README.md).
 - `tests/test_enums.py`, `tests/test_errors.py`, `tests/test_logging.py`  -  Domain enums, error types, logging setup
 - `tests/test_cli_env_file.py`, `tests/test_cli_overrides.py`, `tests/test_cli_validation.py`  -  Root-group option behaviour
 - `tests/test_deploy_permissions.py`  -  Config deployment file and directory modes
+- `tests/test_deploy_mode_safety.py`  -  `--dir-mode`/`--file-mode` refuse malformed, out-of-range and unsafe modes
+- `tests/test_permission_defaults.py`  -  `config-deploy` hands permissions to lib_layered_config: `--set` overrides, `.env` and deployed destinations never decide a mode, refusals exit 78
 - `tests/test_metadata_sync.py`  -  Package metadata agrees with `pyproject.toml`
 - `tests/test_property_email.py`, `tests/test_property_overrides.py`  -  Property-based tests over email config and `--set` parsing
 
@@ -258,7 +259,7 @@ Deploy default configuration to system or user directories.
 | `--force`                    | Overwrite existing files                 |
 | `--profile NAME`             | Deploy to profile subdirectory           |
 
-**Exit codes:** 0, 1, 2 (usage error, including an invalid `--profile` name), 13 (permission denied)
+**Exit codes:** 0, 1, 2 (usage error, including a refused `--dir-mode`/`--file-mode` or `--profile` name, and `--no-permissions` together with a mode), 13 (permission denied), 78 (lib_layered_config refused the permission settings: a configured one, which both `--dir-mode` and `--file-mode` or `--no-permissions` deploy past, or a `--set` of `lib_layered_config.default_permissions`)
 
 ### config-generate-examples
 

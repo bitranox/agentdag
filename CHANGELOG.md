@@ -7,14 +7,32 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **`[lib_layered_config.default_permissions]` now takes effect, and only the configuration
+  files decide it.** The per-layer modes were read, but only `enabled` was ever used, so
+  `--set lib_layered_config.default_permissions.user_directory='"0o750"'` still produced a `0o700`
+  directory. `config-deploy` now hands its options and any `--set` of the section to
+  lib_layered_config, which deploys each target with its configured directory and file mode
+  (`--dir-mode`/`--file-mode` still win) and reads the section itself: from the bundled defaults,
+  the configuration files the deploy does not overwrite and the environment, never from `.env`
+  (nor `--env-file`). So a `.env` in the working directory can neither change a deployed mode nor
+  block a deploy, `config-deploy` no longer needs the configuration the root loaded (it runs
+  without a warning when that did not load), and `config-deploy --force` replaces a deployed file
+  that does not parse or holds a bad value without further options. A malformed or out-of-range
+  mode, a bare integer (TOML `user_file = 400` is decimal 400, i.e. `0o620`), an unsafe mode, a
+  non-boolean `enabled`, a section that is not a table or an unknown key stops the command with
+  exit 78 before anything is written: one `Error:` line per problem naming the key and where it
+  was set (`(source: override)` for a `--set`), then, for a configured value, a hint that both
+  `--dir-mode` and `--file-mode` deploy anyway. It used to fall back to the default silently.
+  "Deployed configuration" is logged after the deploy, not before it.
 - **A broken configuration file no longer disables every command.** The root group loaded the
   configuration before any subcommand option was parsed and let a load error escape, so a
   malformed `config.toml` made every command, `--help` and `config-deploy` (the command that
   replaces the file) exit 1 with empty stdout. The root now records the failure
   (`adapters/cli/config_load.py`); `config`, `send-email`, `send-notification`, `notify-test` and
   every `run` subcommand refuse with exit 78 and one line naming it, while `info`, `hello`,
-  `config-generate-examples`, `graph-a` and help still run, and `config-deploy` deploys with the
-  permission defaults of an empty configuration and warns which failure it skipped. An unreadable
+  `config-generate-examples`, `graph-a` and help still run. `config-deploy` runs too: it reads
+  nothing from that configuration (see the `default_permissions` entry), so `config-deploy --force`
+  replaces the broken file. An unreadable
   file takes the same path, and so does an `--env-file` that is not UTF-8 (the line names the
   file). `--traceback` prints the loader's chained traceback before the line. What the command
   line gets wrong is checked BEFORE loading, so a broken file cannot hide it: a malformed `--set`
@@ -65,7 +83,21 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   key or an environment `null` was refused as "Input should be a valid list" for both settings.
   Both now read `None` as an empty list.
 
+### Removed
+- `adapters.config.permissions` as a whole: `parse_mode` (whose silent fall-back to the default
+  was the bug), `get_permission_defaults`, `get_modes_for_target` and the `PermissionDefaults`
+  model. lib_layered_config reads and validates the section now; a caller that wants the
+  settings uses its `deploy_permissions_from_config`.
+
 ### Security
+- **`config-deploy` refuses unsafe and malformed modes.** `--dir-mode -1` passed the unbounded
+  octal parser, and a decimal integer in the configuration was read as a mode (`user_file = 444`
+  deployed `config.toml`, the file holding the SMTP password, at `0o674`). `--dir-mode`,
+  `--file-mode` and every configured mode now accept only a plain octal literal in `0`..`0o7777`,
+  and refuse the setuid/setgid/sticky bits, group and world write, an execute bit on a file, a
+  directory without owner `rwx` and a file without owner `rw`, naming each offending bit; nothing
+  is written. The rule is lib_layered_config's. Migration: quote configured modes
+  (`user_file = "640"`) and use the `0o` prefix in environment variables and `--set`.
 - An email attachment allow or block list given in a form it cannot be read in is now refused
   instead of silently ignored. A comma-separated value (`.pdf,.txt` in an environment variable or
   `.env`) arrives as one string, and the validators turned any value that was not a list into
@@ -323,6 +355,14 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Exit code change: `config-deploy` refuses what it used to accept.** An invalid
+  `[lib_layered_config.default_permissions]` setting exits 78 (it fell back to the default and
+  exited 0); `--no-permissions` together with `--dir-mode` or `--file-mode`, and a malformed or
+  unsafe `--dir-mode`/`--file-mode`, exit 2. The deploy port (`DeployConfiguration`) takes
+  `set_permissions: bool | None` (None, the default, follows the configured `enabled`) and
+  `permission_overrides`. Refusals of `--dir-mode`/`--file-mode` use lib_layered_config's wording
+  ("unsafe directory mode 0o777: group write (0o020); world write (0o002)"), and a zero-padded
+  mode such as `0000750` is accepted as `0o750`.
 - **Requires lib_layered_config 7.0.1.** An unquoted `.env` value now converts like the
   environment layer: `true`/`false` arrive as booleans, `null`/`none` as None (not for a secret
   key such as a password), a JSON array or object parsed, a number that converts back to the same
