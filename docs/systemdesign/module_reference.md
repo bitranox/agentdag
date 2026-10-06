@@ -122,6 +122,7 @@ the [documentation index](../README.md).
 - `tests/test_cli_core.py`, `tests/test_cli_config.py`, `tests/test_cli_email.py`  -  CLI command tests
 - `tests/test_config_overrides.py`  -  `--set` parsing tests
 - `tests/test_safe_console.py`  -  Legacy-codepage output tests, plus the guard forbidding direct `click.echo`
+- `tests/test_declared_dependencies.py`  -  Every runtime import is a declared dependency
 - `tests/test_display.py`  -  Config display formatting tests
 - `tests/test_cli_exit_codes.py`  -  ExitCode enum tests
 - `tests/test_cli_main_exit.py`  -  Exit codes and stderr through the real `main()` entry point

@@ -7,6 +7,9 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **`click` is a declared dependency.** The package imports it directly (`adapters/cli/main.py`,
+  `commands/config.py`) but only had it through rich-click. A new test fails when a runtime import
+  is missing from `[project].dependencies`.
 - **A non-UTF-8 path no longer crashes output, and the console fallback degrades only what it
   must.** `safe_console.encode_safe` skipped its check for utf-8/16/32, but a lone surrogate (a
   filesystem byte decoded with `surrogateescape`) encodes in none of them, so
