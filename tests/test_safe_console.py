@@ -110,12 +110,12 @@ class TestOnlyTheUnencodableCharacterDegrades:
 
     def test_a_glyph_cp1252_has_survives_beside_one_it_lacks(self) -> None:
         """The check mark forces the fallback; the ellipsis and the apostrophe must not be rewritten."""
-        assert safe_console.encode_safe("✓ done… it\u2019s", "cp1252") == "[OK] done… it\u2019s"
+        assert safe_console.encode_safe("\u2713 done\u2026 it\u2019s", "cp1252") == "[OK] done\u2026 it\u2019s"
 
     def test_rich_output_keeps_what_cp1252_can_print(self) -> None:
         stream = _cp1252_stream()
-        Console(file=safe_console.safe_stream(stream), legacy_windows=False, width=80).print("✓ done… ok")
-        assert "[OK] done… ok" in _read_back(stream)
+        Console(file=safe_console.safe_stream(stream), legacy_windows=False, width=80).print("\u2713 done\u2026 ok")
+        assert "[OK] done\u2026 ok" in _read_back(stream)
 
 
 class TestALoneSurrogate:
@@ -130,15 +130,15 @@ class TestALoneSurrogate:
         assert result == "path-?-name"
 
     def test_only_the_surrogate_is_replaced_on_utf8(self) -> None:
-        assert safe_console.encode_safe("check ✓ \udcff", "utf-8") == "check ✓ ?"
+        assert safe_console.encode_safe("check \u2713 \udcff", "utf-8") == "check \u2713 ?"
 
     def test_echo_on_a_strict_utf8_stream_does_not_raise(self) -> None:
         stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict", newline="")
-        safe_console.echo("path-\udcff-name ✓", file=stream)
+        safe_console.echo("path-\udcff-name \u2713", file=stream)
         stream.flush()
         buffer = stream.buffer
         assert isinstance(buffer, io.BytesIO)
-        assert buffer.getvalue().decode("utf-8") == "path-?-name ✓\n"
+        assert buffer.getvalue().decode("utf-8") == "path-?-name \u2713\n"
 
 
 @pytest.mark.skipif(
