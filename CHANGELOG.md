@@ -7,6 +7,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **The documented `.env` and environment syntax for logging tables and SMTP hosts works.**
+  `.env.example`, `defaultconfig.d/90-logging.toml` and the README still showed `LEVEL=style` /
+  `field=regex` pairs and a comma-separated `SMTP_HOSTS`, but a comma-separated value arrives as
+  ONE string in both layers: a logging table that was refused, or one bogus SMTP host. They now
+  show a JSON object or array (unquoted in `.env`, shell-quoted in the environment) or one key
+  per entry (`LIB_LOG_RICH__SCRUB_PATTERNS__API_KEY=.+`), and say how an unquoted value converts
+  under lib_layered_config 7: `true`/`false` arrive as booleans, `null`/`none` as None (not for a
+  secret key such as a password), a JSON array or object parsed, a number that converts back to
+  the same text as a number, anything else as text; quote a value to keep it text.
 - **An invalid `[email]` section is a configuration error.** `send-email` and `send-notification`
   let the `ValidationError` escape to `main()`'s catch-all, which exited 22 with pydantic's
   multi-line report and documentation URL; `notify-test` and a run whose `kernel.notify` is
