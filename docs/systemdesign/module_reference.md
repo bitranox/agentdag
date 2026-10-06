@@ -93,7 +93,7 @@ the [documentation index](../README.md).
 - `src/agentdag/adapters/memory/__init__.py`  -  Public facade + Protocol conformance assertions
 - `src/agentdag/adapters/memory/config.py`  -  In-memory config adapters
 - `src/agentdag/adapters/memory/email.py`  -  In-memory email adapters
-- `src/agentdag/adapters/memory/logging.py`  -  In-memory logging (no-op)
+- `src/agentdag/adapters/memory/logging.py`  -  In-memory logging (a quiet lib_log_rich runtime for tests)
 
 ### Composition Layer
 - `src/agentdag/composition/__init__.py`  -  Wires adapters to ports
@@ -125,6 +125,7 @@ the [documentation index](../README.md).
 - `tests/test_display.py`  -  Config display formatting tests
 - `tests/test_cli_exit_codes.py`  -  ExitCode enum tests
 - `tests/test_mail.py`  -  Email configuration and sending tests
+- `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
 - `tests/test_metadata.py`  -  Package metadata tests
 - `tests/test_module_entry.py`  -  `python -m` entry tests
 - `tests/test_ports.py`  -  Protocol conformance tests

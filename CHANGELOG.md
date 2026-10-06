@@ -7,6 +7,18 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **`build_testing()` can run a command.** The in-memory logging initializer was a no-op while every
+  command binds job context onto the lib_log_rich runtime, so any command under the testing
+  composition raised `RuntimeError('lib_log_rich.init() must be called before using the logging
+  API')`. It now starts a quiet runtime (no journald, event log, Graylog or queue; console at ERROR;
+  no `.env` loading), and the test fixtures that build services use it rather than production
+  `init_logging`, whose queued INFO lines raced into a test's captured stderr.
+- **Tests no longer pass or fail by order or by machine.** An autouse fixture shuts the
+  lib_log_rich runtime down and restores the root logger's handlers, level and propagate flag after
+  every test; production `init_logging` attaches a stdlib handler and raises the root level, which
+  `runtime.shutdown()` does not undo. A second autouse fixture resets rich-click's colour and width
+  globals, which it reads once at import (from `GITHUB_ACTIONS` and the terminal), so CI and a
+  79-column Windows runner render CLI errors the same as a developer machine.
 - **`email.smtp_hosts` and `email.recipients` set to nothing mean not configured.** A bare YAML
   key or an environment `null` was refused as "Input should be a valid list" for both settings.
   Both now read `None` as an empty list.
