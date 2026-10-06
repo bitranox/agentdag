@@ -7,6 +7,23 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **A broken configuration file no longer disables every command.** The root group loaded the
+  configuration before any subcommand option was parsed and let a load error escape, so a
+  malformed `config.toml` made every command, `--help` and `config-deploy` (the command that
+  replaces the file) exit 1 with empty stdout. The root now records the failure
+  (`adapters/cli/config_load.py`); `config`, `send-email`, `send-notification`, `notify-test` and
+  every `run` subcommand refuse with exit 78 and one line naming it, while `info`, `hello`,
+  `config-generate-examples`, `graph-a` and help still run, and `config-deploy` deploys with the
+  permission defaults of an empty configuration and warns which failure it skipped. An unreadable
+  file takes the same path, and so does an `--env-file` that is not UTF-8 (the line names the
+  file). `--traceback` prints the loader's chained traceback before the line. What the command
+  line gets wrong is checked BEFORE loading, so a broken file cannot hide it: a malformed `--set`
+  or an invalid `--profile` name is a usage error (exit 2) for every command (see Changed). So are
+  two `--set` values that give one key a value and put a key under it (`--set a.b=1 --set
+  a.b.c=2`), which escaped as a `TypeError` in one order and silently dropped the earlier value in
+  the other; give a whole table in one `--set`. Any other exception from the loader is a bug and
+  propagates as one instead of being reported as a configuration error. `config --profile X`
+  reloads with the root's `--env-file` instead of searching for another `.env`.
 - **`click` is a declared dependency.** The package imports it directly (`adapters/cli/main.py`,
   `commands/config.py`) but only had it through rich-click. A new test fails when a runtime import
   is missing from `[project].dependencies`.
@@ -306,6 +323,13 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Exit code change: a configuration that does not load exits 78, an invalid `--profile` name
+  exits 2.** A broken or unreadable configuration file exited 1 from every command; it now exits
+  78 (EX_CONFIG) from the commands that read the configuration and does not stop the others. An
+  invalid `--profile` name such as `../x` exited 22 from every command (and `config-deploy
+  --profile ../x` failed inside the deploy); it is now a usage error, exit 2, for the root's
+  `--profile`, `config --profile` and `config-deploy --profile`. A script that tells these cases
+  apart by exit code has to test for 78 and 2. Conflicting `--set` values exit 2 as well.
 - A config string written as JSON is refused by name rather than read as one word. A `.env`
   value is delivered as text - unlike an `AGENTDAG___` variable or a `--set`, which the layered
   config parses first - so `KERNEL__DENY_BASH=["git push"]` used to become a denylist matching

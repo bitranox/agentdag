@@ -60,6 +60,7 @@ the [documentation index](../README.md).
   - `exit_codes.py`  -  POSIX exit codes (ExitCode IntEnum)
   - `typed_click.py`  -  Typed facade over rich-click's decorators, so call sites stay fully typed
   - `context.py`  -  Click context helpers
+  - `config_load.py`  -  Configuration load for the CLI; records a load failure, `require_config` refuses with exit 78
   - `root.py`  -  Root command group
   - `main.py`  -  Entry point
   - `commands/info.py`  -  info, hello, fail commands
@@ -125,6 +126,7 @@ the [documentation index](../README.md).
 - `tests/test_declared_dependencies.py`  -  Every runtime import is a declared dependency
 - `tests/test_display.py`  -  Config display formatting tests
 - `tests/test_cli_exit_codes.py`  -  ExitCode enum tests
+- `tests/test_cli_config_errors.py`  -  Which commands refuse and which still run when the configuration cannot be loaded
 - `tests/test_cli_main_exit.py`  -  Exit codes and stderr through the real `main()` entry point
 - `tests/test_mail.py`  -  Email configuration and sending tests
 - `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
@@ -244,7 +246,7 @@ Display merged configuration from all sources.
 | `--format [human\|json]` | Output format (default: human) |
 | `--section NAME`         | Show only specific section     |
 
-**Exit codes:** 0, 22 (section not found)
+**Exit codes:** 0, 2 (usage error, including an invalid `--profile` name), 22 (section not found), 78 (configuration not loadable)
 
 ### config-deploy
 
@@ -256,7 +258,7 @@ Deploy default configuration to system or user directories.
 | `--force`                    | Overwrite existing files                 |
 | `--profile NAME`             | Deploy to profile subdirectory           |
 
-**Exit codes:** 0, 1, 13 (permission denied)
+**Exit codes:** 0, 1, 2 (usage error, including an invalid `--profile` name), 13 (permission denied)
 
 ### config-generate-examples
 
@@ -289,7 +291,7 @@ Send email using configured SMTP settings.
 | `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
 | `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
-**Exit codes:** 0, 2 (file not found), 22, 69 (SMTP failure), 78 (no SMTP hosts)
+**Exit codes:** 0, 2 (file not found), 22, 69 (SMTP failure), 78 (no SMTP hosts, or configuration not loadable)
 
 ### send-notification
 
@@ -309,7 +311,7 @@ Send simple plain-text notification email.
 | `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
 | `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
-**Exit codes:** 0, 22, 69 (SMTP failure), 78 (no SMTP hosts)
+**Exit codes:** 0, 22, 69 (SMTP failure), 78 (no SMTP hosts, or configuration not loadable)
 
 ### logdemo
 

@@ -121,6 +121,7 @@ from agentdag.domain.models import (
 from agentdag.domain.scrub import scrub
 
 from .. import safe_console
+from ..config_load import require_config
 from ..constants import CLICK_CONTEXT_SETTINGS
 from ..context import get_cli_context
 from ..exit_codes import ExitCode
@@ -279,7 +280,7 @@ def cli_run_start(
     foreground: bool,
 ) -> None:
     """Start a new run of WORKFLOW."""
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     workflow = _lookup_workflow(workflow_name)
     args = _validated_args(workflow, _parsed_arg_pairs(args_kv))
     runs_dir = _resolve_runs_dir(config, runs_option)
@@ -318,7 +319,7 @@ def cli_run_start(
 @click.pass_context
 def cli_run_status(ctx: click.Context, *, run_id: str, runs_option: Path | None) -> None:
     """Print RUN_ID's current state and its last journal event."""
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     run_dir = _open_run_dir(_resolve_runs_dir(config, runs_option), run_id)
     state = run_dir.read_state()
     lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
@@ -338,7 +339,7 @@ def cli_run_status(ctx: click.Context, *, run_id: str, runs_option: Path | None)
 @click.pass_context
 def cli_run_records(ctx: click.Context, *, run_id: str, runs_option: Path | None, as_json: bool) -> None:
     """Print RUN_ID's result records, one per dispatched node."""
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     run_dir = _open_run_dir(_resolve_runs_dir(config, runs_option), run_id)
     lines = JsonlJournal(run_dir.journal_path, run_dir.audit_path).lines()
     records = [line.record for line in lines if isinstance(line, ResultLine)]
@@ -370,7 +371,7 @@ def cli_run_resume(
     ctx: click.Context, *, run_id: str, runs_option: Path | None, foreground: bool, reason_option: str
 ) -> None:
     """Relaunch a coordinator for RUN_ID."""
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
     status = run_dir.read_state().status
@@ -409,7 +410,7 @@ def cli_run_retry(
     of that refusal). A grant is new information entering the run, which is what ``approve``
     does and what ``resume`` does not, so this takes ``approve``'s shape.
     """
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
     state = run_dir.read_state()
@@ -421,7 +422,7 @@ def cli_run_retry(
         node_id=node_id,
         key=_grantable_key_of(run_dir, run_id=run_id, node_id=node_id, max_attempts=wiring.policy.max_attempts),
         reason=reason_text,
-        by=_operator_label(get_cli_context(ctx).config),
+        by=_operator_label(_config(ctx)),
         token_id="local",  # nosec B106  # noqa: S106 - a token IDENTITY, not a secret
     )
     try:
@@ -523,7 +524,7 @@ def cli_run_cancel(ctx: click.Context, *, run_id: str, runs_option: Path | None)
     coordinator's own lock; that half is reported as unverified and left to a later
     ``run cancel`` retry, or the startup sweep the next time this run is relaunched.
     """
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
     try:
@@ -568,7 +569,7 @@ def cli_run_approve(
     foreground: bool,
 ) -> None:
     """Record a decision for RUN_ID's NODE_ID, and relaunch unless --no-relaunch."""
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     runs_dir = _resolve_runs_dir(config, runs_option)
     run_dir = _open_run_dir(runs_dir, run_id)
     state = run_dir.read_state()
@@ -624,7 +625,7 @@ def cli_run_apply_deadlines(
             at least one relaunch failed. Every OTHER run was still served, and each
             failed one keeps its recorded decision, so the recovery is ``run resume``.
     """
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     runs_dir = _resolve_runs_dir(config, runs_option)
     wiring, _credential_desc = _build_wiring(ctx, _resolve_settings(ctx, policy_override=None, parallel_override=None))
     applied = 0
@@ -715,6 +716,16 @@ def cli_run_coordinate(ctx: click.Context, *, run_id: str, runs_option: Path, re
 # --------------------------------------------------------------------------------------
 # Shared helpers
 # --------------------------------------------------------------------------------------
+
+
+def _config(ctx: click.Context) -> Config:
+    """The configuration the root loaded, or exit 78 naming why it did not load.
+
+    The root group records a load failure instead of raising it, so a command that never
+    reads the configuration still runs; every run subcommand reads it, so each asks here
+    rather than reading ``CLIContext.config``, which is empty after a failed load.
+    """
+    return require_config(ctx, get_cli_context(ctx))
 
 
 def _fail(message: str) -> NoReturn:
@@ -836,7 +847,7 @@ def resolve_notifier(ctx: click.Context) -> Notifier:
     is the failure this whole port exists to prevent - discovered, otherwise, on the run
     they most needed it for.
     """
-    return _build_notifier(ctx, _notify_choice(get_cli_context(ctx).config))
+    return _build_notifier(ctx, _notify_choice(_config(ctx)))
 
 
 def _notify_choice(config: Config) -> str:
@@ -860,7 +871,7 @@ def _build_notifier(ctx: click.Context, choice: str) -> Notifier:
     if choice != "mail":
         _fail(f"kernel.notify is {choice!r}; it must be 'none' or 'mail'")
     cli = get_cli_context(ctx)
-    email_config = cli.services.load_email_config_from_dict(cli.config.as_dict())
+    email_config = cli.services.load_email_config_from_dict(_config(ctx).as_dict())
     if not email_config.smtp_hosts:
         _fail("kernel.notify is 'mail' but email.smtp_hosts is empty - configure it, or set kernel.notify = 'none'")
     return MailNotifier(send_notification=cli.services.send_notification, config=email_config)
@@ -1267,7 +1278,7 @@ def _resolve_settings(
     The one place config is read for a run's wiring. Every refusal a key carries (a blank
     denylist, a bad notify sink) fires here, before any run directory exists.
     """
-    config = get_cli_context(ctx).config
+    config = _config(ctx)
     policy_path = policy_override if policy_override is not None else _shipped_policy_path()
     default_parallel = _config_int(config, "kernel.parallel", "parallel")
     return RunSettings(
