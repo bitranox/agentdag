@@ -128,6 +128,7 @@ the [documentation index](../README.md).
 - `tests/test_cli_config_errors.py`  -  Which commands refuse and which still run when the configuration cannot be loaded
 - `tests/test_cli_main_exit.py`  -  Exit codes and stderr through the real `main()` entry point
 - `tests/test_mail.py`  -  Email configuration and sending tests
+- `tests/test_cli_email_config_errors.py`  -  An invalid `[email]` section or option value: one `Error:` line per problem
 - `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
 - `tests/test_metadata.py`  -  Package metadata tests
 - `tests/test_module_entry.py`  -  `python -m` entry tests
@@ -292,7 +293,7 @@ Send email using configured SMTP settings.
 | `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
 | `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
-**Exit codes:** 0, 2 (file not found), 22, 69 (SMTP failure), 78 (no SMTP hosts, or configuration not loadable)
+**Exit codes:** 0, 2 (file not found), 22 (invalid option value), 69 (SMTP failure), 78 (no SMTP hosts, an invalid `[email]` section, or configuration not loadable)
 
 ### send-notification
 
@@ -312,7 +313,7 @@ Send simple plain-text notification email.
 | `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
 | `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
-**Exit codes:** 0, 22, 69 (SMTP failure), 78 (no SMTP hosts, or configuration not loadable)
+**Exit codes:** 0, 22 (invalid option value), 69 (SMTP failure), 78 (no SMTP hosts, an invalid `[email]` section, or configuration not loadable)
 
 ### logdemo
 

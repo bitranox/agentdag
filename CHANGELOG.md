@@ -7,6 +7,14 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **An invalid `[email]` section is a configuration error.** `send-email` and `send-notification`
+  let the `ValidationError` escape to `main()`'s catch-all, which exited 22 with pydantic's
+  multi-line report and documentation URL; `notify-test` and a run whose `kernel.notify` is
+  `mail` did the same through the mail sink. They now exit 78 with one line per problem,
+  `Error: Invalid configuration: email.<key>: <reason>` (an `[email.attachments]` setting is
+  named by its nested key), never showing the refused value. An invalid option value
+  (`--timeout -5`) still exits 22, now in the same one-line form (`Error: Invalid option value:
+  ...`). `adapters.email.config.describe_validation_error` renders those lines.
 - **`[lib_layered_config.default_permissions]` now takes effect, and only the configuration
   files decide it.** The per-layer modes were read, but only `enabled` was ever used, so
   `--set lib_layered_config.default_permissions.user_directory='"0o750"'` still produced a `0o700`
@@ -355,6 +363,10 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Exit code change: an invalid `[email]` section exits 78, no longer 22** (see Fixed). A script
+  that checks for 22 after `send-email`, `send-notification` or `notify-test` must check for 78
+  (EX_CONFIG); an invalid option value such as `--timeout -5` still exits 22. The log record for a
+  refused setting names its problems in a `problems` field instead of the pydantic dump.
 - **Exit code change: `config-deploy` refuses what it used to accept.** An invalid
   `[lib_layered_config.default_permissions]` setting exits 78 (it fell back to the default and
   exited 0); `--no-permissions` together with `--dir-mode` or `--file-mode`, and a malformed or

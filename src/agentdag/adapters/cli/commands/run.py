@@ -92,6 +92,7 @@ import rich_click as click
 import tomllib
 from pydantic import ValidationError
 
+from agentdag.adapters.email.config import describe_validation_error
 from agentdag.adapters.kernel.executor_claude import CredentialCopy, OAuthTokenFile
 from agentdag.adapters.kernel.journal_jsonl import JsonlJournal
 from agentdag.adapters.kernel.lock_file import current_holder
@@ -871,7 +872,14 @@ def _build_notifier(ctx: click.Context, choice: str) -> Notifier:
     if choice != "mail":
         _fail(f"kernel.notify is {choice!r}; it must be 'none' or 'mail'")
     cli = get_cli_context(ctx)
-    email_config = cli.services.load_email_config_from_dict(_config(ctx).as_dict())
+    try:
+        email_config = cli.services.load_email_config_from_dict(_config(ctx).as_dict())
+    except ValidationError as exc:
+        # One line per problem, as send-email reports the same section; pydantic's own report
+        # spans lines, ends in a documentation URL and would escape main() as exit 22.
+        for problem in describe_validation_error(exc):
+            safe_console.echo(f"Error: Invalid configuration: {problem}", err=True)
+        raise SystemExit(ExitCode.CONFIG_ERROR) from exc
     if not email_config.smtp_hosts:
         _fail("kernel.notify is 'mail' but email.smtp_hosts is empty - configure it, or set kernel.notify = 'none'")
     return MailNotifier(send_notification=cli.services.send_notification, config=email_config)
