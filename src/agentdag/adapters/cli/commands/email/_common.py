@@ -165,8 +165,8 @@ def execute_with_email_error_handling(
         Exceptions are caught in specificity order (most specific first):
 
         1. ConfigurationError -> CONFIG_ERROR (78): Missing/invalid config
-        2. ValueError -> INVALID_ARGUMENT (2): Invalid parameters or email format
-        3. FileNotFoundError -> FILE_NOT_FOUND (66): Missing attachment (if enabled)
+        2. ValueError -> INVALID_ARGUMENT (22): Invalid parameters or email format
+        3. FileNotFoundError -> FILE_NOT_FOUND (2): Missing attachment (if enabled)
         4. DeliveryError/RuntimeError -> SMTP_FAILURE (69): SMTP transport failures
         5. Exception (catch-all) -> GENERAL_ERROR (1): Unexpected errors with traceback
 
