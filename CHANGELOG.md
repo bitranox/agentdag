@@ -7,6 +7,17 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **A non-UTF-8 path no longer crashes output, and the console fallback degrades only what it
+  must.** `safe_console.encode_safe` skipped its check for utf-8/16/32, but a lone surrogate (a
+  filesystem byte decoded with `surrogateescape`) encodes in none of them, so
+  `config-generate-examples` into such a directory wrote its files and then exited 1 on the path
+  echo. Once any character failed, the fallback also rewrote every known glyph in the text,
+  including ones the stream could print. The fallback is now a registered codec error handler: the
+  codec calls it for exactly the characters it rejects, which become their ASCII form or, when
+  the table has none, whatever the stream's own error handler writes: under Python's UTF-8 mode
+  or a C/POSIX locale stdout uses `surrogateescape`, so a non-UTF-8 path prints byte-exact and
+  still names the directory on disk, and stderr (`backslashreplace`) spells such a character
+  out. Only a `strict` stream gets `?`.
 - **No more `SystemExit: N` on stderr.** Every command that exits deliberately with a code (the
   config and email commands, and `run`, `graph-a` and `notify-test`) raised a bare `SystemExit`,
   which `main()`'s catch-all branch printed as `SystemExit: 22` (or `78`, `69` ...) after the real
