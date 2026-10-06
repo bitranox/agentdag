@@ -105,6 +105,26 @@ def test_a_quoted_json_looking_string_written_into_a_dotenv_is_still_refused(
 
 
 @pytest.mark.os_agnostic
+def test_the_refusal_of_a_quoted_dotenv_array_says_how_to_write_one_that_parses(
+    cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The refusal must not claim a ``.env`` value is never parsed: an unquoted array is a list.
+
+    It names the quoting as the reason the value arrived as text and offers the unquoted form.
+    """
+    env_file = tmp_path / "dotenv"
+    env_file.write_text('KERNEL__DENY_BASH="[\\"git push\\"]"\n', encoding="utf-8")
+
+    rc, output, _calls = _start(cli_runner, tmp_path, set_args=["--env-file", str(env_file)])
+
+    assert rc == ExitCode.INVALID_ARGUMENT, output
+    flat = " ".join(output.split())
+    assert "never parsed" not in flat, output
+    assert "quoted" in flat, output
+    assert "unquoted JSON array" in flat, output
+
+
+@pytest.mark.os_agnostic
 def test_a_blank_deny_bash_env_var_is_refused_not_read_as_no_denylist(
     cli_runner: CliRunner, tmp_path: Path, blank_deny_bash_in_env: None
 ) -> None:

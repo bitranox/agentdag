@@ -1091,14 +1091,16 @@ def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: s
 
     Two shapes are refused that a bare split would silently mangle:
 
-    * A string written as JSON. A ``.env`` value is delivered as TEXT - unlike an
-      ``AGENTDAG___`` variable or a ``--set``, both of which the layered config parses first -
-      so ``KERNEL__DENY_BASH=["git push"]`` arrives as those eleven characters and the split
-      yields the single substring ``["git push"]``, a denylist matching that literal and NOT
-      ``git push``. It reads as closed in the file and is open in the run, which is the one
-      failure mode a boundary must not have; the gate command's version of the same value
-      becomes a program named ``[]``. The identical text through the environment variable IS a
-      list and never reaches this branch, so refusing it here costs no working configuration.
+    * A string written as JSON. The layered config parses an unquoted JSON array into a list
+      in every layer that takes text (a ``.env`` line, an ``AGENTDAG___`` variable, a
+      ``--set``), so such a value never reaches this branch. One that does arrived as TEXT: it
+      was QUOTED in a ``.env`` (``KERNEL__DENY_BASH="[\"git push\"]"``), which keeps it a
+      string, or it is not valid JSON. Split on commas it is the single substring
+      ``["git push"]``, a denylist matching that literal and NOT ``git push``. It reads as
+      closed in the file and is open in the run, which is the one failure mode a boundary must
+      not have; the gate command's version of the same value becomes a program named ``[]``.
+      The unquoted form of the same value is a list, so refusing it here costs no working
+      configuration.
     * A member that is not text. The ``else`` below refuses a null or a mapping INSTEAD of the
       list for the reason that neither is a list of words; a null INSIDE it is no more a word,
       and ``str(None)`` would put the literal ``None`` in an argv or a denylist.
@@ -1124,9 +1126,10 @@ def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: s
     if isinstance(raw, str):
         if raw.strip().startswith(("[", "{")):
             _fail(
-                f"{named} is the TEXT {raw.strip()!r}, not a list. A .env value is never parsed as "
-                f"JSON, so this would be read as one word. Write it comma-joined there, or as a real "
-                f"array in a TOML file, with --set, or in the AGENTDAG___ environment variable"
+                f"{named} is the TEXT {raw.strip()!r}, not a list: a value starting with [ or {{ "
+                f"stays text when it is quoted in a .env file or is not valid JSON, and would be read "
+                f"as one word. Write it as an unquoted JSON array (in a .env file, the AGENTDAG___ "
+                f"environment variable or --set), as an array in a TOML file, or comma-joined"
             )
         return [item.strip() for item in raw.split(",")]
     if isinstance(raw, (list, tuple)):

@@ -139,11 +139,13 @@ max_turns = 2000
 #   directory exists - it is not read as "deny nothing". To close nothing on purpose,
 #   write an explicit empty list: `deny_bash = []`, or AGENTDAG___KERNEL__DENY_BASH='[]'.
 #   A blank ENTRY is refused too: as a substring it would match every command.
-# Note: in a .env file write it COMMA-JOINED, as above. A .env value is never parsed as JSON,
-#   so `KERNEL__DENY_BASH=["git push"]` would be read as the single substring `["git push"]` -
-#   a denylist that matches that literal and NOT `git push`, which reads as closed and is open.
-#   A .env value that starts with [ or { is therefore refused by name. The `[]` form works
-#   through AGENTDAG___KERNEL__DENY_BASH and --set, which are parsed.
+# Note: in a .env file write it COMMA-JOINED, as above, or as an UNQUOTED JSON array
+#   (`KERNEL__DENY_BASH=["git push","gh pr"]`), which lib_layered_config parses into a list.
+#   A QUOTED value stays text (`KERNEL__DENY_BASH="[\"git push\"]"`), and so does one that is
+#   not valid JSON; split on commas it would be the single substring `["git push"]` - a
+#   denylist that matches that literal and NOT `git push`, which reads as closed and is open.
+#   A text value that starts with [ or { is therefore refused by name. The `[]` form works
+#   unquoted in a .env file, through AGENTDAG___KERNEL__DENY_BASH and with --set.
 deny_bash = ["git push", "gh pr", "gh release", "curl -X POST", "curl --data", "wget --post"]
 
 # Purpose: tool names every node is refused OUTRIGHT by a PreToolUse hook, whatever the
@@ -182,8 +184,10 @@ deny_tools = ["WebFetch", "WebSearch", "Task"]
 #   or a space inside an entry splits it into names that match no tool, and the run reads as
 #   widened while it is not. A per-tool specifier (`Bash(git diff:*)`) is refused for the same
 #   reason: nothing here validates one, so it would be passed through unchecked.
-# Note: in a .env file write it COMMA-JOINED, as above. A .env value is never parsed as JSON,
-#   so an array written there would be read as one word; a value starting with [ or { is refused.
+# Note: in a .env file write it COMMA-JOINED, as above, or as an UNQUOTED JSON array
+#   (`KERNEL__TOOLS=["Read","Bash"]`), which is parsed into a list. A quoted value, or one that
+#   is not valid JSON, stays text and would be read as one word: a text value starting with
+#   [ or { is refused by name.
 tools = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 
 # Purpose: what the CLI does with a node's tool call that NO PreToolUse hook denied
@@ -240,9 +244,10 @@ permission_mode = "dontAsk"
 #   empty list (`gate_command = []`) is REFUSED by name before any run directory exists:
 #   there is no argv to run, so it would leave the run with no gate at all. A BLANK value
 #   (an env var set to nothing) falls back to this packaged command, for the same reason.
-# Note: in a .env file write it COMMA-JOINED (`KERNEL__GATE_COMMAND=make,test`). A .env value
-#   is never parsed as JSON - unlike AGENTDAG___KERNEL__GATE_COMMAND and --set, which are - so
-#   an array written there would be read as one word. A .env value that starts with [ or { is
+# Note: in a .env file write it COMMA-JOINED (`KERNEL__GATE_COMMAND=make,test`) or as an
+#   UNQUOTED JSON array (`KERNEL__GATE_COMMAND=["make","test"]`), which is parsed into a list,
+#   as AGENTDAG___KERNEL__GATE_COMMAND and --set are. A quoted value, or one that is not valid
+#   JSON, stays text and would be read as one word; a text value that starts with [ or { is
 #   refused by name rather than read that way.
 gate_command = ["make", "test"]
 

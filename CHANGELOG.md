@@ -440,13 +440,15 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   --profile ../x` failed inside the deploy); it is now a usage error, exit 2, for the root's
   `--profile`, `config --profile` and `config-deploy --profile`. A script that tells these cases
   apart by exit code has to test for 78 and 2. Conflicting `--set` values exit 2 as well.
-- A config string written as JSON is refused by name rather than read as one word. A `.env`
-  value is delivered as text - unlike an `AGENTDAG___` variable or a `--set`, which the layered
-  config parses first - so `KERNEL__DENY_BASH=["git push"]` used to become a denylist matching
-  that literal and NOT `git push`, a boundary that reads as closed in the file and is open in the
-  run, and `KERNEL__GATE_COMMAND=[]` became a program named `[]`, walking around the empty-command
-  refusal. Both readers now share one shape-reader that refuses a value beginning with `[` or `{`
-  and names the routes that do take an array; the same text through the environment variable is
+- A config string written as JSON is refused by name rather than read as one word. An unquoted
+  JSON array is parsed into a list in every text layer (a `.env` line, an `AGENTDAG___` variable,
+  a `--set`; see the lib_layered_config 7.0.1 entry), but a value QUOTED in a `.env`
+  (`KERNEL__DENY_BASH="[\"git push\"]"`), or one that is not valid JSON, stays text. Split on
+  commas, such a value used to become a denylist matching that literal and NOT `git push`, a
+  boundary that reads as closed in the file and is open in the run, and the gate command's
+  version became a program named `[]`, walking around the empty-command refusal. Both readers now
+  share one shape-reader that refuses a text value beginning with `[` or `{`, says it stayed text
+  because it was quoted or is not valid JSON, and offers the unquoted array; the unquoted form is
   already a list and is unaffected. A member of the list that is not a string is refused too
   (`["make", null]` would have run `make None`).
 - The gate records the command it RAN. `Coordinator.gate` reads the wired gate port's own argv
