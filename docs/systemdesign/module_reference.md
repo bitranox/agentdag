@@ -426,7 +426,8 @@ The `EmailConfig` Pydantic model (`adapters/email/config.py`) provides validated
 | `attachment_raise_on_security_violation` | `bool`                    | `True`       | Raise or skip on security violation           |
 
 **Notes:**
-- `None` values use `btx_lib_mail`'s OS-specific defaults (blocked extensions/directories)
+- `None` values use `btx_lib_mail`'s defaults: blocked extensions are the POSIX and the Windows
+  list together on every platform, blocked directories are per OS
 - Empty arrays `[]` in TOML configuration are coerced to `None`
 - `max_size_bytes = 0` is coerced to `None` (disable size checking)
 - String paths are converted to `Path` objects during validation

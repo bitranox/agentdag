@@ -1194,6 +1194,79 @@ def test_send_email_logs_warning_on_false_result(caplog: pytest.LogCaptureFixtur
     assert "Email sent successfully" not in caplog.text
 
 
+# ======================== btx_lib_mail 4.0.0 limits and defaults ========================
+
+
+@pytest.mark.os_agnostic
+def test_send_email_refuses_a_windows_executable_by_default_on_every_platform(tmp_path: Path) -> None:
+    """The default blocked extensions are the POSIX and the Windows list on every platform.
+
+    An ``.exe`` used to pass on Linux and macOS, where only the POSIX list applied.
+    """
+    from btx_lib_mail import AttachmentSecurityError
+
+    attachment = tmp_path / "installer.exe"
+    attachment.write_bytes(b"MZ")
+    config = EmailConfig(
+        smtp_hosts=["smtp.test.com:587"],
+        from_address="sender@test.com",
+        # Directory blocking off so only the extension rule decides (macOS tmp_path is under /var).
+        attachment_blocked_directories=frozenset(),
+    )
+
+    transport = RecordingTransport()
+    with pytest.raises(AttachmentSecurityError, match=r"\.exe"):
+        send_email(
+            config=config,
+            recipients="recipient@test.com",
+            subject="Test Subject",
+            attachments=[attachment],
+            transport=transport,
+        )
+
+    assert transport.attempted_hosts == []
+
+
+@pytest.mark.os_agnostic
+def test_send_email_refuses_more_recipients_than_one_send_accepts() -> None:
+    """More than 1000 recipients are refused as a ValueError before any host is tried."""
+    config = EmailConfig(smtp_hosts=["smtp.test.com:587"], from_address="sender@test.com")
+    recipients = [f"user{index}@test.com" for index in range(1001)]
+
+    transport = RecordingTransport()
+    with pytest.raises(ValueError, match="recipient"):
+        send_email(config=config, recipients=recipients, subject="Test Subject", transport=transport)
+
+    assert transport.attempted_hosts == []
+
+
+@pytest.mark.os_agnostic
+def test_send_email_refuses_more_attachments_than_one_send_accepts(tmp_path: Path) -> None:
+    """More than 100 attachments are refused as a ValueError before any host is tried."""
+    attachments: list[Path] = []
+    for index in range(101):
+        attachment = tmp_path / f"part{index}.txt"
+        attachment.write_text("x")
+        attachments.append(attachment)
+    config = EmailConfig(
+        smtp_hosts=["smtp.test.com:587"],
+        from_address="sender@test.com",
+        attachment_blocked_directories=frozenset(),
+    )
+
+    transport = RecordingTransport()
+    with pytest.raises(ValueError, match="attachment"):
+        send_email(
+            config=config,
+            recipients="recipient@test.com",
+            subject="Test Subject",
+            attachments=attachments,
+            transport=transport,
+        )
+
+    assert transport.attempted_hosts == []
+
+
 # ======================== Real SMTP Integration ========================
 
 

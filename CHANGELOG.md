@@ -392,6 +392,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
+- **Requires btx_lib_mail 4.0.0.** With no `blocked_extensions` configured, an attachment is now
+  checked against btx_lib_mail's POSIX and Windows lists together on every platform, so an `.exe`,
+  `.bat` or `.ps1` is refused on Linux and macOS too (it passed there before). One send accepts at
+  most 1000 recipients and 100 attachments; more is refused before any host is tried, like any
+  invalid argument (exit 22). The `blocked_extensions` and `blocked_directories` comments in
+  `50-mail.toml` list the library's actual defaults.
 - **Requires python-dotenv and lib_log_rich 6.3.9; `InitLogging` takes `dotenv_path`.** The
   logging setup reads the `LOG_*` lines of a `.env` itself, so python-dotenv (already installed
   through lib_log_rich) is declared. The port is `init_logging(config, *, dotenv_path=None)`. An
