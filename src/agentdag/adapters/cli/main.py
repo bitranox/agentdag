@@ -49,27 +49,53 @@ def _run_cli(argv: Sequence[str] | None, *, services_factory: Callable[[], AppSe
     args = list(argv) if argv is not None else sys.argv[1:]
 
     try:
-        cli.main(
+        # cli is a rich_click group whose own main() reimplements click's Command.main().
+        # Under standalone_mode=False it catches the click.exceptions.Exit that ctx.exit()
+        # raises and RETURNS its exit code, and it returns a callback's plain return value the
+        # same way, so the exit code arrives here as a return value and never as an Exit.
+        # The config and email commands therefore exit through ctx.exit().
+        exit_code = cli.main(
             args=args,
             prog_name=__init__conf__.shell_command,
             obj=services_factory,
             standalone_mode=False,
         )
-        return 0
-    except click.exceptions.Exit as exc:
-        return exc.exit_code
+        return exit_code if isinstance(exit_code, int) else 0
     except click.ClickException as exc:
         exc.show()
         return exc.exit_code
+    except SystemExit as exc:
+        # The run, graph-a and notify-test commands exit with ``raise SystemExit(ExitCode.X)``
+        # after printing their own message, and catch that SystemExit internally where a
+        # caller recovers from it, so an integer code is a deliberate exit, not a crash. Left
+        # to the catch-all below it would print as "SystemExit: N" after the real message.
+        if isinstance(exc.code, int):
+            return exc.code
+        return _report_exception(exc)
     except BaseException as exc:
-        # Catch BaseException (not just Exception) to handle SystemExit, KeyboardInterrupt,
-        # and all errors at the CLI boundary. This ensures consistent error formatting via
+        # Catch BaseException (not just Exception) to handle KeyboardInterrupt and all errors
+        # at the CLI boundary. This ensures consistent error formatting via
         # lib_cli_exit_tools regardless of exception type. Intentional, not a bug.
-        tracebacks_enabled = bool(getattr(lib_cli_exit_tools.config, "traceback", False))
-        apply_traceback_preferences(tracebacks_enabled)
-        length_limit = TRACEBACK_VERBOSE_LIMIT if tracebacks_enabled else TRACEBACK_SUMMARY_LIMIT
-        lib_cli_exit_tools.print_exception_message(trace_back=tracebacks_enabled, length_limit=length_limit)
-        return lib_cli_exit_tools.get_system_exit_code(exc)
+        return _report_exception(exc)
+
+
+def _report_exception(exc: BaseException) -> int:
+    """Print the exception being handled through lib_cli_exit_tools and return its exit code.
+
+    Call it only from inside the ``except`` block handling ``exc``: lib_cli_exit_tools
+    formats the exception currently being handled, not the argument.
+
+    Args:
+        exc: The exception that ended the command.
+
+    Returns:
+        The exit code lib_cli_exit_tools maps ``exc`` to.
+    """
+    tracebacks_enabled = bool(getattr(lib_cli_exit_tools.config, "traceback", False))
+    apply_traceback_preferences(tracebacks_enabled)
+    length_limit = TRACEBACK_VERBOSE_LIMIT if tracebacks_enabled else TRACEBACK_SUMMARY_LIMIT
+    lib_cli_exit_tools.print_exception_message(trace_back=tracebacks_enabled, length_limit=length_limit)
+    return lib_cli_exit_tools.get_system_exit_code(exc)
 
 
 def main(

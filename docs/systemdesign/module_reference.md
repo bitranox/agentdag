@@ -124,6 +124,7 @@ the [documentation index](../README.md).
 - `tests/test_safe_console.py`  -  Legacy-codepage output tests, plus the guard forbidding direct `click.echo`
 - `tests/test_display.py`  -  Config display formatting tests
 - `tests/test_cli_exit_codes.py`  -  ExitCode enum tests
+- `tests/test_cli_main_exit.py`  -  Exit codes and stderr through the real `main()` entry point
 - `tests/test_mail.py`  -  Email configuration and sending tests
 - `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
 - `tests/test_metadata.py`  -  Package metadata tests

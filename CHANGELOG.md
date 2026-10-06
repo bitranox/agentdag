@@ -7,6 +7,17 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **No more `SystemExit: N` on stderr.** Every command that exits deliberately with a code (the
+  config and email commands, and `run`, `graph-a` and `notify-test`) raised a bare `SystemExit`,
+  which `main()`'s catch-all branch printed as `SystemExit: 22` (or `78`, `69` ...) after the real
+  message, text that reads as a crash. The config and email commands now exit through click's
+  context (`ctx.exit`), and `main()` returns the exit code rich_click's `main()` hands back instead
+  of discarding it; the kernel and Graph A commands keep raising `SystemExit` with their exit code,
+  which `main()` now returns without printing it. The exit codes themselves are unchanged.
+  `typed_click` gains a typed `get_current_context` wrapper. A send result is handled in the
+  delivery `try`'s `else` and `config-deploy` re-raises click's `Exit` before its catch-all, since
+  `Exit` subclasses `RuntimeError` and would otherwise be reported a second time as "SMTP delivery
+  failed" or relabelled a deploy failure.
 - **`build_testing()` can run a command.** The in-memory logging initializer was a no-op while every
   command binds job context onto the lib_log_rich runtime, so any command under the testing
   composition raised `RuntimeError('lib_log_rich.init() must be called before using the logging
