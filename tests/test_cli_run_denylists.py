@@ -120,7 +120,8 @@ def test_the_refusal_of_a_quoted_dotenv_array_says_how_to_write_one_that_parses(
     assert rc == ExitCode.INVALID_ARGUMENT, output
     flat = " ".join(output.split())
     assert "never parsed" not in flat, output
-    assert "quoted" in flat, output
+    # "quoted" alone would match inside "unquoted", which the next assertion already requires.
+    assert "quoted in a .env file" in flat, output
     assert "unquoted JSON array" in flat, output
 
 
