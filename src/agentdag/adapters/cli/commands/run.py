@@ -1095,7 +1095,9 @@ def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: s
       in every layer that takes text (a ``.env`` line, an ``AGENTDAG___`` variable, a
       ``--set``), so such a value never reaches this branch. One that does arrived as TEXT: it
       was QUOTED in a ``.env`` (``KERNEL__DENY_BASH="[\"git push\"]"``), which keeps it a
-      string, or it is not valid JSON. Split on commas it is the single substring
+      string; it was given to ``--set`` as a JSON STRING
+      (``--set kernel.deny_bash='"[\"git push\"]"'``), which is valid JSON and decodes to that
+      string; or it is not valid JSON. Split on commas it is the single substring
       ``["git push"]``, a denylist matching that literal and NOT ``git push``. It reads as
       closed in the file and is open in the run, which is the one failure mode a boundary must
       not have; the gate command's version of the same value becomes a program named ``[]``.
@@ -1126,10 +1128,11 @@ def _config_words(raw: object, *, key: str, default_key: str, not_a_list_hint: s
     if isinstance(raw, str):
         if raw.strip().startswith(("[", "{")):
             _fail(
-                f"{named} is the TEXT {raw.strip()!r}, not a list: a value starting with [ or {{ "
-                f"stays text when it is quoted in a .env file or is not valid JSON, and would be read "
-                f"as one word. Write it as an unquoted JSON array (in a .env file, the AGENTDAG___ "
-                f"environment variable or --set), as an array in a TOML file, or comma-joined"
+                f"{named} is the TEXT {raw.strip()!r}, not a list: the value arrived as a string "
+                f"(quoted in a .env file, given to --set as a JSON string, or not valid JSON), and a "
+                f"string starting with [ or {{ would be read as one word. Write it as an unquoted "
+                f"JSON array (in a .env file, the AGENTDAG___ environment variable or --set), as an "
+                f"array in a TOML file, or comma-joined"
             )
         return [item.strip() for item in raw.split(",")]
     if isinstance(raw, (list, tuple)):
