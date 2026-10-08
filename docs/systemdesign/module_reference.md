@@ -129,6 +129,7 @@ the [documentation index](../README.md).
 - `tests/test_cli_main_exit.py`  -  Exit codes and stderr through the real `main()` entry point
 - `tests/test_mail.py`  -  Email configuration and sending tests
 - `tests/test_cli_email_config_errors.py`  -  An invalid `[email]` section or option value: one `Error:` line per problem
+- `tests/test_cli_attachment_refused.py`  -  An attachment btx_lib_mail's security checks refuse exits 77 with one `Error:` line, nothing delivered
 - `tests/test_memory_logging.py`  -  Testing-composition logging runtime and the per-test logging reset
 - `tests/test_logging_dotenv_isolation.py`  -  Logging takes only `LOG_*` lines from a `.env`; an invalid `[lib_log_rich]` section or `LOG_*` variable is a configuration failure that leaves logging running
 - `tests/test_metadata.py`  -  Package metadata tests
@@ -192,19 +193,20 @@ Run `lint-imports` to verify compliance.
 
 POSIX-conventional exit codes defined in `adapters/cli/exit_codes.py`:
 
-| Code | Name                | Usage                                     |
-|------|---------------------|-------------------------------------------|
-| 0    | `SUCCESS`           | Command completed successfully            |
-| 1    | `GENERAL_ERROR`     | Unhandled exception, general failure      |
-| 2    | `FILE_NOT_FOUND`    | Attachment or file not found              |
-| 13   | `PERMISSION_DENIED` | Cannot write to target directory          |
-| 22   | `INVALID_ARGUMENT`  | Invalid CLI argument or section not found |
-| 69   | `SMTP_FAILURE`      | SMTP delivery failed                      |
-| 78   | `CONFIG_ERROR`      | Missing required configuration            |
-| 110  | `TIMEOUT`           | Operation timed out                       |
-| 130  | `SIGNAL_INT`        | Interrupted (SIGINT/Ctrl+C)               |
-| 141  | `BROKEN_PIPE`       | Output pipe closed                        |
-| 143  | `SIGNAL_TERM`       | Terminated (SIGTERM)                      |
+| Code | Name                 | Usage                                                                                                     |
+|------|----------------------|-----------------------------------------------------------------------------------------------------------|
+| 0    | `SUCCESS`            | Command completed successfully                                                                            |
+| 1    | `GENERAL_ERROR`      | Unhandled exception, general failure                                                                      |
+| 2    | `FILE_NOT_FOUND`     | Attachment or file not found                                                                              |
+| 13   | `PERMISSION_DENIED`  | Cannot write to target directory                                                                          |
+| 22   | `INVALID_ARGUMENT`   | Invalid CLI argument or section not found                                                                 |
+| 69   | `SMTP_FAILURE`       | SMTP delivery failed                                                                                      |
+| 77   | `ATTACHMENT_REFUSED` | Attachment refused by btx_lib_mail's security checks (blocked extension or directory, symlink, size, ...) |
+| 78   | `CONFIG_ERROR`       | Missing required configuration                                                                            |
+| 110  | `TIMEOUT`            | Operation timed out                                                                                       |
+| 130  | `SIGNAL_INT`         | Interrupted (SIGINT/Ctrl+C)                                                                               |
+| 141  | `BROKEN_PIPE`        | Output pipe closed                                                                                        |
+| 143  | `SIGNAL_TERM`        | Terminated (SIGTERM)                                                                                      |
 
 ---
 
@@ -294,7 +296,7 @@ Send email using configured SMTP settings.
 | `--raise-on-missing-attachments / --no-raise-on-missing-attachments` | Override missing-attachment handling |
 | `--raise-on-invalid-recipient / --no-raise-on-invalid-recipient`     | Override invalid-recipient handling  |
 
-**Exit codes:** 0, 2 (file not found), 22 (invalid option value), 69 (SMTP failure), 78 (no SMTP hosts, an invalid `[email]` section, or configuration not loadable)
+**Exit codes:** 0, 2 (file not found), 22 (invalid option value), 69 (SMTP failure), 77 (an attachment refused by btx_lib_mail's security checks), 78 (no SMTP hosts, an invalid `[email]` section, or configuration not loadable)
 
 ### send-notification
 

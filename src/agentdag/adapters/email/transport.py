@@ -174,6 +174,10 @@ def send_email(
         ConfigurationError: No SMTP hosts configured.
         FileNotFoundError: Required attachment missing and config.raise_on_missing_attachments
             is True.
+        AttachmentSecurityError: btx_lib_mail's security checks refused an
+            attachment (blocked extension or directory, symlink, size, ...)
+            and config.attachment_raise_on_security_violation is True.
+            Raised before anything is delivered.
         DeliveryError: All SMTP hosts failed for a recipient.
 
     Side Effects:
