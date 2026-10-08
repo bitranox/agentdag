@@ -413,7 +413,8 @@ Environment variables use the format: `<PREFIX>___<SECTION>__<KEY>=value`
 - Double underscore (`__`) separates SECTION from KEY
 
 ```bash
-export AGENTDAG___EMAIL__SMTP_HOSTS="smtp.gmail.com:587,smtp.backup.com:587"
+# A list is a JSON array; a comma-separated value would be ONE host string
+export AGENTDAG___EMAIL__SMTP_HOSTS='["smtp.gmail.com:587","smtp.backup.com:587"]'
 export AGENTDAG___EMAIL__FROM_ADDRESS="alerts@myapp.com"
 export AGENTDAG___EMAIL__SMTP_USERNAME="your-email@gmail.com"
 export AGENTDAG___EMAIL__SMTP_PASSWORD="your-app-password"

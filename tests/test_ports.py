@@ -1,4 +1,4 @@
-"""Port behavioral contract tests — verify in-memory adapter implementations.
+"""Port behavioral contract tests - verify in-memory adapter implementations.
 
 Tests exercise in-memory adapters only - production adapters are tested
 via CLI integration tests. Static type conformance is enforced by pyright.
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 from lib_layered_config import Config
 
-from agentdag.adapters.email.sender import EmailConfig
+from agentdag.adapters.email.sender import EmailConfig, load_email_config_from_dict
 from agentdag.adapters.memory import (
     EmailSpy,
     get_config_in_memory,
@@ -134,6 +134,28 @@ def test_load_email_config_accepts_empty_dict(load_email_config_impl: LoadEmailC
     """LoadEmailConfigFromDict must accept an empty dict without raising."""
     result = load_email_config_impl({})
     assert isinstance(result, EmailConfig)
+
+
+@pytest.mark.os_agnostic
+def test_load_email_config_reads_the_attachments_table_like_production(
+    load_email_config_impl: LoadEmailConfigFromDict,
+) -> None:
+    """The ``[email.attachments]`` table must reach the model under build_testing() too.
+
+    A loader that skipped the table left every attachment setting at its default, so a
+    command test of warn mode silently ran in strict mode.
+    """
+    config_dict = {
+        "email": {
+            "smtp_hosts": ["smtp.test.com:587"],
+            "attachments": {"raise_on_security_violation": False, "max_size_bytes": 1024},
+        }
+    }
+
+    result = load_email_config_impl(config_dict)
+
+    assert result == load_email_config_from_dict(config_dict)
+    assert (result.attachment_raise_on_security_violation, result.attachment_max_size_bytes) == (False, 1024)
 
 
 @pytest.mark.os_agnostic

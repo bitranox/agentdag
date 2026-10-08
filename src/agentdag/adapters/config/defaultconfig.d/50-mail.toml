@@ -27,7 +27,7 @@
 #   EMAIL__FROM_ADDRESS=alerts@example.com
 #
 # Precedence (lowest to highest):
-#   defaults → app config → host config → user config → .env file → env vars
+#   defaults -> app config -> host config -> user config -> .env file -> env vars
 #
 # IMPORTANT: Never commit .env files containing secrets to version control
 #
@@ -134,7 +134,8 @@ allowed_extensions = []
 
 # Purpose: Blacklist of blocked file extensions (ignored when allowed_extensions is set)
 # Type: array of strings
-# Default: [] (uses OS-specific dangerous extensions from btx_lib_mail)
+# Default: [] (uses btx_lib_mail's dangerous extensions: the POSIX and the Windows list together,
+#   on every platform)
 # Environment Variable: AGENTDAG___EMAIL__ATTACHMENTS__BLOCKED_EXTENSIONS='[".exe",".bat",".cmd"]'
 # .env: EMAIL__ATTACHMENTS__BLOCKED_EXTENSIONS=[".exe",".bat",".cmd"] (unquoted)
 #   or one key per extension: EMAIL__ATTACHMENTS__BLOCKED_EXTENSIONS__0=.exe, ...
@@ -142,27 +143,17 @@ allowed_extensions = []
 # (the command fails naming the key) rather than read as "not configured".
 # Note: Only used when allowed_extensions is empty (blacklist mode)
 #
-# btx_lib_mail Default Blocked Extensions by OS:
+# btx_lib_mail Default Blocked Extensions (DANGEROUS_EXTENSIONS_POSIX plus
+# DANGEROUS_EXTENSIONS_WINDOWS, refused on every platform since btx_lib_mail 4.0.0):
 #
-#   Windows (executable/script dangers):
-#     Executables:  .exe, .com, .scr, .pif, .msi, .msp
-#     Scripts:      .bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .js, .jse, .ws, .wsf, .wsh
-#     Libraries:    .dll, .ocx, .sys, .drv, .cpl
-#     Shortcuts:    .lnk, .url, .scf
-#     Office Macro: .docm, .xlsm, .pptm, .dotm, .xltm, .potm
-#     Registry:     .reg
-#     Installers:   .cab, .inf
-#     HTML Apps:    .hta, .chm
+#   POSIX:    .apk, .appimage, .bash, .bin, .cjs, .csh, .deb, .dylib, .ear, .elf, .jar, .js,
+#             .ksh, .mjs, .out, .php, .pl, .pm, .py, .pyc, .pyo, .pyw, .rb, .rpm, .run, .sh,
+#             .so, .war, .zsh
+#   Windows:  .application, .bat, .cmd, .com, .cpl, .dll, .drv, .ear, .exe, .gadget, .hta,
+#             .inf, .jar, .js, .jse, .lnk, .msc, .msi, .msp, .ocx, .pif, .ps1, .ps2, .psc1,
+#             .psc2, .reg, .scf, .scr, .sys, .url, .vbe, .vbs, .war, .ws, .wsc, .wsf, .wsh
 #
-#   macOS (application/installer dangers):
-#     Applications: .app, .pkg, .dmg, .kext
-#     Scripts:      .command, .tool, .workflow, .action
-#
-#   Linux/POSIX (script dangers):
-#     Scripts:      .sh, .bash, .zsh, .fish, .csh, .ksh
-#     Binaries:     .bin, .run, .AppImage, .deb, .rpm
-#     Python:       .py, .pyc, .pyo, .pyw
-#     Other:        .pl, .rb, .so, .ko
+# Setting this list replaces the defaults entirely.
 #
 blocked_extensions = []
 
@@ -192,24 +183,16 @@ allowed_directories = []
 # (the command fails naming the key) rather than read as "not configured".
 # Note: Only used when allowed_directories is empty (blacklist mode)
 #
-# btx_lib_mail Default Blocked Directories by OS:
+# btx_lib_mail Default Blocked Directories (these stay per OS):
 #
-#   Linux/POSIX:
-#     System Config:   /etc, /usr, /opt, /boot, /lib, /lib64, /sbin, /bin
-#     User Secrets:    ~/.ssh, ~/.gnupg, ~/.config, ~/.local/share/keyrings
-#     Variable Data:   /var/log, /var/run, /var/lib
-#     Root Home:       /root
-#     Proc/Sys:        /proc, /sys, /dev
+#   Linux/macOS (DANGEROUS_DIRECTORIES_POSIX):
+#     /bin, /boot, /dev, /etc, /proc, /root, /sbin, /sys, /usr/bin, /usr/sbin, /var
 #
-#   macOS (additional):
-#     System:          /System, /Library, /private
-#     User Library:    ~/Library/Keychains, ~/Library/Application Support
+#   Windows (DANGEROUS_DIRECTORIES_WINDOWS):
+#     C:/Windows, C:/Windows/System32, C:/Program Files, C:/Program Files (x86), C:/ProgramData
 #
-#   Windows:
-#     System:          C:/Windows, C:/Windows/System32, C:/Program Files, C:/Program Files (x86)
-#     User Secrets:    %USERPROFILE%/.ssh, %APPDATA%, %LOCALAPPDATA%
-#     Boot:            C:/Boot, C:/Recovery
-#     Drivers:         C:/Windows/System32/drivers
+#   Independently of this list, a path matching btx_lib_mail's SENSITIVE_PATH_PATTERNS
+#   (for example /.ssh/, /.gnupg/, /id_rsa, /.env, /credentials) is always refused.
 #
 blocked_directories = []
 
@@ -234,5 +217,6 @@ allow_symlinks = false
 # Default: true (raise AttachmentSecurityError)
 # Environment Variable: AGENTDAG___EMAIL__ATTACHMENTS__RAISE_ON_SECURITY_VIOLATION=true
 # .env: EMAIL__ATTACHMENTS__RAISE_ON_SECURITY_VIOLATION=true
-# Note: When false, violations log a warning and skip the attachment
+# Note: When true, send-email refuses the whole message and exits 77 (EX_NOPERM)
+#   naming the violation; when false, violations log a warning and skip the attachment
 raise_on_security_violation = true

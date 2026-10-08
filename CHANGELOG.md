@@ -7,11 +7,157 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 ## [Unreleased]
 
 ### Fixed
+- **A refused `LOG_*` variable no longer disables every command (exit code change).** A value
+  lib_log_rich refuses in a `LOG_*` environment variable (`LOG_CONSOLE_LEVEL=bogus`) made every
+  command, `info`, `hello` and `config-deploy` included, exit 22 with `ValueError: Unknown log
+  level: 'bogus'`, while the same line in the `--env-file` never reached logging and every command
+  ran with exit 0. Logging now reads `LOG_*` from the `.env` too (see the next entry) and falls
+  back to its defaults, hiding every `LOG_*` variable for that start (and putting each back
+  afterwards) only when the defaults are refused with them. A refused `LOG_*` value, in the
+  environment or the `--env-file`, now makes only the commands that read the configuration
+  (`config`, `send-email`, `send-notification`, `notify-test` and the `run` subcommands) exit 78,
+  and the others run with exit 0. So for a script the change is 22 to 0 or 78 for the environment,
+  and 0 to 78 for the configuration-reading commands with the `--env-file`. The 78 carries
+  lib_log_rich's own message, `Error: lib_log_rich: Unknown log level: 'bogus'`, which may name
+  neither the variable nor where it was set. A refused `[lib_log_rich]` value leaves every valid
+  `LOG_*` variable in force for the fallback: only a refused variable hides them.
+- **A `.env` reaches logging and nothing else.** The logging setup called lib_log_rich's
+  `enable_dotenv()`, which copied every line of the nearest `.env` into the process environment,
+  so a later configuration load (`config --profile`, the deploy's permission read) took an
+  app-prefixed `.env` line for the environment layer: a prefixed
+  `AGENTDAG___LIB_LAYERED_CONFIG__DEFAULT_PERMISSIONS__USER_FILE=400` in the working directory
+  refused `config-deploy` even under `--env-file`, and every other line (a token included) sat in
+  the coordinator's own environment. Logging now copies only the `LOG_*` lines, never over a
+  variable that is already set, and reads them from the `--env-file` when one is given; otherwise
+  from the nearest `.env` up to the project root, without changing directory and passing over a
+  directory it cannot read. A `.env` that is not UTF-8 no longer stops logging from starting.
+  Other `.env` lines (`DEVELOPMENT_MODE=1` included) no longer reach the environment; set such a
+  variable in the environment itself.
+- **An invalid `[lib_log_rich]` value no longer disables every command.** A value lib_log_rich
+  refuses (`rate_limit = "100:60"`, `queue_maxsize = 0`, an unknown `console_level`) exited 22
+  with pydantic's multi-line report from every command, `config-deploy --force` included. It is
+  now a configuration failure like a broken file: logging starts with its defaults, `config`,
+  `send-email`, `send-notification`, `notify-test` and the `run` subcommands refuse with exit 78
+  and one line per problem (`lib_log_rich.rate_limit: Input should be a valid tuple`), and the
+  other commands run. `InvalidLoggingConfigError` (a `ConfigurationError`) is what the logging
+  setup raises for it.
+- **The documented `.env` and environment syntax for logging tables and SMTP hosts works.**
+  `.env.example`, `defaultconfig.d/90-logging.toml` and the README still showed `LEVEL=style` /
+  `field=regex` pairs and a comma-separated `SMTP_HOSTS`, but a comma-separated value arrives as
+  ONE string in both layers: a logging table that was refused, or one bogus SMTP host. They now
+  show a JSON object or array (unquoted in `.env`, shell-quoted in the environment) or one key
+  per entry (`LIB_LOG_RICH__SCRUB_PATTERNS__API_KEY=.+`), and say how an unquoted value converts
+  under lib_layered_config 7: `true`/`false` arrive as booleans, `null`/`none` as None (not for a
+  secret key such as a password), a JSON array or object parsed, a number that converts back to
+  the same text as a number, anything else as text; quote a value to keep it text.
+- **An invalid `[email]` section is a configuration error.** `send-email` and `send-notification`
+  let the `ValidationError` escape to `main()`'s catch-all, which exited 22 with pydantic's
+  multi-line report and documentation URL; `notify-test` and a run whose `kernel.notify` is
+  `mail` did the same through the mail sink. They now exit 78 with one line per problem,
+  `Error: Invalid configuration: email.<key>: <reason>` (an `[email.attachments]` setting is
+  named by its nested key), never showing the refused value. An invalid option value
+  (`--timeout -5`) still exits 22, now in the same one-line form (`Error: Invalid option value:
+  ...`). `adapters.email.config.describe_validation_error` renders those lines.
+- **`[lib_layered_config.default_permissions]` now takes effect, and only the configuration
+  files decide it.** The per-layer modes were read, but only `enabled` was ever used, so
+  `--set lib_layered_config.default_permissions.user_directory='"0o750"'` still produced a `0o700`
+  directory. `config-deploy` now hands its options and any `--set` of the section to
+  lib_layered_config, which deploys each target with its configured directory and file mode
+  (`--dir-mode`/`--file-mode` still win) and reads the section itself: from the bundled defaults,
+  the configuration files the deploy does not overwrite and the environment, never from `.env`
+  (nor `--env-file`). So a `.env` in the working directory can neither change a deployed mode nor
+  block a deploy, `config-deploy` no longer needs the configuration the root loaded (it runs
+  without a warning when that did not load), and `config-deploy --force` replaces a deployed file
+  that does not parse or holds a bad value without further options. A malformed or out-of-range
+  mode, a bare integer (TOML `user_file = 400` is decimal 400, i.e. `0o620`), an unsafe mode, a
+  non-boolean `enabled`, a section that is not a table or an unknown key stops the command with
+  exit 78 before anything is written: one `Error:` line per problem naming the key and where it
+  was set (`(source: override)` for a `--set`), then, for a configured value, a hint that both
+  `--dir-mode` and `--file-mode` deploy anyway. It used to fall back to the default silently.
+  "Deployed configuration" is logged after the deploy, not before it.
+- **A broken configuration file no longer disables every command.** The root group loaded the
+  configuration before any subcommand option was parsed and let a load error escape, so a
+  malformed `config.toml` made every command, `--help` and `config-deploy` (the command that
+  replaces the file) exit 1 with empty stdout. The root now records the failure
+  (`adapters/cli/config_load.py`); `config`, `send-email`, `send-notification`, `notify-test` and
+  every `run` subcommand refuse with exit 78 and one line naming it, while `info`, `hello`,
+  `config-generate-examples`, `graph-a` and help still run. `config-deploy` runs too: it reads
+  nothing from that configuration (see the `default_permissions` entry), so `config-deploy --force`
+  replaces the broken file. An unreadable
+  file takes the same path, and so does an `--env-file` that is not UTF-8 (the line names the
+  file). `--traceback` prints the loader's chained traceback before the line. What the command
+  line gets wrong is checked BEFORE loading, so a broken file cannot hide it: a malformed `--set`
+  or an invalid `--profile` name is a usage error (exit 2) for every command (see Changed). So are
+  two `--set` values that give one key a value and put a key under it (`--set a.b=1 --set
+  a.b.c=2`), which escaped as a `TypeError` in one order and silently dropped the earlier value in
+  the other; give a whole table in one `--set`. Any other exception from the loader is a bug and
+  propagates as one instead of being reported as a configuration error. `config --profile X`
+  reloads with the root's `--env-file` instead of searching for another `.env`.
+- **`click` is a declared dependency.** The package imports it directly (`adapters/cli/main.py`,
+  `commands/config.py`) but only had it through rich-click. A new test fails when a runtime import
+  is missing from `[project].dependencies`.
+- **A non-UTF-8 path no longer crashes output, and the console fallback degrades only what it
+  must.** `safe_console.encode_safe` skipped its check for utf-8/16/32, but a lone surrogate (a
+  filesystem byte decoded with `surrogateescape`) encodes in none of them, so
+  `config-generate-examples` into such a directory wrote its files and then exited 1 on the path
+  echo. Once any character failed, the fallback also rewrote every known glyph in the text,
+  including ones the stream could print. The fallback is now a registered codec error handler: the
+  codec calls it for exactly the characters it rejects, which become their ASCII form or, when
+  the table has none, whatever the stream's own error handler writes: under Python's UTF-8 mode
+  or a C/POSIX locale stdout uses `surrogateescape`, so a non-UTF-8 path prints byte-exact and
+  still names the directory on disk, and stderr (`backslashreplace`) spells such a character
+  out. Only a `strict` stream gets `?`.
+- **No more `SystemExit: N` on stderr.** Every command that exits deliberately with a code (the
+  config and email commands, and `run`, `graph-a` and `notify-test`) raised a bare `SystemExit`,
+  which `main()`'s catch-all branch printed as `SystemExit: 22` (or `78`, `69` ...) after the real
+  message, text that reads as a crash. The config and email commands now exit through click's
+  context (`ctx.exit`), and `main()` returns the exit code rich_click's `main()` hands back instead
+  of discarding it; the kernel and Graph A commands keep raising `SystemExit` with their exit code,
+  which `main()` now returns without printing it. The exit codes themselves are unchanged.
+  `typed_click` gains a typed `get_current_context` wrapper. A send result is handled in the
+  delivery `try`'s `else` and `config-deploy` re-raises click's `Exit` before its catch-all, since
+  `Exit` subclasses `RuntimeError` and would otherwise be reported a second time as "SMTP delivery
+  failed" or relabelled a deploy failure.
+- **`build_testing()` can run a command.** The in-memory logging initializer was a no-op while every
+  command binds job context onto the lib_log_rich runtime, so any command under the testing
+  composition raised `RuntimeError('lib_log_rich.init() must be called before using the logging
+  API')`. It now starts a quiet runtime (no journald, event log, Graylog or queue; console at ERROR;
+  no `.env` loading), and the test fixtures that build services use it rather than production
+  `init_logging`, whose queued INFO lines raced into a test's captured stderr.
+- **`build_testing()` reads `[email.attachments]`.** The in-memory email config loader validated
+  the `[email]` section without flattening its `attachments` table, so every attachment setting
+  stayed at its default under the testing composition and a test of warn mode
+  (`raise_on_security_violation = false`) ran in strict mode. It now uses the production loader,
+  which is pure, and a port contract test pins that both read the table alike.
+- **Tests no longer pass or fail by order or by machine.** An autouse fixture shuts the
+  lib_log_rich runtime down and restores the root logger's handlers, level and propagate flag after
+  every test; production `init_logging` attaches a stdlib handler and raises the root level, which
+  `runtime.shutdown()` does not undo. A second autouse fixture resets rich-click's colour and width
+  globals, which it reads once at import (from `GITHUB_ACTIONS` and the terminal), so CI and a
+  79-column Windows runner render CLI errors the same as a developer machine.
+- **`[email.attachments] max_size_bytes = 0` disables the size check, as documented.** EmailConfig
+  read 0 as "no limit" (None), but the send passed None to btx_lib_mail, which reads None as "use
+  the settings", and its settings default to 25 MiB: a larger attachment was still refused. The
+  send now hands btx_lib_mail settings that carry this repo's limit, so 0 means no limit.
 - **`email.smtp_hosts` and `email.recipients` set to nothing mean not configured.** A bare YAML
   key or an environment `null` was refused as "Input should be a valid list" for both settings.
   Both now read `None` as an empty list.
 
+### Removed
+- `adapters.config.permissions` as a whole: `parse_mode` (whose silent fall-back to the default
+  was the bug), `get_permission_defaults`, `get_modes_for_target` and the `PermissionDefaults`
+  model. lib_layered_config reads and validates the section now; a caller that wants the
+  settings uses its `deploy_permissions_from_config`.
+
 ### Security
+- **`config-deploy` refuses unsafe and malformed modes.** `--dir-mode -1` passed the unbounded
+  octal parser, and a decimal integer in the configuration was read as a mode (`user_file = 444`
+  deployed `config.toml`, the file holding the SMTP password, at `0o674`). `--dir-mode`,
+  `--file-mode` and every configured mode now accept only a plain octal literal in `0`..`0o7777`,
+  and refuse the setuid/setgid/sticky bits, group and world write, an execute bit on a file, a
+  directory without owner `rwx` and a file without owner `rw`, naming each offending bit; nothing
+  is written. The rule is lib_layered_config's. Migration: quote configured modes
+  (`user_file = "640"`) and use the `0o` prefix in environment variables and `--set`.
 - An email attachment allow or block list given in a form it cannot be read in is now refused
   instead of silently ignored. A comma-separated value (`.pdf,.txt` in an environment variable or
   `.env`) arrives as one string, and the validators turned any value that was not a list into
@@ -269,13 +415,66 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   nothing until that milestone lands, and the third, `top_role_budget_floor`, has no reader at all.
 
 ### Changed
-- A config string written as JSON is refused by name rather than read as one word. A `.env`
-  value is delivered as text - unlike an `AGENTDAG___` variable or a `--set`, which the layered
-  config parses first - so `KERNEL__DENY_BASH=["git push"]` used to become a denylist matching
-  that literal and NOT `git push`, a boundary that reads as closed in the file and is open in the
-  run, and `KERNEL__GATE_COMMAND=[]` became a program named `[]`, walking around the empty-command
-  refusal. Both readers now share one shape-reader that refuses a value beginning with `[` or `{`
-  and names the routes that do take an array; the same text through the environment variable is
+- **A refused attachment exits 77, not 1 with a traceback (exit code change).** An attachment
+  btx_lib_mail's security checks refuse (a blocked extension such as `.exe`, a file under a
+  blocked directory, a symlink, a file over the size limit) made `send-email` exit 1 with
+  `Error: Unexpected error - Attachment security violation (...)` and log the refusal with a
+  traceback, as if the program had crashed. Since btx_lib_mail 4.0.0 every blocked extension is
+  refused on every platform, so this is an ordinary outcome on Linux and macOS too. It now exits
+  77 (`ExitCode.ATTACHMENT_REFUSED`, sysexits `EX_NOPERM`: not permitted by policy) with one
+  line, `Error: Attachment refused by security policy - <the library's reason>`, logs no
+  traceback, and delivers nothing. A script that checks for 1 after a refused attachment must
+  check for 77. With `email.attachments.raise_on_security_violation = false` the attachment is
+  still skipped with a warning and the message sent, as before; a violation that names no
+  attachment left to drop is refused in warn mode too, and now exits 77 where it exited 1.
+  `send-notification`, `notify-test` and a run's `kernel.notify = mail` send no attachment, so
+  their exit codes are unchanged.
+- **Requires btx_lib_mail 4.0.0.** With no `blocked_extensions` configured, an attachment is now
+  checked against btx_lib_mail's POSIX and Windows lists together on every platform, so an `.exe`,
+  `.bat` or `.ps1` is refused on Linux and macOS too (it passed there before). One send accepts at
+  most 1000 recipients and 100 attachments; more is refused before any host is tried, like any
+  invalid argument (exit 22). The `blocked_extensions` and `blocked_directories` comments in
+  `50-mail.toml` list the library's actual defaults.
+- **Requires python-dotenv and lib_log_rich 6.3.9; `InitLogging` takes `dotenv_path`.** The
+  logging setup reads the `LOG_*` lines of a `.env` itself, so python-dotenv (already installed
+  through lib_log_rich) is declared. The port is `init_logging(config, *, dotenv_path=None)`. An
+  invalid `[lib_log_rich]` value exits 78 from the commands that read the configuration, no
+  longer 22 from every command (exit code change).
+- **Exit code change: an invalid `[email]` section exits 78, no longer 22** (see Fixed). A script
+  that checks for 22 after `send-email`, `send-notification` or `notify-test` must check for 78
+  (EX_CONFIG); an invalid option value such as `--timeout -5` still exits 22. The log record for a
+  refused setting names its problems in a `problems` field instead of the pydantic dump.
+- **Exit code change: `config-deploy` refuses what it used to accept.** An invalid
+  `[lib_layered_config.default_permissions]` setting exits 78 (it fell back to the default and
+  exited 0); `--no-permissions` together with `--dir-mode` or `--file-mode`, and a malformed or
+  unsafe `--dir-mode`/`--file-mode`, exit 2. The deploy port (`DeployConfiguration`) takes
+  `set_permissions: bool | None` (None, the default, follows the configured `enabled`) and
+  `permission_overrides`. Refusals of `--dir-mode`/`--file-mode` use lib_layered_config's wording
+  ("unsafe directory mode 0o777: group write (0o020); world write (0o002)"), and a zero-padded
+  mode such as `0000750` is accepted as `0o750`.
+- **Requires lib_layered_config 7.0.1.** An unquoted `.env` value now converts like the
+  environment layer: `true`/`false` arrive as booleans, `null`/`none` as None (not for a secret
+  key such as a password), a JSON array or object parsed, a number that converts back to the same
+  text as a number, anything else as text; quote a value to keep it text. So `ENABLED=false`
+  arrives as the boolean `false`. A `.env` setting still never reaches a `config-deploy`.
+- **Exit code change: a configuration that does not load exits 78, an invalid `--profile` name
+  exits 2.** A broken or unreadable configuration file exited 1 from every command; it now exits
+  78 (EX_CONFIG) from the commands that read the configuration and does not stop the others. An
+  invalid `--profile` name such as `../x` exited 22 from every command (and `config-deploy
+  --profile ../x` failed inside the deploy); it is now a usage error, exit 2, for the root's
+  `--profile`, `config --profile` and `config-deploy --profile`. A script that tells these cases
+  apart by exit code has to test for 78 and 2. Conflicting `--set` values exit 2 as well.
+- A config string written as JSON is refused by name rather than read as one word. An unquoted
+  JSON array is parsed into a list in every text layer (a `.env` line, an `AGENTDAG___` variable,
+  a `--set`; see the lib_layered_config 7.0.1 entry), but a value QUOTED in a `.env`
+  (`KERNEL__DENY_BASH="[\"git push\"]"`), one given to `--set` as a JSON string
+  (`--set kernel.deny_bash='"[\"git push\"]"'`), or one that is not valid JSON, stays text. Split
+  on commas, such a value used to become a denylist matching that literal and NOT `git push`, a
+  boundary that reads as closed in the file and is open in the run, and the gate command's
+  version became a program named `[]`, walking around the empty-command refusal. Both readers now
+  share one shape-reader that refuses a text value beginning with `[` or `{`, says it arrived as a
+  string (quoted in a `.env`, given to `--set` as a JSON string, or not valid JSON), and offers
+  the unquoted array; the unquoted form is
   already a list and is unaffected. A member of the list that is not a string is refused too
   (`["make", null]` would have run `make None`).
 - The gate records the command it RAN. `Coordinator.gate` reads the wired gate port's own argv

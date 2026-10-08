@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from agentdag.adapters import cli as cli_mod
+from agentdag.adapters.cli.exit_codes import ExitCode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -212,6 +213,8 @@ def test_when_send_email_smtp_fails_it_reports_error(
 
     assert result.exit_code == 69
     assert "failed" in result.output.lower()
+    assert "SMTP delivery failed" not in result.stderr
+    assert "Failed to send email" not in result.stderr
 
 
 @pytest.mark.os_agnostic
@@ -337,6 +340,8 @@ def test_when_send_notification_smtp_fails_it_reports_error(
 
     assert result.exit_code == 69
     assert "failed" in result.output.lower()
+    assert "SMTP delivery failed" not in result.stderr
+    assert "Failed to send email" not in result.stderr
 
 
 # ======================== SMTP Config Override Tests ========================
@@ -592,9 +597,8 @@ def test_when_send_email_attachment_missing_with_raise_flag_it_fails(
         )
 
     # Default: raise_on_missing_attachments=True, so FileNotFoundError is raised
-    assert result.exit_code != 0
-    # Could be FILE_NOT_FOUND (66) or the error message in output
-    assert "not found" in result.output.lower() or result.exit_code == 66
+    assert result.exit_code == ExitCode.FILE_NOT_FOUND
+    assert "not found" in result.output.lower()
 
 
 @pytest.mark.os_agnostic

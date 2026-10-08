@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from btx_lib_mail.lib_mail import Transport
+from btx_lib_mail.lib_mail import ConfMail, Transport
 from btx_lib_mail.lib_mail import send as btx_send
 
 from agentdag.domain.errors import ConfigurationError, DeliveryError
@@ -174,6 +174,10 @@ def send_email(
         ConfigurationError: No SMTP hosts configured.
         FileNotFoundError: Required attachment missing and config.raise_on_missing_attachments
             is True.
+        AttachmentSecurityError: btx_lib_mail's security checks refused an
+            attachment (blocked extension or directory, symlink, size, ...)
+            and config.attachment_raise_on_security_violation is True.
+            Raised before anything is delivered.
         DeliveryError: All SMTP hosts failed for a recipient.
 
     Side Effects:
@@ -216,6 +220,10 @@ def send_email(
             attachment_raise_on_security_violation=config.attachment_raise_on_security_violation,
             raise_on_missing_attachments=config.raise_on_missing_attachments,
             raise_on_invalid_recipient=config.raise_on_invalid_recipient,
+            # send() reads a None keyword as "use the settings", so the explicit size keyword
+            # alone cannot say "no limit"; these settings carry it (max_size_bytes = 0 reads as
+            # None), and keep btx_lib_mail's module-global conf out of this delivery.
+            config=ConfMail(attachment_max_size_bytes=config.attachment_max_size_bytes),
             transport=transport,
         )
     except RuntimeError as exc:

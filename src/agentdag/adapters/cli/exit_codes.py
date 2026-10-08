@@ -1,14 +1,18 @@
 """POSIX-conventional exit codes for CLI error paths.
 
-Provides a single :class:`ExitCode` enum so every ``SystemExit`` raised by a
-CLI command carries a meaningful, grep-friendly integer instead of a bare ``1``.
+Provides a single :class:`ExitCode` enum so every deliberate exit of a CLI command
+carries a meaningful, grep-friendly integer instead of a bare ``1``. Two routes carry it:
+the config, email and other template commands exit through click's ``Exit`` (what
+``ctx.exit()`` raises); the ``run``, ``graph-a`` and ``notify-test`` commands raise
+``SystemExit(ExitCode.X)`` on purpose and catch it internally where a caller recovers from
+it. ``adapters/cli/main.py`` returns either code as the process exit code without printing it.
 
-Signal codes (130, 141, 143) are informational constants only — the application
-never raises ``SystemExit`` with these values; ``lib_cli_exit_tools`` handles
+Signal codes (130, 141, 143) are informational constants only - the application
+never exits with these values itself; ``lib_cli_exit_tools`` handles
 signal-to-exit-code translation automatically.
 
 Contents:
-    * :class:`ExitCode` — IntEnum of all exit codes used by this application.
+    * :class:`ExitCode` - IntEnum of all exit codes used by this application.
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ class ExitCode(IntEnum):
     * 2-13: errno-derived codes (ENOENT, EACCES)
     * 22: EINVAL
     * 69: EX_UNAVAILABLE (sysexits.h)
+    * 77: EX_NOPERM (sysexits.h): refused by policy, such as an email attachment
+      btx_lib_mail's security checks reject
     * 78: EX_CONFIG (sysexits.h)
     * 110: ETIMEDOUT
     * 128+N: signal N (informational only)
@@ -42,6 +48,7 @@ class ExitCode(IntEnum):
     PERMISSION_DENIED = 13
     INVALID_ARGUMENT = 22
     SMTP_FAILURE = 69
+    ATTACHMENT_REFUSED = 77
     CONFIG_ERROR = 78
     TIMEOUT = 110
     SIGNAL_INT = 130
