@@ -60,6 +60,13 @@ without reaching inside the adapter."""
 _START_GRACE_S = 2.0
 """How long to wait after ``start`` before asserting the process is actually up."""
 
+_PER_PROCESS = str(os.getpid())
+"""Suffix that keeps a real systemd unit name unique to this pytest process.
+
+A ``systemd --user`` unit name is shared by every process of the user, and ``make test-all``
+runs one pytest per declared Python version at the same time. With a fixed name, one run's
+``kill`` stopped the scope another run had just started, so that run's ``is_alive`` read False."""
+
 _REAP_TIMEOUT_S = 5.0
 """How long to wait for a killed grandchild to be reaped by its new parent."""
 
@@ -278,7 +285,9 @@ def test_systemdscope_starts_an_active_unit_and_kill_verifies_the_cgroup_empty(t
     ``commands/run.py``'s ``_ENV_ALLOWLIST``, which does carry both).
     """
     scope = SystemdScope()
-    handle = scope.start(unit="agentdag-systemdscope-test", argv=_SLEEP_ARGV, env=dict(os.environ), cwd=tmp_path)
+    handle = scope.start(
+        unit=f"agentdag-systemdscope-test-{_PER_PROCESS}", argv=_SLEEP_ARGV, env=dict(os.environ), cwd=tmp_path
+    )
     time.sleep(_START_GRACE_S)
 
     assert handle.unit.endswith(".scope")
@@ -308,7 +317,7 @@ def test_systemdscope_is_alive_and_kill_work_on_a_handle_reconstructed_from_the_
     stopped it.
     """
     scope = SystemdScope()
-    base_unit = scope_unit("scope-reconstruct-test")
+    base_unit = scope_unit(f"scope-reconstruct-test-{_PER_PROCESS}")
     started = scope.start(unit=base_unit, argv=_SLEEP_ARGV, env=dict(os.environ), cwd=tmp_path)
     time.sleep(_START_GRACE_S)
     assert started.unit == f"{base_unit}.scope"  # control: start() really did suffix it
