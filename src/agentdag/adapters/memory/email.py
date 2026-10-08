@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ..email.sender import EmailConfig
+from ..email.sender import EmailConfig, load_email_config_from_dict
 from ..email.validation import validate_recipients
 
 if TYPE_CHECKING:
@@ -168,9 +168,19 @@ class EmailSpy:
 def load_email_config_from_dict_in_memory(
     config_dict: Mapping[str, Any],
 ) -> EmailConfig:
-    """Parse email config from dict using the real Pydantic model."""
-    email_raw = config_dict.get("email", {})
-    return EmailConfig.model_validate(email_raw if email_raw else {})
+    """Parse email config from dict exactly as production does.
+
+    The parsing is pure (no I/O), so the double uses the production loader rather than a
+    copy of it: a copy that skipped the ``[email.attachments]`` table left every attachment
+    setting at its default, so a command test of warn mode silently ran in strict mode.
+
+    Args:
+        config_dict: Configuration dictionary with an optional ``email`` section.
+
+    Returns:
+        The validated email settings, attachment settings included.
+    """
+    return load_email_config_from_dict(config_dict)
 
 
 __all__ = [

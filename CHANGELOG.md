@@ -124,6 +124,11 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   API')`. It now starts a quiet runtime (no journald, event log, Graylog or queue; console at ERROR;
   no `.env` loading), and the test fixtures that build services use it rather than production
   `init_logging`, whose queued INFO lines raced into a test's captured stderr.
+- **`build_testing()` reads `[email.attachments]`.** The in-memory email config loader validated
+  the `[email]` section without flattening its `attachments` table, so every attachment setting
+  stayed at its default under the testing composition and a test of warn mode
+  (`raise_on_security_violation = false`) ran in strict mode. It now uses the production loader,
+  which is pure, and a port contract test pins that both read the table alike.
 - **Tests no longer pass or fail by order or by machine.** An autouse fixture shuts the
   lib_log_rich runtime down and restores the root logger's handlers, level and propagate flag after
   every test; production `init_logging` attaches a stdlib handler and raises the root level, which
