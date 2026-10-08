@@ -1,6 +1,6 @@
 [project]
 name = "agentdag"
-version = "0.0.1"
+version = "0.1.0"
 description = "Coordinator that runs a small graph of AI-agent nodes with bounded spend, mechanical gates and journaled state"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,7 +9,7 @@ dependencies = [
     # Imported directly (adapters/cli/main.py, commands/config.py), not only through rich-click.
     "click>=8.5.0",
     "lib_cli_exit_tools>=2.4.0",
-    "lib_log_rich>=6.3.9",
+    "lib_log_rich>=6.4.1",
     # Imported directly: the logging setup reads the LOG_* lines of a .env itself.
     "python-dotenv>=1.2.4",
     "lib_layered_config>=7.0.1",

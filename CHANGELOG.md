@@ -6,6 +6,8 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 
 ## [Unreleased]
 
+## [0.1.0] 2026-10-08 14:19:27
+
 ### Fixed
 - **A refused `LOG_*` variable no longer disables every command (exit code change).** A value
   lib_log_rich refuses in a `LOG_*` environment variable (`LOG_CONSOLE_LEVEL=bogus`) made every
