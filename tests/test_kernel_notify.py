@@ -258,7 +258,7 @@ def test_the_mail_sink_sends_one_notification_naming_the_run_and_what_happened()
         del from_address
         return True
 
-    config = EmailConfig(smtp_hosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
+    config = EmailConfig(smtphosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
     sink = MailNotifier(send_notification=send_notification, config=config)
 
     sink.emit(RunEvent(run_id="r1", workflow="graph-a", status=RunStatus.FAILED, at=AT))
@@ -285,7 +285,7 @@ def test_the_mail_sink_puts_the_payload_text_and_the_deadline_in_a_suspend_messa
         sent.append(message)
         return True
 
-    config = EmailConfig(smtp_hosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
+    config = EmailConfig(smtphosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
     sink = MailNotifier(send_notification=send_notification, config=config)
 
     sink.emit(
@@ -386,7 +386,7 @@ def mail_capture() -> tuple[list[str], list[str], MailNotifier]:
         bodies.append(message)
         return True
 
-    config = EmailConfig(smtp_hosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
+    config = EmailConfig(smtphosts=["localhost:25"], from_address="a@example.com", recipients=["op@example.com"])
     return subjects, bodies, MailNotifier(send_notification=send_notification, config=config)
 
 

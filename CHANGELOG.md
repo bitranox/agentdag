@@ -6,6 +6,27 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 
 ## [Unreleased]
 
+### Changed
+- **Synced with bitranox_template_py_cli 2.4.0** (a three-way merge from the template of
+  2026-08-27, the version this app last matched before the 2.0/2.1 fixes were ported by hand). The
+  hand-ported fixes are replaced by the template's own versions; what only this app has stays: the
+  coordinator kernel and graph A, the `graph-a`, `run` and `notify-test` commands, `hello`/`fail`/
+  `logdemo`, `config.d/60-kernel.toml`, the policy and schema files and their dependencies.
+- `EmailConfig` is a subclass of btx_lib_mail's `ConfMail` (`btx_lib_mail>=4.0.0`). The Python
+  field names follow ConfMail (`smtphosts`, `smtp_use_starttls`, `smtp_timeout`); the keys in the
+  configuration files stay the same.
+- An unknown key in `[email]` or `[email.attachments]` is refused (exit 78), with one `Error:` line
+  per problem that names the file key (`email.timeout`, not `email`); `notify-test` and the `run`
+  subcommands that send mail report an invalid `[email]` section the same way.
+- New `[email]` keys: `starttls_verify`, `local_hostname`, `delivery_deadline`,
+  `recipient_max_count`, and `attachments.max_count`.
+- A delivery error keeps the library's message; it is no longer replaced when it contains a word
+  such as "password".
+- `config --profile` checks the logging configuration with `lib_log_rich.validate_config` and
+  refuses what `config` without a profile refuses.
+- A `--set` value appears in the `config` output with the source `cli`.
+- `send-notification` no longer offers `--raise-on-missing-attachments`; it takes no attachments.
+
 ## [0.1.0] 2026-10-08 14:19:27
 
 ### Fixed

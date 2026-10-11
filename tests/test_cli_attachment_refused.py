@@ -1,10 +1,8 @@
 """An attachment btx_lib_mail refuses on security grounds exits 77, through the real ``main()``.
 
-The refusal is btx_lib_mail's own check, run by the real ``send_email`` adapter over an
-``[email]`` section read by the production loader: only the SMTP transport is replaced, by a
-recorder, so a test proves both the exit code and that nothing was delivered. (The testing
-composition's own loader does not read ``[email.attachments]``, so warn mode would never reach
-the send through it.) ``AttachmentSecurityError`` is neither a ``ValueError`` nor a ``RuntimeError``, so
+The refusal is btx_lib_mail's own check, run by the real ``send_email`` adapter: only the SMTP
+transport is replaced, by a recorder, so a test proves both the exit code and that nothing was
+delivered. ``AttachmentSecurityError`` is neither a ``ValueError`` nor a ``RuntimeError``, so
 without its own branch it fell into the catch-all as exit 1, "Unexpected error".
 """
 
@@ -22,7 +20,6 @@ from lib_layered_config import Config
 
 from agentdag.adapters.cli.exit_codes import ExitCode
 from agentdag.adapters.cli.main import main
-from agentdag.adapters.email.config import load_email_config_from_dict
 from agentdag.adapters.email.transport import send_email
 from agentdag.composition import AppServices, build_testing
 
@@ -82,12 +79,7 @@ def _services(transport: _Recording, data: dict[str, Any]) -> Callable[[], AppSe
         return config
 
     def build() -> AppServices:
-        return dataclasses.replace(
-            build_testing(),
-            get_config=get_config,
-            load_email_config_from_dict=load_email_config_from_dict,
-            send_email=_real_send_email(transport),
-        )
+        return dataclasses.replace(build_testing(), get_config=get_config, send_email=_real_send_email(transport))
 
     return build
 

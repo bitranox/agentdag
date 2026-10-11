@@ -294,7 +294,7 @@ def test_apply_deadlines_tells_a_crashed_run_through_the_sink_that_run_was_start
     # The sweep's OWN sink is a real mail sink over the spy, so a run wrongly routed through it is SEEN.
     sweep_sink = MailNotifier(
         send_notification=spy.send_notification,
-        config=EmailConfig(smtp_hosts=["smtp.test.com:587"], from_address="runs@test.com", recipients=["op@test.com"]),
+        config=EmailConfig(smtphosts=["smtp.test.com:587"], from_address="runs@test.com", recipients=["op@test.com"]),
     )
     sweep_services = services_with(
         CommittingExecutor(), tmp_path, notifier=sweep_sink, send_notification=spy.send_notification

@@ -18,7 +18,6 @@ from lib_layered_config import Config
 
 from agentdag.adapters.cli import root as cli_mod
 from agentdag.adapters.cli.exit_codes import ExitCode
-from agentdag.adapters.memory import load_email_config_from_dict_in_memory
 from agentdag.composition import AppServices, build_production
 
 if TYPE_CHECKING:
@@ -52,8 +51,9 @@ def services_over(config_data: dict[str, Any], send_notification: Any) -> Callab
         display_config=prod.display_config,
         send_email=prod.send_email,
         send_notification=send_notification,
-        load_email_config_from_dict=load_email_config_from_dict_in_memory,
+        load_email_config_from_dict=prod.load_email_config_from_dict,
         init_logging=prod.init_logging,
+        check_logging_config=prod.check_logging_config,
         wire_graph_a=prod.wire_graph_a,
         wire_kernel=prod.wire_kernel,
     )

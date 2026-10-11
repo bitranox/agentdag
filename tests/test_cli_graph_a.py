@@ -112,6 +112,7 @@ def services_wiring(store: FsRunStore, approve: YesApprover, work: WorkPort | No
         send_notification=prod.send_notification,
         load_email_config_from_dict=prod.load_email_config_from_dict,
         init_logging=prod.init_logging,
+        check_logging_config=prod.check_logging_config,
         wire_graph_a=_wire,
         wire_kernel=prod.wire_kernel,
     )

@@ -18,7 +18,10 @@
 The graph A baseline is the first coordinator graph it ships (0.0.1 on PyPI is the scaffold alone): a fleet migration that gives every repository its own worktree, its own agent and its own gate run, and pushes what passed to scratch clones after one console approval. It deliberately has no journal, no token cap and no unattended approve. Those are later milestones, and what their absence costs is what this baseline is for. See [Graph A: fleet migration](#graph-a-fleet-migration) below.
 
 - CLI entry point styled with rich-click (rich output + click ergonomics).
-- Layered configuration system with lib_layered_config (defaults → app → host → user → .env → env).
+- Layered configuration system with lib_layered_config (defaults -> app -> host -> user -> .env -> env).
+  The `.env` is the first one found from the current directory upward; when there is none,
+  `$XDG_CONFIG_HOME/agentdag/.env` (`~/.config/...` when unset) is read on Linux
+  (see [CONFIG.md](CONFIG.md) for macOS and Windows).
 - Rich structured logging with lib_log_rich (console, journald, eventlog, Graylog/GELF).
 - Exit-code and messaging helpers powered by lib_cli_exit_tools.
 - Metadata helpers ready for packaging, testing, and release automation.
@@ -27,9 +30,8 @@ The graph A baseline is the first coordinator graph it ships (0.0.1 on PyPI is t
 ### Python 3.12+ Baseline
 
 - The project targets **Python 3.12 and newer**.
-- Runtime dependencies require current stable releases (`rich-click>=1.9.6`
-  and `lib_cli_exit_tools>=2.2.4`). Dev dependencies (pytest, ruff, pyright,
-  bandit, etc.) specify minimum version constraints to ensure compatibility.
+- Runtime dependencies are declared with >= floors in pyproject.toml. Dev
+  dependencies (pytest, ruff, pyright, bandit, etc.) are declared the same way.
 - CI workflows exercise GitHub's rolling runner images (`ubuntu-latest`,
   `macos-latest`, `windows-latest`) and cover CPython 3.12 through 3.14
   alongside the latest available 3.x release provided by Actions.
@@ -65,27 +67,15 @@ uvx agentdag@latest --help
 ### Persistent install as CLI tool
 
 ```bash
-# Install latest python
-install_latest_python_gcc.sh
-# pin uv to the latest python
-uv python pin /opt/python-latest/bin/python3
-# One-time install, persists from the git repo
-uv tool install --python /opt/python-latest/bin/python3 --from "git+https://github.com/bitranox/agentdag.git" agentdag
-# or One-time install, persists from PyPi
-uv tool install --python /opt/python-latest/bin/python3 agentdag
+# One-time install from PyPI (isolated environment, added to PATH)
+uv tool install agentdag
+# or from the git repository
+uv tool install --from "git+https://github.com/bitranox/agentdag.git" agentdag
+# Pick the interpreter explicitly if needed, e.g. --python 3.14
 # Update (requires network)
 uv tool upgrade agentdag
 # Run
 agentdag --help
-```
-
-### Persistent install as CLI tool
-```bash
-# install the CLI tool (isolated environment, added to PATH)
-uv tool install agentdag
-
-# upgrade to latest
-uv tool upgrade agentdag
 ```
 
 ### Install as project dependency
@@ -115,8 +105,8 @@ uv tool install agentdag
 # Verify
 agentdag --version
 
-# deploy config files
-agentdag deploy-config --target app
+# deploy config files (user level; --target app or host needs sudo)
+agentdag config-deploy --target user
 
 # Try it out
 agentdag hello
@@ -153,14 +143,14 @@ agentdag config --profile production    # Use a named profile
 
 # Deploy configuration templates to target directories
 # Without profile:
-agentdag config-deploy --target app    # → /etc/xdg/{slug}/config.toml
-agentdag config-deploy --target host   # → /etc/xdg/{slug}/hosts/{hostname}.toml
-agentdag config-deploy --target user   # → ~/.config/{slug}/config.toml
+agentdag config-deploy --target app    # -> /etc/xdg/{slug}/config.toml
+agentdag config-deploy --target host   # -> /etc/xdg/{slug}/hosts/{hostname}.toml
+agentdag config-deploy --target user   # -> ~/.config/{slug}/config.toml
 
 # With profile:
-agentdag config-deploy --target app --profile production   # → /etc/xdg/{slug}/profile/production/config.toml
-agentdag config-deploy --target host --profile production  # → /etc/xdg/{slug}/profile/production/hosts/{hostname}.toml
-agentdag config-deploy --target user --profile production  # → ~/.config/{slug}/profile/production/config.toml
+agentdag config-deploy --target app --profile production   # -> /etc/xdg/{slug}/profile/production/config.toml
+agentdag config-deploy --target host --profile production  # -> /etc/xdg/{slug}/profile/production/hosts/{hostname}.toml
+agentdag config-deploy --target user --profile production  # -> ~/.config/{slug}/profile/production/config.toml
 
 # With custom permissions (POSIX only):
 agentdag config-deploy --target user --file-mode 640       # Files with rw-r----- (640)
@@ -430,25 +420,42 @@ from_address = "alerts@myapp.com"
 smtp_username = "myuser@gmail.com"
 smtp_password = "secret_password"  # Consider using environment variables for sensitive data
 use_starttls = true
+starttls_verify = true   # false accepts any certificate: only for a known internal relay
 timeout = 60.0
+# local_hostname = "mail.example.com"   # EHLO name; set it where reverse DNS is slow
+# delivery_deadline = 300               # upper bound in seconds for one SMTP session; 0 = none
 ```
 
-**`.env` File:**
+A key `[email]` or `[email.attachments]` does not know is refused (exit 78,
+`email.<key>: unknown key`), whichever layer it comes from, so a typo cannot leave a setting at
+its default.
+
+**`.env` File** (no prefix in .env; a prefixed key is not recognised):
 ```bash
 # Email configuration for local testing
-AGENTDAG___EMAIL__SMTP_HOSTS=smtp.gmail.com:587
-AGENTDAG___EMAIL__FROM_ADDRESS=noreply@example.com
+EMAIL__SMTP_HOSTS=["smtp.gmail.com:587"]
+EMAIL__FROM_ADDRESS=noreply@example.com
 ```
 
 #### Gmail Configuration Example
 
-For Gmail, create an [App Password](https://support.google.com/accounts/answer/185833) instead of using your account password:
+For Gmail, create an [App Password](https://support.google.com/accounts/answer/185833) instead of using your account password.
+In a `.env` file (no prefix in .env; a prefixed key is not recognised):
 
 ```bash
-AGENTDAG___EMAIL__SMTP_HOSTS=smtp.gmail.com:587
-AGENTDAG___EMAIL__FROM_ADDRESS=your-email@gmail.com
-AGENTDAG___EMAIL__SMTP_USERNAME=your-email@gmail.com
-AGENTDAG___EMAIL__SMTP_PASSWORD=your-16-char-app-password
+EMAIL__SMTP_HOSTS=["smtp.gmail.com:587"]
+EMAIL__FROM_ADDRESS=your-email@gmail.com
+EMAIL__SMTP_USERNAME=your-email@gmail.com
+EMAIL__SMTP_PASSWORD=your-16-char-app-password
+```
+
+or as environment variables (these need the prefix):
+
+```bash
+export AGENTDAG___EMAIL__SMTP_HOSTS='["smtp.gmail.com:587"]'
+export AGENTDAG___EMAIL__FROM_ADDRESS=your-email@gmail.com
+export AGENTDAG___EMAIL__SMTP_USERNAME=your-email@gmail.com
+export AGENTDAG___EMAIL__SMTP_PASSWORD=your-16-char-app-password
 ```
 
 #### Send Simple Email
@@ -502,16 +509,23 @@ agentdag send-notification \
 #### Programmatic Email Usage
 
 ```python
+from pydantic import SecretStr
+
 from agentdag.adapters.email.sender import EmailConfig
 from agentdag.composition import send_email, send_notification
 
-# Configure email
+# Configure email. EmailConfig is a btx_lib_mail ConfMail, so in Python the fields use the
+# library's names (smtphosts, smtp_use_starttls, smtp_timeout, smtp_starttls_verify,
+# smtp_local_hostname, smtp_delivery_deadline); configuration files keep their keys (smtp_hosts,
+# use_starttls, timeout, starttls_verify, local_hostname, delivery_deadline). smtp_password is a SecretStr: it prints as
+# '**********' in logs, reprs and dumps, and config.smtp_password.get_secret_value() returns
+# the plain text.
 config = EmailConfig(
-    smtp_hosts=["smtp.gmail.com:587"],
+    smtphosts=["smtp.gmail.com:587"],
     from_address="alerts@myapp.com",
     smtp_username="myuser@gmail.com",
-    smtp_password="app-password",
-    timeout=60.0,
+    smtp_password=SecretStr("app-password"),
+    smtp_timeout=60.0,
 )
 
 # Send simple email

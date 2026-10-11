@@ -114,6 +114,16 @@ class InitLogging(Protocol):
     def __call__(self, config: Config, *, dotenv_path: str | None = None) -> None: ...
 
 
+class CheckLoggingConfig(Protocol):
+    """Refuse ``config``'s logging settings as ``InitLogging`` would, leaving the running runtime alone.
+
+    For a configuration loaded after logging is running; a refused setting raises
+    ``InvalidLoggingConfigError`` and logging keeps running with the settings it started with.
+    """
+
+    def __call__(self, config: Config) -> None: ...
+
+
 class WireGraphA(Protocol):
     """Build the graph A wiring for one run, creating that run's store."""
 
@@ -147,6 +157,7 @@ class WireKernel(Protocol):
 
 
 __all__ = [
+    "CheckLoggingConfig",
     "DeployConfiguration",
     "DisplayConfig",
     "GetConfig",

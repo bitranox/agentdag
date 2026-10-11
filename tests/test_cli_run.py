@@ -183,6 +183,7 @@ def services_with(
         send_notification=send_notification if send_notification is not None else prod.send_notification,
         load_email_config_from_dict=prod.load_email_config_from_dict,
         init_logging=prod.init_logging,
+        check_logging_config=prod.check_logging_config,
         wire_graph_a=prod.wire_graph_a,
         wire_kernel=_wire_kernel,
     )

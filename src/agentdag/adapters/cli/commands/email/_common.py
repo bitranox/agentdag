@@ -9,10 +9,10 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn
 
-from btx_lib_mail import AttachmentSecurityError
-from pydantic import ValidationError
+from btx_lib_mail import AttachmentSecurityError, SecretSafeModel
+from pydantic import ConfigDict, SecretStr, ValidationError
 
 from agentdag import __init__conf__
 from agentdag.adapters.email.config import describe_validation_error
@@ -33,58 +33,89 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def filter_sentinels(**kwargs: Any) -> dict[str, Any]:
-    """Filter out None and empty tuple sentinels, converting tuples to lists.
+class EmailConfigOverrides(SecretSafeModel):
+    """The EmailConfig fields the command line overrides; ``None`` means the option was not given.
 
-    Used to prepare CLI option overrides for ``_apply_validated_overrides()``.
-    Removes None values (unset options) and empty tuples (unset multiple options),
-    and converts non-empty tuples to lists for Pydantic compatibility.
-
-    Args:
-        **kwargs: Keyword arguments to filter.
-
-    Returns:
-        Filtered dict with sentinel values removed and tuples converted to lists.
+    Each field carries EmailConfig's own name, so a field EmailConfig renames is refused here
+    instead of being passed along unnoticed. The password stays a ``SecretStr`` from the moment
+    the command line hands it over, and a validation error never carries its value, not even in
+    ``errors()`` or ``json()``.
     """
-    result: dict[str, Any] = {}
-    for k, v in kwargs.items():
-        if v is None or v == ():
-            continue
-        if isinstance(v, tuple):
-            result[k] = list(cast("tuple[Any, ...]", v))
-        else:
-            result[k] = v
-    return result
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    credential_fields = frozenset({"smtp_password"})
+
+    smtphosts: tuple[str, ...] | None = None
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_use_starttls: bool | None = None
+    smtp_timeout: float | None = None
+    raise_on_missing_attachments: bool | None = None
+    raise_on_invalid_recipient: bool | None = None
+
+    @classmethod
+    def from_cli_options(
+        cls,
+        *,
+        smtp_hosts: tuple[str, ...] = (),
+        smtp_username: str | None = None,
+        smtp_password: str | None = None,
+        use_starttls: bool | None = None,
+        timeout: float | None = None,
+        raise_on_missing_attachments: bool | None = None,
+        raise_on_invalid_recipient: bool | None = None,
+    ) -> EmailConfigOverrides:
+        """Build the overrides from the values Click hands a command.
+
+        Click reports an option that was not given as ``None``, and a ``multiple=True`` option
+        that was not given as an empty tuple; both become ``None`` here.
+
+        Examples:
+            >>> EmailConfigOverrides.from_cli_options(smtp_hosts=(), timeout=5.0).model_dump(exclude_none=True)
+            {'smtp_timeout': 5.0}
+        """
+        return cls(
+            smtphosts=smtp_hosts or None,
+            smtp_username=smtp_username,
+            smtp_password=None if smtp_password is None else SecretStr(smtp_password),
+            smtp_use_starttls=use_starttls,
+            smtp_timeout=timeout,
+            raise_on_missing_attachments=raise_on_missing_attachments,
+            raise_on_invalid_recipient=raise_on_invalid_recipient,
+        )
 
 
-def apply_validated_overrides(base_config: EmailConfig, overrides: dict[str, Any]) -> EmailConfig:
+def apply_validated_overrides(base_config: EmailConfig, overrides: EmailConfigOverrides) -> EmailConfig:
     """Apply overrides with full Pydantic validation.
 
-    Uses model_validate() with a merged dict instead of model_copy(update=...)
-    to ensure Pydantic validators run on all overridden values.
+    Uses model_validate() with a merged mapping instead of model_copy(update=...)
+    to ensure EmailConfig's validators run on all overridden values.
 
     Args:
         base_config: Base EmailConfig to merge overrides into.
-        overrides: Dict of field values to override (already filtered).
+        overrides: The options given on the command line.
 
     Returns:
-        New EmailConfig with overrides applied and validated.
+        ``base_config`` itself when no option was given, else a new EmailConfig with the
+        overrides applied and validated.
 
     Raises:
         ValidationError: When overrides contain invalid values.
     """
-    if not overrides:
+    given = overrides.model_dump(exclude_none=True)
+    if not given:
         return base_config
-    base_dict = base_config.model_dump()
-    merged = {**base_dict, **overrides}
-    return EmailConfig.model_validate(merged)
+    return EmailConfig.model_validate({**base_config.model_dump(), **given})
 
 
 def smtp_config_options(func: Callable[..., Any]) -> Callable[..., Any]:
     """Apply shared SMTP configuration override options to a Click command.
 
-    Adds CLI flags for all EmailConfig fields so that any TOML setting
-    can be overridden at invocation time.
+    Adds CLI flags for the SMTP connection and delivery settings (hosts, credentials,
+    STARTTLS, timeout, ``raise_on_invalid_recipient``). ``send-email`` adds its own
+    ``--raise-on-missing-attachments`` switch, since only it takes attachments.
+    ``starttls_verify``, ``local_hostname``, ``delivery_deadline``, ``recipient_max_count``
+    and the attachment settings have no flag; set them with ``--set email.<key>=...``.
     """
     options = [
         option(
@@ -98,11 +129,6 @@ def smtp_config_options(func: Callable[..., Any]) -> Callable[..., Any]:
         option("--smtp-password", default=None, help="Override SMTP authentication password"),
         option("--use-starttls/--no-use-starttls", default=None, help="Override STARTTLS setting"),
         option("--timeout", "timeout", type=float, default=None, help="Override socket timeout in seconds"),
-        option(
-            "--raise-on-missing-attachments/--no-raise-on-missing-attachments",
-            default=None,
-            help="Override missing attachment handling",
-        ),
         option(
             "--raise-on-invalid-recipient/--no-raise-on-invalid-recipient",
             default=None,
@@ -131,7 +157,7 @@ def load_and_validate_email_config(config: Config, loader: LoadEmailConfigFromDi
     except ValidationError as exc:
         _refuse_email_config(exc, "Invalid configuration", exit_code=ExitCode.CONFIG_ERROR)
 
-    if not email_config.smtp_hosts:
+    if not email_config.smtphosts:
         logger.error("No SMTP hosts configured")
         safe_console.echo(
             "\nError: No SMTP hosts configured. Please configure email.smtp_hosts in your config file.", err=True
@@ -339,9 +365,9 @@ def _handle_send_error(
 
 
 __all__ = [
+    "EmailConfigOverrides",
     "apply_validated_overrides",
     "execute_with_email_error_handling",
-    "filter_sentinels",
     "handle_validation_error",
     "load_and_validate_email_config",
     "smtp_config_options",

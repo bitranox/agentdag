@@ -19,7 +19,7 @@ from ..adapters.email.sender import (
 )
 
 # Logging services
-from ..adapters.logging.setup import init_logging
+from ..adapters.logging.setup import check_logging_config, init_logging
 
 # Graph A wiring
 from .graph_a import wire as wire_graph_a
@@ -32,6 +32,7 @@ from .kernel import wire_kernel
 if TYPE_CHECKING:
     from ..adapters.memory.email import EmailSpy
     from ..application.ports import (
+        CheckLoggingConfig,
         DeployConfiguration,
         DisplayConfig,
         GetConfig,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     _assert_send_notification: SendNotification = send_notification
     _assert_load_email_config_from_dict: LoadEmailConfigFromDict = load_email_config_from_dict
     _assert_init_logging: InitLogging = init_logging
+    _assert_check_logging_config: CheckLoggingConfig = check_logging_config
     _assert_wire_graph_a: WireGraphA = wire_graph_a
     _assert_wire_kernel: WireKernel = wire_kernel
 
@@ -68,6 +70,7 @@ class AppServices:
     send_notification: SendNotification
     load_email_config_from_dict: LoadEmailConfigFromDict
     init_logging: InitLogging
+    check_logging_config: CheckLoggingConfig
     wire_graph_a: WireGraphA
     wire_kernel: WireKernel
 
@@ -83,6 +86,7 @@ def build_production() -> AppServices:
         send_notification=send_notification,
         load_email_config_from_dict=load_email_config_from_dict,
         init_logging=init_logging,
+        check_logging_config=check_logging_config,
         wire_graph_a=wire_graph_a,
         wire_kernel=wire_kernel,
     )
@@ -101,12 +105,12 @@ def build_testing(*, spy: EmailSpy | None = None) -> AppServices:
     """
     from ..adapters.memory import (  # noqa: PLC0415 - deferred: keeps in-memory test doubles out of the production import path
         EmailSpy,
+        check_logging_config_in_memory,
         deploy_configuration_in_memory,
         display_config_in_memory,
         get_config_in_memory,
         get_default_config_path_in_memory,
         init_logging_in_memory,
-        load_email_config_from_dict_in_memory,
     )
 
     email_spy = spy if spy is not None else EmailSpy()
@@ -118,8 +122,10 @@ def build_testing(*, spy: EmailSpy | None = None) -> AppServices:
         display_config=display_config_in_memory,
         send_email=email_spy.send_email,
         send_notification=email_spy.send_notification,
-        load_email_config_from_dict=load_email_config_from_dict_in_memory,
+        # The real translation: an in-memory one would let every CLI test skip it.
+        load_email_config_from_dict=load_email_config_from_dict,
         init_logging=init_logging_in_memory,
+        check_logging_config=check_logging_config_in_memory,
         # Graph A and the kernel have no in-memory wiring: building either record
         # allocates nothing, and a test that wants fakes injects them at run_graph's
         # or run_coordinator's own port parameters.
@@ -129,19 +135,16 @@ def build_testing(*, spy: EmailSpy | None = None) -> AppServices:
 
 
 __all__ = [
-    # Composition
     "AppServices",
     "build_production",
     "build_testing",
+    "check_logging_config",
     "deploy_configuration",
     "display_config",
-    # Configuration
     "get_config",
     "get_default_config_path",
-    # Logging
     "init_logging",
     "load_email_config_from_dict",
-    # Email
     "send_email",
     "send_notification",
     # Graph A

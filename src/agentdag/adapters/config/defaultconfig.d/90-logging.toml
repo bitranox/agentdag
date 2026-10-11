@@ -4,7 +4,7 @@
 #
 # Documentation: https://github.com/bitranox/lib_log_rich
 # Settings are loaded via lib_layered_config and can be overridden via:
-#   - Host/User config files (see precedence list in defaultconfig.toml)
+#   - App/Host/User config files (see precedence list in defaultconfig.toml)
 #   - Environment variables (see below)
 #
 # Environment Variable Naming
@@ -208,10 +208,11 @@ enable_eventlog = false
 enable_graylog = false
 
 # Purpose: Graylog server host and port for GELF protocol
-# Type: array [host, port] or string "host:port"
+# Type: array [host, port], e.g. ["graylog.example.com", 12201]; a "host:port" string is
+#       refused (every command exits 22)
 # Default: None (no endpoint); empty list is coerced to None
-# Environment Variable: AGENTDAG___LIB_LOG_RICH__GRAYLOG_ENDPOINT=graylog.example.com:12201
-# .env: LIB_LOG_RICH__GRAYLOG_ENDPOINT=graylog.example.com:12201
+# Environment Variable: AGENTDAG___LIB_LOG_RICH__GRAYLOG_ENDPOINT='["graylog.example.com",12201]'
+# .env: LIB_LOG_RICH__GRAYLOG_ENDPOINT=["graylog.example.com",12201]
 graylog_endpoint = []
 
 # Purpose: Transport protocol for Graylog connection
@@ -338,10 +339,11 @@ scrub_patterns = { password = ".+", secret = ".+", token = ".+" }
 # ------------------------------------------------------------------------------
 
 # Purpose: Throttle log emissions (max_events per window_seconds)
-# Type: array [max_events, window_seconds]
+# Type: array [max_events, window_seconds], e.g. [100, 60]; a "100:60" string is refused
+#       (every command exits 22)
 # Default: None (no rate limiting); empty list is coerced to None
-# Environment Variable: AGENTDAG___LIB_LOG_RICH__RATE_LIMIT=100:60
-# .env: LIB_LOG_RICH__RATE_LIMIT=100:60
+# Environment Variable: AGENTDAG___LIB_LOG_RICH__RATE_LIMIT='[100,60]'
+# .env: LIB_LOG_RICH__RATE_LIMIT=[100,60]
 rate_limit = []
 
 # ------------------------------------------------------------------------------

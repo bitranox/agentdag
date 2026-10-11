@@ -53,7 +53,9 @@ def _run_cli(argv: Sequence[str] | None, *, services_factory: Callable[[], AppSe
         # Under standalone_mode=False it catches the click.exceptions.Exit that ctx.exit()
         # raises and RETURNS its exit code, and it returns a callback's plain return value the
         # same way, so the exit code arrives here as a return value and never as an Exit.
-        # The config and email commands therefore exit through ctx.exit().
+        # The config, email and other template commands therefore exit through ctx.exit();
+        # the run, graph-a and notify-test commands raise SystemExit instead, which the
+        # SystemExit branch below returns before the catch-all can print "SystemExit: N".
         exit_code = cli.main(
             args=args,
             prog_name=__init__conf__.shell_command,

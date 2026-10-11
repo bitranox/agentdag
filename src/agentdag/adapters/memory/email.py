@@ -7,20 +7,20 @@ Contents:
     * :class:`CapturedEmail` - Typed record for captured send_email calls.
     * :class:`CapturedNotification` - Typed record for captured send_notification calls.
     * :class:`EmailSpy` - Captures email calls for test assertions.
-    * :func:`load_email_config_from_dict_in_memory` - In-memory config loader.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from ..email.sender import EmailConfig, load_email_config_from_dict
 from ..email.validation import validate_recipients
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
+
+    from ..email.sender import EmailConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,8 +61,9 @@ class EmailSpy:
         raise_exception: When set, send operations raise this exception.
 
     Example:
+        >>> from agentdag.adapters.email.sender import EmailConfig
         >>> spy = EmailSpy()
-        >>> config = EmailConfig(smtp_hosts=["smtp.test.com:587"])
+        >>> config = EmailConfig(smtphosts=["smtp.test.com:587"])
         >>> spy.send_email(config=config, recipients="test@example.com", subject="Hi", body="Hello")
         True
         >>> len(spy.sent_emails)
@@ -165,27 +166,8 @@ class EmailSpy:
         return not self.should_fail
 
 
-def load_email_config_from_dict_in_memory(
-    config_dict: Mapping[str, Any],
-) -> EmailConfig:
-    """Parse email config from dict exactly as production does.
-
-    The parsing is pure (no I/O), so the double uses the production loader rather than a
-    copy of it: a copy that skipped the ``[email.attachments]`` table left every attachment
-    setting at its default, so a command test of warn mode silently ran in strict mode.
-
-    Args:
-        config_dict: Configuration dictionary with an optional ``email`` section.
-
-    Returns:
-        The validated email settings, attachment settings included.
-    """
-    return load_email_config_from_dict(config_dict)
-
-
 __all__ = [
     "CapturedEmail",
     "CapturedNotification",
     "EmailSpy",
-    "load_email_config_from_dict_in_memory",
 ]

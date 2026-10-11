@@ -880,7 +880,7 @@ def _build_notifier(ctx: click.Context, choice: str) -> Notifier:
         for problem in describe_validation_error(exc):
             safe_console.echo(f"Error: Invalid configuration: {problem}", err=True)
         raise SystemExit(ExitCode.CONFIG_ERROR) from exc
-    if not email_config.smtp_hosts:
+    if not email_config.smtphosts:
         _fail("kernel.notify is 'mail' but email.smtp_hosts is empty - configure it, or set kernel.notify = 'none'")
     return MailNotifier(send_notification=cli.services.send_notification, config=email_config)
 

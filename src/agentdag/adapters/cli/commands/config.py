@@ -32,7 +32,7 @@ from agentdag.adapters.config.overrides import nest_overrides
 from agentdag.domain.enums import DeployTarget, OutputFormat
 
 from .. import safe_console
-from ..config_load import load_config, report_load_failure, require_config
+from ..config_load import check_logging, load_config, report_load_failure, require_config
 from ..constants import CLICK_CONTEXT_SETTINGS
 from ..context import CLIContext, get_cli_context
 from ..exit_codes import ExitCode
@@ -73,6 +73,7 @@ def cli_config(ctx: click.Context, output_format: str, section: str | None, prof
 
     Precedence: defaults -> app -> host -> user -> dotenv -> env
 
+    \f
     Example:
         >>> from click.testing import CliRunner
         >>> from unittest.mock import MagicMock
@@ -109,7 +110,8 @@ def _resolve_config(ctx: click.Context, cli_ctx: CLIContext, profile: str | None
 
     When a subcommand-level profile override is specified, reloads config
     with that profile, the root's ``--env-file`` and any root-level ``--set``
-    overrides stored in the CLI context.
+    overrides stored in the CLI context, and checks its logging settings, which
+    are refused the way the root refuses its own; logging itself keeps running unchanged.
 
     Args:
         ctx: The running command's click context, exited with 78 when loading failed.
@@ -125,6 +127,8 @@ def _resolve_config(ctx: click.Context, cli_ctx: CLIContext, profile: str | None
     config, error = load_config(
         cli_ctx.services, profile=profile, env_file=cli_ctx.env_file, set_overrides=cli_ctx.set_overrides
     )
+    if error is None:
+        error = check_logging(cli_ctx.services, config)
     if error is not None:
         report_load_failure(error, show_traceback=cli_ctx.traceback)
         ctx.exit(ExitCode.CONFIG_ERROR)
@@ -200,7 +204,7 @@ def _check_profile_name(_ctx: click.Context, _param: click.Parameter, value: str
     "--force",
     is_flag=True,
     default=False,
-    help="Overwrite existing configuration files",
+    help="Replace existing configuration files whose content differs (the old file is kept as <name>.bak)",
 )
 @option(
     "--profile",
@@ -243,18 +247,23 @@ def cli_config_deploy(
     dir_mode: int | None,
     file_mode: int | None,
 ) -> None:
-    r"""Deploy default configuration to system or user directories.
+    """Deploy default configuration to system or user directories.
 
     Creates configuration files in platform-specific locations:
 
-    \b
     - app:  System-wide application config (requires privileges)
     - host: System-wide host config (requires privileges)
     - user: User-specific config (~/.config on Linux)
 
-    By default, existing files are not overwritten. Use --force to overwrite.
+    Every target gets config.toml plus config.d/40-layered-config.toml,
+    config.d/50-mail.toml, config.d/60-kernel.toml and config.d/90-logging.toml
+    (host: hosts/<hostname>.toml plus hosts/<hostname>.d/).
 
-    \b
+    By default, existing files are not overwritten. With --force, a file whose
+    content differs is replaced and the old one is kept as <name>.bak (numbered,
+    <name>.bak.1 and so on, when a backup already exists); a file whose content is
+    unchanged is left as it is, mode included.
+
     Permission options (POSIX only, no-op on Windows):
     - --permissions/--no-permissions: Enable/disable permission setting
     - --dir-mode: Override directory mode (octal, e.g., 750)
@@ -265,6 +274,7 @@ def cli_config_deploy(
     configuration files this deploy does not overwrite and the environment,
     with any --set of that section laid over them; never from .env.
 
+    \f
     Example:
         >>> from click.testing import CliRunner
         >>> runner = CliRunner()
@@ -341,7 +351,7 @@ def _execute_deploy(
             "Deployed configuration",
             extra={"targets": tuple(t.value for t in targets), "force": force, "profile": profile},
         )
-        _report_deployment_result(deployed_paths, profile, set_permissions)
+        _report_deployment_result(deployed_paths, profile, set_permissions, force=force)
     except DeployPermissionsError as exc:
         _refuse_permission_settings(exc)
     except PermissionError as exc:
@@ -425,7 +435,9 @@ def _refuse_permission_settings(exc: DeployPermissionsError) -> None:
     get_current_context().exit(ExitCode.CONFIG_ERROR)
 
 
-def _report_deployment_result(deployed_paths: list[Path], profile: str | None, set_permissions: bool | None) -> None:
+def _report_deployment_result(
+    deployed_paths: list[Path], profile: str | None, set_permissions: bool | None, *, force: bool
+) -> None:
     """Report deployment results to the user.
 
     Args:
@@ -434,6 +446,8 @@ def _report_deployment_result(deployed_paths: list[Path], profile: str | None, s
         set_permissions: What the command line said: False for ``--no-permissions``. None
             means the configured ``enabled`` decided, which this command does not read, so
             the report claims nothing about it.
+        force: Whether ``--force`` was given. With it, an empty result means every target
+            file already holds the bundled content, so suggesting ``--force`` would be wrong.
     """
     if deployed_paths:
         profile_msg = f" (profile: {profile})" if profile else ""
@@ -444,6 +458,8 @@ def _report_deployment_result(deployed_paths: list[Path], profile: str | None, s
             # UnicodeEncodeError on a legacy Windows console codepage (cp1252) even though the
             # files were already written, so exit 1 misreports a deploy that actually succeeded.
             safe_console.echo(f"  + {path}")
+    elif force:
+        safe_console.echo("\nNo files were written: every target file is already identical to the bundled one.")
     else:
         safe_console.echo("\nNo files were created (all target files already exist).")
         safe_console.echo("Use --force to overwrite existing configuration files.")
@@ -463,6 +479,7 @@ def cli_config_generate_examples(ctx: click.Context, destination: str, force: bo
 
     By default, existing files are not overwritten. Use --force to overwrite.
 
+    \f
     Example:
         >>> from click.testing import CliRunner
         >>> runner = CliRunner()

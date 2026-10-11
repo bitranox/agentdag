@@ -79,6 +79,7 @@ def inject_deploy_with_permission_capture(
             init_logging=prod.init_logging,
             wire_graph_a=prod.wire_graph_a,
             wire_kernel=prod.wire_kernel,
+            check_logging_config=prod.check_logging_config,
         )
         return lambda: test_services
 
