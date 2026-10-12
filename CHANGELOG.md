@@ -6,6 +6,14 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 
 ## [Unreleased]
 
+### Fixed
+- **A digit-only `.env` value no longer stops the program at startup.** lib_layered_config 7.1
+  reads an unquoted `.env` or environment value that spells a number losslessly as an int, so
+  `LIB_LOG_RICH__SERVICE=2026` reached `LoggingConfigModel` as `2026` and failed with
+  `Input should be a valid string`; the same held for `EMAIL__LOCAL_HOSTNAME=10`. Both models now
+  turn such a number back into the text the operator wrote. Numeric settings still read as
+  numbers and invalid values are still refused.
+
 ### Changed
 - **Synced with bitranox_template_py_cli 2.4.0** (a three-way merge from the template of
   2026-08-27, the version this app last matched before the 2.0/2.1 fixes were ported by hand). The

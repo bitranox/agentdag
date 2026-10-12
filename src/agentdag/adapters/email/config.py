@@ -109,7 +109,9 @@ class EmailConfig(ConfMail):
         ['smtp.example.com:587']
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # lib_layered_config reads an unquoted all-digit value (a host label, a user name) as an int;
+    # the conversion is lossless, so turning it back into text restores what the operator wrote.
+    model_config = ConfigDict(frozen=True, extra="forbid", coerce_numbers_to_str=True)
 
     from_address: str | None = None
     recipients: list[str] = Field(default_factory=list)
