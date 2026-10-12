@@ -27,6 +27,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - A `--set` value appears in the `config` output with the source `cli`.
 - `send-notification` no longer offers `--raise-on-missing-attachments`; it takes no attachments.
 
+### Fixed
+- The `graylog_endpoint` and `rate_limit` notes in `.env.example` and `90-logging.toml` said a
+  `host:port` or `100:60` string makes every command exit 22. It does not: `info` still runs
+  (exit 0) and the commands that read the configuration exit 78. The notes now say that only the
+  native `LOG_GRAYLOG_ENDPOINT` and `LOG_RATE_LIMIT` variables take that form.
+
 ## [0.1.0] 2026-10-08 14:19:27
 
 ### Fixed
