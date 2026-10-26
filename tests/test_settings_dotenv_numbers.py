@@ -41,9 +41,9 @@ def _load_dotenv(tmp_path: Path, line: str) -> Config:
     [("LIB_LOG_RICH__SERVICE", "service"), ("LIB_LOG_RICH__ENVIRONMENT", "environment")],
 )
 def test_a_digit_only_logging_name_is_read_as_its_digits(
-    user_layer_in_tmp_path: Path, clear_config_cache: None, env_key: str, attr: str
+    tmp_path: Path, clear_config_cache: None, env_key: str, attr: str
 ) -> None:
-    config = _load_dotenv(user_layer_in_tmp_path, f"{env_key}=2026")
+    config = _load_dotenv(tmp_path, f"{env_key}=2026")
     # Premise: the library hands the value over as a number. Without it the test proves nothing.
     assert isinstance(config.get("lib_log_rich", {})[attr], int)
 
@@ -62,14 +62,14 @@ def test_a_digit_only_logging_name_is_read_as_its_digits(
     ],
 )
 def test_a_digit_only_email_setting_is_read_as_its_digits(
-    user_layer_in_tmp_path: Path,
+    tmp_path: Path,
     clear_config_cache: None,
     env_key: str,
     attr: str,
     expected: object,
 ) -> None:
     config = _load_dotenv(
-        user_layer_in_tmp_path,
+        tmp_path,
         f"{env_key}={expected.get_secret_value() if isinstance(expected, SecretStr) else expected}",
     )
     section = config.get("email", {})
@@ -82,17 +82,15 @@ def test_a_digit_only_email_setting_is_read_as_its_digits(
 
 
 @pytest.mark.os_agnostic
-def test_a_numeric_email_setting_still_reads_as_a_number(
-    user_layer_in_tmp_path: Path, clear_config_cache: None
-) -> None:
-    config = _load_dotenv(user_layer_in_tmp_path, "EMAIL__TIMEOUT=45")
+def test_a_numeric_email_setting_still_reads_as_a_number(tmp_path: Path, clear_config_cache: None) -> None:
+    config = _load_dotenv(tmp_path, "EMAIL__TIMEOUT=45")
 
     assert load_email_config_from_dict(config.as_dict()).smtp_timeout == 45.0
 
 
 @pytest.mark.os_agnostic
-def test_an_invalid_email_setting_is_still_refused(user_layer_in_tmp_path: Path, clear_config_cache: None) -> None:
-    config = _load_dotenv(user_layer_in_tmp_path, "EMAIL__FROM_ADDRESS=not-an-address")
+def test_an_invalid_email_setting_is_still_refused(tmp_path: Path, clear_config_cache: None) -> None:
+    config = _load_dotenv(tmp_path, "EMAIL__FROM_ADDRESS=not-an-address")
 
     with pytest.raises(ValidationError):
         load_email_config_from_dict(config.as_dict())

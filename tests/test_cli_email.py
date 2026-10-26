@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from click.testing import CliRunner, Result
+
     from conftest import EmailCliContext
 
 # ======================== Email Command Tests ========================
