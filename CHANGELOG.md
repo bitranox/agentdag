@@ -37,12 +37,12 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   a host substring, which also matched `xsmtp.test.com:5870`. The substring form was what CodeQL
   flagged as `py/incomplete-url-substring-sanitization`.
 
-## [0.1.3] 2026-10-24 17:23:17
+## [0.1.3] - 2026-10-24
 
 ### Changed
 - Raise the btx_lib_mail floor to 4.6.0.
 
-## [0.1.2] 2026-10-12 23:14:00
+## [0.1.2] - 2026-10-12
 
 ### Added
 - Python 3.15 is a supported version: declared in the classifiers, so CI and `make test-all` run it.
@@ -54,7 +54,7 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
 - The install section explains why installing with uv protects against supply-chain attacks and why
   a plain `pip install` from PyPI does not.
 
-## [0.1.1] 2026-10-12 19:26:32
+## [0.1.1] - 2026-10-12
 
 ### Fixed
 - **A digit-only `.env` value no longer stops the program at startup.** lib_layered_config 7.1
@@ -91,7 +91,7 @@ the [Keep a Changelog](https://keepachangelog.com/) format.
   (exit 0) and the commands that read the configuration exit 78. The notes now say that only the
   native `LOG_GRAYLOG_ENDPOINT` and `LOG_RATE_LIMIT` variables take that form.
 
-## [0.1.0] 2026-10-08 14:19:27
+## [0.1.0] - 2026-10-08
 
 ### Fixed
 - **A refused `LOG_*` variable no longer disables every command (exit code change).** A value
