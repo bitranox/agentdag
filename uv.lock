@@ -2,8 +2,8 @@ version = 1
 revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version >= '3.15'",
     "python_full_version == '3.14.*'",
+    "python_full_version >= '3.15'",
     "python_full_version < '3.14'",
 ]
 
@@ -13,8 +13,6 @@ exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 btx-lib-mail = false
-certifi = "2026-10-23T11:36:17Z"
-claude-agent-sdk = "2026-10-24T00:22:06Z"
 hatchling = "2026-10-28T02:27:31Z"
 hypothesis = "2026-10-28T14:03:40Z"
 lib-cli-exit-tools = false
@@ -74,7 +72,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.9.4" },
-    { name = "btx-lib-mail", specifier = ">=4.6.0" },
+    { name = "btx-lib-mail", specifier = ">=4.6.4" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.6.1" },
     { name = "certifi", marker = "extra == 'dev'", specifier = ">=2026.10.23" },
     { name = "claude-agent-sdk", specifier = ">=0.2.174" },
@@ -87,7 +85,7 @@ requires-dist = [
     { name = "jaraco-context", marker = "extra == 'dev'", specifier = ">=6.1.2" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.26.0" },
     { name = "lib-cli-exit-tools", specifier = ">=2.4.1" },
-    { name = "lib-layered-config", specifier = ">=7.5.0" },
+    { name = "lib-layered-config", specifier = ">=7.7.0" },
     { name = "lib-log-rich", specifier = ">=8.1.2" },
     { name = "orjson", specifier = ">=3.13.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.10.1" },
@@ -169,16 +167,16 @@ wheels = [
 
 [[package]]
 name = "btx-lib-mail"
-version = "4.6.0"
+version = "4.6.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lib-cli-exit-tools" },
     { name = "pydantic" },
     { name = "rich-click" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/ee/b154514730aad491acf9b3df30548573f4855c131a3f8fa8e704e29a6416/btx_lib_mail-4.6.0.tar.gz", hash = "sha256:42ceb3041541855d141e5a4b144cee8341d052c2cfbbcf5054f84363aa835f7c", size = 310414, upload-time = "2026-10-24T13:07:32.067Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/f1/3565ebd694f3ac6b6e8b5c0737b59ab6a1ad810f5bd9515b7a9354cb6eed/btx_lib_mail-4.6.4.tar.gz", hash = "sha256:4eb47f11acb04dbd0fbe44c31fe7668b6365a500751ffc2c31fd860e9be9432c", size = 310709, upload-time = "2026-10-30T10:47:01.54Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/55/74067275caea34be7f974a0cc45276f08caf33f7c5bfb9e1a8f11cc241a0/btx_lib_mail-4.6.0-py3-none-any.whl", hash = "sha256:1d752fa94b1d4009e53eaa75bd52a1a473c89d949e5a275bf1f433cb66df3aad", size = 120489, upload-time = "2026-10-24T13:07:30.479Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/f8/02a3ac9f54eef9a03a331f4f1d1a5a9bb57b5905236f5a864d28039ebd36/btx_lib_mail-4.6.4-py3-none-any.whl", hash = "sha256:ff30b273c5a32159f9d9bd51880a2582f8aaf2f72316596bdc26ce0fbaeb6084", size = 120498, upload-time = "2026-10-30T10:46:59.952Z" },
 ]
 
 [[package]]
@@ -1064,7 +1062,7 @@ wheels = [
 
 [[package]]
 name = "lib-layered-config"
-version = "7.5.0"
+version = "7.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lib-cli-exit-tools" },
@@ -1073,9 +1071,9 @@ dependencies = [
     { name = "rtoml", marker = "python_full_version < '3.14'" },
     { name = "tomli", marker = "python_full_version == '3.14.*'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/3d/51848087230e346be8dd80fd908e1bb74c943d2fe6009b6e07ebea775931/lib_layered_config-7.5.0.tar.gz", hash = "sha256:86e95abda239ef3a33085a7e03f60b56120a8a99f723c4c5e73948942e5c22ba", size = 542191, upload-time = "2026-10-29T22:44:36.531Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/58/b4299ad29b6c1f732c8974713705f0a1445b3387a7bf8b4e95bf1b603880/lib_layered_config-7.7.0.tar.gz", hash = "sha256:f82c19972a5718c2f449a5690fc091828821402af8dee4012fe54a17f238c054", size = 550689, upload-time = "2026-11-01T17:30:33.306Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/e5/698cffb3bd8106d06617e5dd6b520388f550369ec2120e67d8bc7667ef6c/lib_layered_config-7.5.0-py3-none-any.whl", hash = "sha256:f49e106f3903d74b5f6d826a99e9f639debece8a9b290103a6b52736cfa4ce17", size = 164624, upload-time = "2026-10-29T22:44:35.151Z" },
+    { url = "https://files.pythonhosted.org/packages/55/e0/1606a185b9800128c477b17f2eeb9dcc6f18f3cdbf07f47b6e563864c95e/lib_layered_config-7.7.0-py3-none-any.whl", hash = "sha256:087ff927bd24138228bfa3d601daefaca226946adc1148f5999a3d6e4ad15b80", size = 167755, upload-time = "2026-11-01T17:30:31.326Z" },
 ]
 
 [[package]]
@@ -2188,28 +2186,28 @@ wheels = [
 
 [[package]]
 name = "sse-starlette"
-version = "3.5.0"
+version = "3.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "starlette" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/be/0123026f719d1a7936f214a88b553bb5701e04ff2511147c1dab0c5035eb/sse_starlette-3.5.0.tar.gz", hash = "sha256:75de713aa8a9441513cc283220826da079d982770965b951e9437720e8bafdb2", size = 36794, upload-time = "2026-09-28T17:48:14.7Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/2e/16b9cce59c2eebd2f944b41b01df119f8ee65535ce839c462f1b2c9ae2e0/sse_starlette-3.5.1.tar.gz", hash = "sha256:dbb1461cd53c1e284537c3ddcf92f54f24178519a3f1e335e49e5283993db0f7", size = 38356, upload-time = "2026-10-24T08:45:12.444Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/e4/cdda14023c316d71493bc54fdffc3dd006631b88866145c9d3cc33e0f1df/sse_starlette-3.5.0-py3-none-any.whl", hash = "sha256:3e6e1070df3f0f5d9cea81496de92dbb72f6721871d99748ece67441dd8b7997", size = 17407, upload-time = "2026-09-28T17:48:13.228Z" },
+    { url = "https://files.pythonhosted.org/packages/61/98/658d1681bc6dc0b0f7f695aee4337de79decd0ccaec6d000a76b5cbdca6d/sse_starlette-3.5.1-py3-none-any.whl", hash = "sha256:a6cdcfec47b952911b1d99a7b8056429b5984039b875bf6575174220364b551f", size = 17538, upload-time = "2026-10-24T08:45:10.981Z" },
 ]
 
 [[package]]
 name = "starlette"
-version = "1.9.0"
+version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/eb/4e197bf26b023abafc5e9043ec8710d7de0fcb032d0969045236d72aa0b1/starlette-1.9.0.tar.gz", hash = "sha256:3d931de246ed870e35ce605974440816ef895e592f255d1396cfdf191d4c4318", size = 2732466, upload-time = "2026-10-18T15:50:33.189Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/bb/3d8757f21e9a53d9035c9eb039a777047139a16bfdbedfc7a58241c3d914/starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b", size = 2734356, upload-time = "2026-10-24T15:04:12.342Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/93/181df62699d9b5aca1d87e5cfda131dac87e3cdaebf668662f7206ca3470/starlette-1.9.0-py3-none-any.whl", hash = "sha256:fd3f159936e882d06c1108f84688f7cda2cf85fc6a592a50edbd175e882c2ddc", size = 80335, upload-time = "2026-10-18T15:50:31.526Z" },
+    { url = "https://files.pythonhosted.org/packages/88/2e/947cfe02def9371c07cd5bf5b6b61c829e9aecb9904db02a66cfafbc1eec/starlette-1.10.0-py3-none-any.whl", hash = "sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4", size = 80571, upload-time = "2026-10-24T15:04:10.371Z" },
 ]
 
 [[package]]
