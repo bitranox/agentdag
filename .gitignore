@@ -221,6 +221,10 @@ EXECUTION-USER-REVIEW.md
 # rewritten wholesale into oblivion. Only its editor backups stay out.
 handover.md.bak-*
 
+# Standing backlog: a local working file, not published (user decision 2026-11-02). With no
+# history here, copy it aside before any wholesale rewrite: nothing can restore a lost line.
+OPEN-WORK.md
+
 # Build plans at three altitudes. TRACKED since 2026-09-01, after a read-through removed
 # the local-infrastructure detail; their history before that day is in the private research
 # repo they were moved from on 2026-08-28.
